@@ -177,7 +177,56 @@ PoC: build the same small project (community + 2 OCA repos + 1 custom addon) bot
 - Dual build paths (`buildx` in Taskfile vs broken `docker compose build odoo` in `DockerService.build_odoo()`).
 - Dual DDL definitions (CLI raw-sqlite registry vs web SQLModel schema).
 
-## 6. Roadmap
+## 6. Technical Architecture
+
+### 6.1 Style: hexagonal (ports and adapters), screaming structure
+
+The product shape maps 1:1 onto hexagonal architecture:
+
+- **Domain (core)**: `Layer`, `Manifest`, `Lockfile`, `Project`, `Instance`, the two projections. Pure logic — pin resolution, drift validation, onion composition. Zero infrastructure dependencies.
+- **Ports**: the backend contract (§2.4), the artifact store (registry/package index), the source provider (git hosts), configuration.
+- **Adapters**: `local` (Docker), `idp-server`, `ec2`, `kubernetes`, `fargate`; GitHub/GitLab as source-provider adapters.
+
+Hard rule, enforced by import-linter (or equivalent) in CI: **the core never imports `docker`, `boto3`, `kubernetes`, or any git host SDK.** If it does, the architecture is broken.
+
+Package layout screams the domain, not the framework:
+
+```
+odoo_forge/
+  layers/        # onion model, composition
+  manifest/      # project.yaml + lockfile schema, resolution, drift
+  backends/      # the port (contract) + capability declarations
+  workspace/     # source projection materialization
+  images/        # image projection (factory client)
+cli/             # Typer entry points (thin; delegates to core)
+backends_local/  # separate package: Docker adapter
+backends_k8s/    # separate package (later)
+```
+
+Backends ship as **separate installable packages** discovered via Python entry points (`odoo_forge.backends` group) — this is the mechanism behind "install only what you need".
+
+### 6.2 State model: no database in the CLI
+
+- **CLI core (Phase 2): no database.** State is the manifest + lockfile (versioned in git) plus **backend introspection** (Docker labels, K8s resources). To know which instances run, ask the backend — never a parallel registry file that can drift. Rationale: `odoo-idp`'s dual DDL (CLI SQLite registry vs web SQLModel) already produced drift and required the `mer-fk-refactor` effort.
+- **Control plane (Phase 4): PostgreSQL.** Users, audit trail, policies, backup schedules — real server-side state. Postgres already exists in every deployment for Odoo itself.
+- SQLite is never a shared database; at most a disposable local cache.
+
+### 6.3 Stack
+
+- **Python 3.12+**, managed with **uv**. CLI with **Typer**, schemas with **Pydantic v2**.
+- Rationale: it is the language of the Odoo ecosystem — client-team devs can contribute to the tool — and the reusable `odoo-idp` code (compose generation, backup, catalog validation) ports directly. Distribution via `uvx` / `pipx`.
+- Trade-off accepted: not a single static binary (Go's advantage). Revisit only if distribution pain appears in remote-backend phases.
+
+### 6.4 Multi-OS requirement
+
+Supported developer platforms: **Ubuntu, Arch, macOS, Windows.**
+
+- The CLI is identical everywhere (uv runs on all four).
+- The real multi-OS difficulty is the **local backend**, not the language: Docker on macOS/Windows runs inside a VM (Docker Desktop / WSL2), and bind mounts — the workspace projection — have poor filesystem performance on macOS and different path semantics on Windows.
+- This is an adapter concern: the `local` adapter selects a per-OS mount strategy (native binds on Linux; Docker Desktop with sync/volume strategies on macOS; WSL2-required on Windows, workspace materialized inside the WSL filesystem).
+- A `doctor` command (pattern inherited from `odoo-idp`) validates each OS environment before first use.
+
+## 7. Roadmap
 
 Each phase ships something usable on its own.
 
@@ -190,7 +239,7 @@ Each phase ships something usable on its own.
 
 **Migration fire test:** `odoo-idp` keeps running as-is and becomes the first client migrated onto the product once Phase 2 is solid. If the manifest cannot express that real project, the manifest is wrong.
 
-## 7. Known Bugs in odoo-idp (do not carry over)
+## 8. Known Bugs in odoo-idp (do not carry over)
 
 Found during the audit; listed so they are not inherited by copy-paste:
 
@@ -198,10 +247,9 @@ Found during the audit; listed so they are not inherited by copy-paste:
 - `ODOO_UID`/`ODOO_GID` build args are declared in the Dockerfile but never passed to `docker buildx build`; images always bake UID/GID 1000.
 - `requirements.collected.txt` is a checked-in generated artifact with no freshness enforcement at build time.
 
-## 8. Open Questions
+## 9. Open Questions
 
-1. Product name and repository location.
-2. Model A vs Model B (resolved by the Phase 3 PoC; criteria in §3).
-3. Lockfile update workflow (who bumps pins, how promotions interact with pinned versions).
-4. Enterprise licensing/distribution constraints on publishing an enterprise layer artifact (legal review before Phase 3).
-5. Python dependency strategy per layer (each layer ships its resolved requirements vs project-level final resolution).
+1. Model A vs Model B (resolved by the Phase 3 PoC; criteria in §3).
+2. Lockfile update workflow (who bumps pins, how promotions interact with pinned versions).
+3. Enterprise licensing/distribution constraints on publishing an enterprise layer artifact (legal review before Phase 3).
+4. Python dependency strategy per layer (each layer ships its resolved requirements vs project-level final resolution).
