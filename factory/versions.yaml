@@ -1,0 +1,13 @@
+# factory/versions.yaml
+# Single source of truth for the image factory build matrix.
+# Each entry maps an Odoo Community version branch to its Python base image tag.
+# Adding a version = one entry here (plus verifying its requirements build).
+versions:
+  - odoo: "16.0"
+    python: "3.10"
+  - odoo: "17.0"
+    python: "3.11"
+  - odoo: "18.0"
+    python: "3.11"
+  - odoo: "19.0"
+    python: "3.12"
