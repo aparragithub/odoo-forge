@@ -1,0 +1,80 @@
+name: Cleanup untagged GHCR digests
+
+# Failed smoke tests during the build-images workflow can leave orphaned,
+# untagged container versions behind (a per-arch image or an
+# attestation/provenance blob whose manifest list push never completed).
+# This workflow reclaims that storage.
+#
+# GOTCHA: per-arch digests and attestation/provenance blobs referenced by a
+# TAGGED manifest list are themselves untagged package versions in the GHCR
+# API. A naive "delete all untagged versions" would delete the very digests
+# that published tags point to and break every tag. dataaxiom/ghcr-cleanup-action
+# walks tagged manifest lists first and only deletes digests that are truly
+# unreferenced, so it is safe to run unattended.
+
+on:
+  schedule:
+    # 03:17 UTC on Sundays — off-peak, avoids the top-of-hour cron stampede.
+    - cron: '17 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Simulate the cleanup without deleting anything'
+        type: boolean
+        default: true
+
+# Intentionally matches build-images.yml's concurrency group for the main
+# branch (`build-images-${{ github.ref }}` evaluates to
+# `build-images-refs/heads/main` on push to main). This makes cleanup queue
+# behind any in-flight build on main instead of racing it -- without this,
+# cleanup could delete a digest a build just pushed before that build's
+# merge job has tagged it, breaking the manifest list. cancel-in-progress
+# is false so a scheduled/dispatched cleanup run never cancels a build.
+concurrency:
+  group: build-images-refs/heads/main
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Clean up untagged odoo-ce versions
+        # Pinned to v1.2.2 (commit d52806a0dc70b430571a37da1fde39733ffd640f)
+        # https://github.com/dataaxiom/ghcr-cleanup-action/releases/tag/v1.2.2
+        uses: dataaxiom/ghcr-cleanup-action@d52806a0dc70b430571a37da1fde39733ffd640f
+        with:
+          owner: ${{ github.repository_owner }}
+          package: odoo-ce
+          delete-untagged: true
+          # Belt-and-suspenders alongside the concurrency group above: even
+          # if the concurrency assumption ever breaks, a digest pushed less
+          # than a day ago is never a deletion candidate, so an in-flight
+          # build's not-yet-tagged digest survives.
+          older-than: '1 day'
+          # On `schedule`, github.event_name == 'workflow_dispatch' is false,
+          # so the `&&` short-circuits to `false` (real deletion) regardless
+          # of the unused `inputs.dry-run` default. On `workflow_dispatch`
+          # the condition is true and the expression yields the user's
+          # chosen boolean. Do not reorder this -- flipping the operands
+          # would evaluate `inputs.dry-run` first and break the schedule case.
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || false }}
+          log-level: info
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### GHCR untagged cleanup"
+            echo ""
+            echo "- Package: \`odoo-ce\`"
+            echo "- Trigger: \`${{ github.event_name }}\`"
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              echo "- Dry run: \`${{ inputs.dry-run }}\`"
+            else
+              echo "- Dry run: \`false\` (scheduled run)"
+            fi
+            echo ""
+            echo "See the \"Clean up untagged odoo-ce versions\" step log above for the full list of deleted (or would-be-deleted) digests."
+          } >> "$GITHUB_STEP_SUMMARY"
