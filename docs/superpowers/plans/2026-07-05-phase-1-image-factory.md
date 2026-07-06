@@ -561,8 +561,23 @@ Expected: Odoo logs `Modules loaded.` then `Initiating shutdown`; script prints 
 
 - [ ] **Step 4: Prove the gate actually blocks (red test)**
 
-Run: `docker run --rm --network host -e DB_HOST=127.0.0.1 ghcr.io/aparragithub/odoo-ce:19 odoo -i nonexistent_module_xyz --stop-after-init --no-http; echo "exit=$?"`
-Expected: Odoo fails (module not found / DB error) with a **non-zero** exit. This confirms a broken init propagates a failing exit code, so `smoke-test.sh` (which has `set -e`) would block publishing. (This step is a one-off proof; no file changes.)
+**Important — what the gate catches:** the smoke test catches **real crashes** during init: a missing runtime Python dependency (ImportError while a module loads) or a DB init failure. It does **NOT** catch a *nonexistent module name* — Odoo only logs a warning for an unknown `-i` module and exits **0**. So `-i nonexistent_module` is an INVALID red test (it would pass, falsely). The valid red test breaks a real dependency, matching the spec §8 criterion ("verified by intentionally breaking a dependency").
+
+Run (on a throwaway network + Postgres, remove a real runtime dep in a disposable layer, then init):
+
+```bash
+NET="rt-$$"; PG="pg-rt-$$"
+docker network create "$NET"
+docker run -d --name "$PG" --network "$NET" -e POSTGRES_USER=odoo -e POSTGRES_PASSWORD=odoo -e POSTGRES_DB=postgres postgres:16
+sleep 3
+docker run --rm --network "$NET" -e DB_HOST="$PG" -e DB_USER=odoo -e DB_PASSWORD=odoo -e POSTGRES_DB=postgres \
+  --entrypoint bash ghcr.io/aparragithub/odoo-ce:19 -c \
+  "pip uninstall -y python-dateutil >/dev/null 2>&1 && odoo -d rt -i base --stop-after-init --no-http --db_host $PG --db_user odoo --db_password odoo"
+echo "exit=$?"
+docker rm -f "$PG"; docker network rm "$NET"
+```
+
+Expected: Odoo aborts with `ModuleNotFoundError: No module named 'dateutil'` and a **non-zero** exit (observed: exit 1). Because `smoke-test.sh` runs `odoo ... --stop-after-init` under `set -e`, a real broken image produces exactly this non-zero exit and blocks publishing. (One-off proof; no file changes — the disposable `pip uninstall` runs only in the throwaway container, never in the built image.)
 
 - [ ] **Step 5: Commit**
 
