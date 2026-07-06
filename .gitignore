@@ -1,0 +1,6 @@
+# Python bytecode (e.g. from local py_compile checks)
+__pycache__/
+*.py[cod]
+
+# Tool caches
+.atl/
