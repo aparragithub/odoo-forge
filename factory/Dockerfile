@@ -8,6 +8,7 @@ ARG PYTHON_VERSION=3.12
 FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
 
 ARG ODOO_VERSION
+ARG ODOO_REVISION
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -23,9 +24,13 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Clone Odoo Community at the pinned version branch (shallow).
-RUN git clone --branch ${ODOO_VERSION} --depth 1 \
-    https://github.com/odoo/odoo.git /opt/odoo
+# Fetch the EXACT resolved commit (ODOO_REVISION) so the baked source always
+# matches the OCI revision label, and the layer cache-busts when it changes.
+RUN mkdir -p /opt/odoo && cd /opt/odoo && \
+    git init -q && \
+    git remote add origin https://github.com/odoo/odoo.git && \
+    git fetch -q --depth 1 origin ${ODOO_REVISION} && \
+    git checkout -q FETCH_HEAD
 
 # Layer 1: Odoo core deps (from the cloned source — version-correct by definition).
 RUN --mount=type=cache,target=/root/.cache/pip \
