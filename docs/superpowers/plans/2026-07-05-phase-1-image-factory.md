@@ -697,6 +697,10 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/odoo-ce
 
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -705,7 +709,8 @@ jobs:
       date: ${{ steps.gen.outputs.date }}
     steps:
       - uses: actions/checkout@v4
-      - uses: mikefarah/yq@v4
+      # yq is preinstalled on ubuntu-latest — do NOT add a `uses: mikefarah/yq`
+      # step: that action requires a `cmd` input and fails the job without it.
       - id: gen
         run: |
           versions=$(yq -o=json -I=0 '.versions' factory/versions.yaml)
@@ -761,6 +766,10 @@ jobs:
       - name: Smoke test (publish gate)
         run: ./factory/smoke-test.sh odoo-ce:test
 
+      # Intentional second build: the docker driver cannot both --load (for the
+      # smoke gate above) and push-by-digest in one call. This step cache-hits
+      # the tested image and pushes it. Do NOT merge into one call — it would
+      # remove the pre-push smoke gate.
       - name: Push by digest
         id: push
         uses: docker/build-push-action@v6
