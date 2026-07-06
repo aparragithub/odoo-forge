@@ -78,8 +78,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN groupadd -g ${ODOO_GID} odoo \
     && useradd -u ${ODOO_UID} -g odoo -m -s /bin/bash odoo
 
-RUN mkdir -p /mnt/custom /mnt/community /mnt/localization /mnt/enterprise /var/lib/odoo /etc/odoo \
-    && chown -R odoo:odoo /mnt/custom /mnt/community /mnt/localization /mnt/enterprise /var/lib/odoo /etc/odoo
+# /mnt/worktrees is the Phase 2 workspace-projection mount point (per-worktree
+# addons scanned by entrypoint.sh's build_addons_path); created here so both
+# phases share the same directory layout.
+RUN mkdir -p /mnt/worktrees /mnt/custom /mnt/community /mnt/localization /mnt/enterprise /var/lib/odoo /etc/odoo \
+    && chown -R odoo:odoo /mnt/worktrees /mnt/custom /mnt/community /mnt/localization /mnt/enterprise /var/lib/odoo /etc/odoo
 
 COPY --chown=odoo:odoo --from=builder /opt/venv /opt/venv
 COPY --chown=odoo:odoo --from=builder /opt/odoo /opt/odoo
