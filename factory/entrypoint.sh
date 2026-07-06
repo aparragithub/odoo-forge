@@ -89,7 +89,7 @@ echo "Waiting for PostgreSQL at ${DB_HOST:-db}..."
     --db_password "${DB_PASSWORD}" --database "${POSTGRES_DB:-postgres}" --timeout=60
 
 case "$1" in
-    --* | odoo)
+    -- | odoo)
         shift
         DEV_ARGS=()
         if [[ -n "${ODOO_DEV_MODE}" ]] && [[ "${ODOO_DEV_MODE}" != "False" ]]; then
