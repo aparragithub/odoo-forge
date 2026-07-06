@@ -4,7 +4,7 @@
 
 **Goal:** Build and publish multi-arch Odoo Community base images (versions 16.0–19.0) to GHCR via GitHub Actions, with a smoke-test gate that blocks publishing broken images.
 
-**Architecture:** A `factory/` directory holds a parameterized multi-stage Dockerfile plus its support files, driven by a `versions.yaml` matrix that is the single source of truth. A reusable `smoke-test.sh` boots each freshly built image against an ephemeral PostgreSQL and installs `base,web,mail`; it runs identically locally and in CI. A GitHub Actions workflow builds each `(version × arch)` on a native runner, smoke-tests it, pushes by digest, then assembles a per-version multi-arch manifest list with a moving and an immutable tag.
+**Architecture:** A `factory/` directory holds a parameterized multi-stage Dockerfile plus its support files, driven by a `versions.yaml` matrix that is the single source of truth. A reusable `smoke-test.sh` boots each freshly built image against an ephemeral PostgreSQL and installs `base,sale,purchase,stock`; it runs identically locally and in CI. A GitHub Actions workflow builds each `(version × arch)` on a native runner, smoke-tests it, pushes by digest, then assembles a per-version multi-arch manifest list with a moving and an immutable tag.
 
 **Tech Stack:** Docker + Buildx (multi-arch, BuildKit cache mounts), Bash, YAML, `yq`, GitHub Actions, GHCR. No Python project yet (that is Phase 2) — verification tooling is `docker`, `yq`, `shellcheck`, and the workflow run itself.
 
@@ -34,7 +34,7 @@ Copied verbatim from `docs/specs/2026-07-05-phase-1-image-factory-design.md`. Ev
 - `factory/entrypoint.sh` — dynamic `addons_path`, config injection, wait-for-psql (adapted from odoo-idp).
 - `factory/Dockerfile` — multi-stage, parameterized by `ODOO_VERSION` + `PYTHON_VERSION`.
 - `factory/build.sh` — local helper: resolves Python + Odoo SHA from `versions.yaml`, builds one version single-arch.
-- `factory/smoke-test.sh` — reusable publish gate: ephemeral Postgres + `odoo -i base,web,mail --stop-after-init`.
+- `factory/smoke-test.sh` — reusable publish gate: ephemeral Postgres + `odoo -i base,sale,purchase,stock --stop-after-init`.
 - `factory/README.md` — how to build and test locally.
 - `.github/workflows/build-images.yml` — matrix build-by-digest per `(version × arch)` + per-version manifest merge.
 
@@ -96,7 +96,7 @@ Adapted from odoo-idp `infra/build/`. These are consumed by the Dockerfile in Ta
 - Create: `factory/entrypoint.sh`
 
 **Interfaces:**
-- Produces: `/entrypoint.sh` (container entrypoint), `/usr/local/bin/wait-for-psql.py`, `/etc/odoo/odoo.conf`. The entrypoint reads env vars `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `POSTGRES_DB`, `ODOO_WORKERS`, `ODOO_LOG_LEVEL`, `ODOO_DEBUG_PORT`, `INIT_BASE`, `ODOO_DEV_MODE`. Consumed by Task 3 (`COPY`) and Task 4 (smoke test drives it).
+- Produces: `/entrypoint.sh` (container entrypoint), `/usr/local/bin/wait-for-psql.py`, `/etc/odoo/odoo.conf`. The entrypoint reads env vars `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `POSTGRES_DB`, `ODOO_WORKERS`, `ODOO_LOG_LEVEL`, `ODOO_DEBUG_PORT`, `ODOO_DEV_MODE`. Consumed by Task 3 (`COPY`) and Task 4 (smoke test drives it). **No auto-init:** the base image never initializes a database on its own — DB init is a caller decision (the smoke test passes `-i base,sale,purchase,stock` explicitly; higher layers / the local backend own init policy). The entrypoint carries no `INIT_BASE` logic by design.
 
 - [ ] **Step 1: Write `factory/extra_requirements.txt`**
 
@@ -192,7 +192,7 @@ smtp_server = localhost
 smtp_port = 25
 ```
 
-- [ ] **Step 4: Write `factory/entrypoint.sh`** (adapted from odoo-idp: dynamic addons_path, config injection, wait-for-psql, debugpy, idempotent INIT_BASE)
+- [ ] **Step 4: Write `factory/entrypoint.sh`** (adapted from odoo-idp: dynamic addons_path, config injection, wait-for-psql, debugpy — NO auto-init; DB init is the caller's decision)
 
 ```bash
 #!/bin/bash
@@ -286,7 +286,7 @@ echo "Waiting for PostgreSQL at ${DB_HOST:-db}..."
     --db_password "${DB_PASSWORD}" --database "${POSTGRES_DB:-postgres}" --timeout=60
 
 case "$1" in
-    --* | odoo)
+    -- | odoo)
         shift
         DEV_ARGS=()
         if [[ -n "${ODOO_DEV_MODE}" ]] && [[ "${ODOO_DEV_MODE}" != "False" ]]; then
@@ -509,14 +509,14 @@ git commit -m "feat(factory): parameterized multi-stage Dockerfile + local build
 
 **Interfaces:**
 - Consumes: an image ref (the one built in Task 3).
-- Produces: `factory/smoke-test.sh <image-ref>` — exits 0 only if Odoo initializes `base,web,mail` against a fresh PostgreSQL. Reused verbatim by the CI workflow (Task 6). Manages its own Postgres container on a throwaway network, so it behaves identically locally and in CI (no reliance on GitHub service-container networking).
+- Produces: `factory/smoke-test.sh <image-ref>` — exits 0 only if Odoo initializes `base,sale,purchase,stock` against a fresh PostgreSQL. Reused verbatim by the CI workflow (Task 6). Manages its own Postgres container on a throwaway network, so it behaves identically locally and in CI (no reliance on GitHub service-container networking).
 
 - [ ] **Step 1: Write `factory/smoke-test.sh`**
 
 ```bash
 #!/usr/bin/env bash
 # Publish gate: boot the given image against an ephemeral PostgreSQL and
-# initialize base,web,mail. Non-zero exit blocks publishing. Self-contained:
+# initialize base,sale,purchase,stock. Non-zero exit blocks publishing. Self-contained:
 # creates and tears down its own network + Postgres, so it runs identically
 # locally and in CI.
 set -euo pipefail
@@ -537,12 +537,12 @@ docker run -d --name "$PG" --network "$NET" \
     -e POSTGRES_USER=odoo -e POSTGRES_PASSWORD=odoo -e POSTGRES_DB=postgres \
     postgres:16 >/dev/null
 
-echo "==> Smoke test: $IMAGE  (odoo -i base,web,mail --stop-after-init)"
+echo "==> Smoke test: $IMAGE  (odoo -i base,sale,purchase,stock --stop-after-init)"
 docker run --rm --network "$NET" \
     -e DB_HOST="$PG" -e DB_PORT=5432 -e DB_USER=odoo -e DB_PASSWORD=odoo \
     -e POSTGRES_DB=postgres \
     "$IMAGE" \
-    odoo -d smoke_test -i base,web,mail --stop-after-init --no-http
+    odoo -d smoke_test -i base,sale,purchase,stock --stop-after-init --no-http
 
 echo "==> SMOKE TEST PASSED: $IMAGE"
 ```
@@ -632,7 +632,7 @@ only — no addons are baked (enterprise/OCA/localization are Phase 3 layers).
 ./factory/smoke-test.sh ghcr.io/aparragithub/odoo-ce:19
 ```
 
-The smoke test starts a throwaway PostgreSQL, runs `odoo -i base,web,mail
+The smoke test starts a throwaway PostgreSQL, runs `odoo -i base,sale,purchase,stock
 --stop-after-init`, and fails (non-zero exit) if Odoo cannot initialize —
 the same gate CI runs before publishing.
 
