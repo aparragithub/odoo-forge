@@ -1,0 +1,5 @@
+# Additional Python dependencies baked into every base image.
+# Always pin versions to keep builds reproducible.
+websocket-client==1.9.0
+phonenumbers==9.0.24
+debugpy==1.8.11

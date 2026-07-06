@@ -1,0 +1,5 @@
+# Build context only needs factory/ — the Dockerfile clones Odoo over the
+# network and COPYs only factory/* files. Exclude everything else (.git, docs,
+# scratch) to shrink the context and avoid leaking repo internals into builds.
+*
+!factory

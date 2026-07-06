@@ -1,0 +1,16 @@
+# factory/versions.yaml
+# Single source of truth for the image factory build matrix.
+# Each entry maps an Odoo Community version branch to its Python base image tag.
+# Adding a version = one entry here (plus verifying its requirements build).
+versions:
+  # Odoo gates gevent/greenlet by python_version in its requirements.txt.
+  # py3.10 selects gevent==21.8.0 (no wheel, fails to compile under Cython 3.x);
+  # py3.11 selects gevent==22.10.2 (wheels available). Hence 3.11, not 3.10.
+  - odoo: "16.0"
+    python: "3.11"
+  - odoo: "17.0"
+    python: "3.11"
+  - odoo: "18.0"
+    python: "3.11"
+  - odoo: "19.0"
+    python: "3.12"

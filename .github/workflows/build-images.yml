@@ -1,0 +1,169 @@
+name: Build Odoo CE base images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'factory/**'
+      - '.github/workflows/build-images.yml'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/odoo-ce
+
+concurrency:
+  group: build-images-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.gen.outputs.versions }}
+      date: ${{ steps.gen.outputs.date }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gen
+        run: |
+          versions=$(yq -o=json -I=0 '.versions' factory/versions.yaml)
+          echo "versions=$versions" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [setup, lint]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        entry: ${{ fromJson(needs.setup.outputs.versions) }}
+        # arm64 temporarily disabled: native ubuntu-24.04-arm runners are not
+        # available on private repos without a paid plan. Re-add 'arm64' here
+        # once runner availability is confirmed — the runs-on line and the
+        # by-digest/merge flow below already handle both arches.
+        arch: [amd64]
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve Odoo source SHA
+        id: rev
+        run: |
+          sha=$(git ls-remote https://github.com/odoo/odoo.git "refs/heads/${{ matrix.entry.odoo }}" | cut -f1)
+          [ -n "$sha" ] || { echo "ERROR: could not resolve SHA for branch ${{ matrix.entry.odoo }}" >&2; exit 1; }
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Build (load for smoke test)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: factory/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          load: true
+          tags: odoo-ce:test
+          build-args: |
+            ODOO_VERSION=${{ matrix.entry.odoo }}
+            PYTHON_VERSION=${{ matrix.entry.python }}
+            ODOO_REVISION=${{ steps.rev.outputs.sha }}
+            ODOO_UID=1000
+            ODOO_GID=1000
+          cache-from: type=gha,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
+
+      - name: Smoke test (publish gate)
+        run: ./factory/smoke-test.sh odoo-ce:test
+
+      # Intentional second build: the docker driver cannot both --load (for the
+      # smoke gate above) and push-by-digest in one call. This step cache-hits
+      # the tested image and pushes it. Do NOT merge into one call — it would
+      # remove the pre-push smoke gate.
+      - name: Push by digest
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: factory/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            ODOO_VERSION=${{ matrix.entry.odoo }}
+            PYTHON_VERSION=${{ matrix.entry.python }}
+            ODOO_REVISION=${{ steps.rev.outputs.sha }}
+            ODOO_UID=1000
+            ODOO_GID=1000
+          cache-from: type=gha,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.entry.odoo }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  merge:
+    needs: [setup, build]
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        entry: ${{ fromJson(needs.setup.outputs.versions) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-${{ matrix.entry.odoo }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create multi-arch manifest list
+        working-directory: /tmp/digests
+        run: |
+          MAJOR="${{ matrix.entry.odoo }}"; MAJOR="${MAJOR%%.*}"
+          IMMUTABLE="${{ matrix.entry.odoo }}-${{ needs.setup.outputs.date }}"
+          srcs=()
+          for d in *; do srcs+=("${REGISTRY}/${IMAGE_NAME}@sha256:${d}"); done
+          docker buildx imagetools create \
+            -t "${REGISTRY}/${IMAGE_NAME}:${MAJOR}" \
+            -t "${REGISTRY}/${IMAGE_NAME}:${IMMUTABLE}" \
+            "${srcs[@]}"
+
+      - name: Inspect result
+        run: |
+          MAJOR="${{ matrix.entry.odoo }}"; MAJOR="${MAJOR%%.*}"
+          docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${MAJOR}"
