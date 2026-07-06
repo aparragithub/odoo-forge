@@ -6,6 +6,11 @@ on:
     paths:
       - 'factory/**'
       - '.github/workflows/build-images.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'factory/**'
+      - '.github/workflows/build-images.yml'
   workflow_dispatch:
 
 env:
@@ -13,12 +18,20 @@ env:
   IMAGE_NAME: ${{ github.repository_owner }}/odoo-ce
 
 concurrency:
+  # github.ref differs between push (refs/heads/main) and pull_request
+  # (refs/pull/<n>/merge), and between PRs, so main runs and PR runs never
+  # cancel each other. Only re-pushes to the same branch/PR cancel in-flight runs.
   group: build-images-${{ github.ref }}
-  cancel-in-progress: true
+  # PR runs still cancel on re-push (cheap, nothing published yet). Main runs
+  # must NOT cancel: a cancelled main run can leave the merge job's tagging
+  # half-done (version A retagged, version B not yet), mixing published tags
+  # across two SHAs. Main runs queue instead.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Run actionlint
@@ -28,49 +41,109 @@ jobs:
 
   setup:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       versions: ${{ steps.gen.outputs.versions }}
       date: ${{ steps.gen.outputs.date }}
+      arches: ${{ steps.gen.outputs.arches }}
+      arch_count: ${{ steps.gen.outputs.arch_count }}
     steps:
       - uses: actions/checkout@v4
       - id: gen
+        # Resolve each version's Odoo source SHA exactly once, here, instead of
+        # once per matrix leg (arch x version). Resolving per-leg let amd64 and
+        # arm64 independently re-resolve a moving branch ref, so they could end
+        # up baking two different upstream commits under one multi-arch manifest.
+        # Each matrix entry now carries its own odoo_revision, consumed by every
+        # build leg for that version as the ODOO_REVISION build arg.
+        #
+        # The architecture list is defined ONCE here and consumed by both the
+        # build job's matrix and the merge job's digest-count check, so there
+        # is a single source of truth instead of a hardcoded list in one place
+        # and a hardcoded count in another.
         run: |
           versions=$(yq -o=json -I=0 '.versions' factory/versions.yaml)
-          echo "versions=$versions" >> "$GITHUB_OUTPUT"
           echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+          arches='["amd64", "arm64"]'
+          echo "arches=$(echo "$arches" | jq -c '.')" >> "$GITHUB_OUTPUT"
+          echo "arch_count=$(echo "$arches" | jq 'length')" >> "$GITHUB_OUTPUT"
+
+          out="[]"
+          while IFS= read -r entry; do
+            odoo=$(echo "$entry" | jq -r '.odoo')
+            sha=$(git ls-remote https://github.com/odoo/odoo.git "refs/heads/$odoo" | cut -f1)
+            [ -n "$sha" ] || { echo "ERROR: could not resolve SHA for branch $odoo" >&2; exit 1; }
+            entry=$(echo "$entry" | jq -c --arg sha "$sha" '. + {odoo_revision: $sha}')
+            out=$(echo "$out" | jq -c --argjson e "$entry" '. + [$e]')
+          done < <(echo "$versions" | jq -c '.[]')
+
+          echo "versions=$out" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [setup, lint]
     permissions:
       contents: read
+      # Declared for the push-by-digest path below. On pull_request, GitHub
+      # restricts the token to read-only for forked PRs regardless of this
+      # declaration; for same-repo PRs we still never exercise the write path
+      # because every push/login step below is guarded off on pull_request.
       packages: write
     strategy:
       fail-fast: false
       matrix:
         entry: ${{ fromJson(needs.setup.outputs.versions) }}
         # Public repo → native ubuntu-24.04-arm runners are free. Full multi-arch.
-        arch: [amd64, arm64]
+        # List sourced from setup.outputs.arches — the merge job's digest-count
+        # check consumes the same output, so this list has a single owner.
+        arch: ${{ fromJson(needs.setup.outputs.arches) }}
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    # Odoo image builds are heavy (full source + deps across two architectures).
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve Odoo source SHA
-        id: rev
-        run: |
-          sha=$(git ls-remote https://github.com/odoo/odoo.git "refs/heads/${{ matrix.entry.odoo }}" | cut -f1)
-          [ -n "$sha" ] || { echo "ERROR: could not resolve SHA for branch ${{ matrix.entry.odoo }}" >&2; exit 1; }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      # Publish gate, tightened: push by digest FIRST, with no tags attached.
+      # An untagged digest isn't reachable via any `:tag` pull, so this is not a
+      # publication yet — it just lands the exact content-addressed bytes in the
+      # registry so we can pull them back and smoke-test the SAME artifact that
+      # would be published. Only after the smoke test passes does the merge job
+      # (below) attach tags, which is the real publish moment.
+      - name: Build and push by digest
+        id: push
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: factory/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            ODOO_VERSION=${{ matrix.entry.odoo }}
+            PYTHON_VERSION=${{ matrix.entry.python }}
+            ODOO_REVISION=${{ matrix.entry.odoo_revision }}
+            ODOO_UID=1000
+            ODOO_GID=1000
+          cache-from: type=gha,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
 
-      - name: Build (load for smoke test)
+      # PR runs (including from forks) have no registry write and must publish
+      # nothing. Build locally with --load and smoke-test that image instead.
+      # This is safe specifically because nothing built on a PR is ever
+      # published — the tested==published guarantee above only applies to the
+      # push-by-digest path, which PRs never take.
+      - name: Build (load, pull_request only)
+        if: github.event_name == 'pull_request'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -81,42 +154,40 @@ jobs:
           build-args: |
             ODOO_VERSION=${{ matrix.entry.odoo }}
             PYTHON_VERSION=${{ matrix.entry.python }}
-            ODOO_REVISION=${{ steps.rev.outputs.sha }}
+            ODOO_REVISION=${{ matrix.entry.odoo_revision }}
             ODOO_UID=1000
             ODOO_GID=1000
           cache-from: type=gha,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
 
-      - name: Smoke test (publish gate)
-        run: ./factory/smoke-test.sh odoo-ce:test
+      # Pull back the exact digest just pushed. This (not a fresh build) is what
+      # gets smoke-tested, so the tested artifact and the eventually-tagged
+      # artifact are provably the same bytes.
+      - name: Pull tested image by digest
+        if: github.event_name != 'pull_request'
+        run: docker pull "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}"
 
-      # Intentional second build: the docker driver cannot both --load (for the
-      # smoke gate above) and push-by-digest in one call. This step cache-hits
-      # the tested image and pushes it. Do NOT merge into one call — it would
-      # remove the pre-push smoke gate.
-      - name: Push by digest
-        id: push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: factory/Dockerfile
-          platforms: linux/${{ matrix.arch }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          build-args: |
-            ODOO_VERSION=${{ matrix.entry.odoo }}
-            PYTHON_VERSION=${{ matrix.entry.python }}
-            ODOO_REVISION=${{ steps.rev.outputs.sha }}
-            ODOO_UID=1000
-            ODOO_GID=1000
-          cache-from: type=gha,scope=${{ matrix.entry.odoo }}-${{ matrix.arch }}
+      - name: Resolve image reference to smoke test
+        id: image
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=odoo-ce:test" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Smoke test (publish gate)
+        run: ./factory/smoke-test.sh "${{ steps.image.outputs.ref }}"
 
       - name: Export digest
+        if: github.event_name != 'pull_request'
         run: |
           mkdir -p /tmp/digests
           digest="${{ steps.push.outputs.digest }}"
           touch "/tmp/digests/${digest#sha256:}"
 
       - name: Upload digest
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: digest-${{ matrix.entry.odoo }}-${{ matrix.arch }}
@@ -125,15 +196,31 @@ jobs:
 
   merge:
     needs: [setup, build]
+    # Never runs on pull_request: nothing is published from PRs. Otherwise, run
+    # as long as setup succeeded, even if some build legs failed or were
+    # skipped — per-version independence (below) means a broken leg for one
+    # version must not block tagging every other, fully green version.
+    if: ${{ !cancelled() && needs.setup.result == 'success' && github.event_name != 'pull_request' }}
     permissions:
       contents: read
       packages: write
     strategy:
+      fail-fast: false
       matrix:
         entry: ${{ fromJson(needs.setup.outputs.versions) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download digests for this version
+        # Don't let a missing/partial artifact set hard-fail the job here with a
+        # generic "no artifacts found" error. The explicit count check below
+        # gives a clear, per-version diagnostic instead. The outcome is
+        # captured (id: download) so that check can distinguish "this step
+        # itself failed" (e.g. transient download infra failure) from "the
+        # step succeeded but a build leg never uploaded its digest".
+        id: download
+        continue-on-error: true
+        uses: actions/download-artifact@v4
         with:
           pattern: digest-${{ matrix.entry.odoo }}-*
           path: /tmp/digests
@@ -147,6 +234,23 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Per-version merge independence: fail ONLY this version's merge leg, and
+      # only if the digest count for THIS version doesn't match the expected
+      # architecture count. A broken build leg for another version (or another
+      # arch of this version) never gets here to affect this check.
+      - name: Verify all architectures produced a digest
+        run: |
+          mkdir -p /tmp/digests
+          expected=${{ needs.setup.outputs.arch_count }}
+          found=$(find /tmp/digests -maxdepth 1 -type f | wc -l)
+          echo "Digests found for odoo ${{ matrix.entry.odoo }}: $found (expected: $expected)"
+          echo "Files:"
+          ls -1 /tmp/digests || true
+          if [ "$found" -ne "$expected" ]; then
+            echo "ERROR: expected $expected digests for ${{ matrix.entry.odoo }}, found $found (download-artifact step outcome: ${{ steps.download.outcome }}). If the download step outcome is 'failure', this is a transient download infra issue; if 'success', a build leg for this version failed or never uploaded its digest. Failing only this version's merge." >&2
+            exit 1
+          fi
 
       - name: Create multi-arch manifest list
         working-directory: /tmp/digests

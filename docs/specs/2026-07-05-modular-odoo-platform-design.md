@@ -231,7 +231,7 @@ Supported developer platforms: **Ubuntu, Arch, macOS, Windows.**
 Each phase ships something usable on its own.
 
 - **Phase 0 — This spec.** Layer model, manifest + lockfile schema, backend contract, access model, Model A/B analysis with PoC plan.
-- **Phase 1 — Image factory.** Parameterized Dockerfile (`ARG ODOO_VERSION`), per-version tags (`odoo-ce:19`, `odoo-ce:18`), registry, CI that builds and publishes. Standalone value: multi-version base images exist even if nothing else does.
+- **Phase 1 — Image factory.** Parameterized Dockerfile (`ARG ODOO_VERSION`), per-version tags (`odoo-ce:19`, `odoo-ce:18`), registry, CI that builds and publishes. Standalone value: multi-version base images exist even if nothing else does. Done — see the [Phase 1 design](2026-07-05-phase-1-image-factory-design.md).
 - **Phase 2 — CLI core + manifest + local backend.** CLI reads `project.yaml`, materializes the workspace (pinned checkouts, lower layers read-only, unlock mechanism), runs the instance on local Docker. A junior dev runs one command in the client repo and gets a working Odoo.
 - **Phase 3 — Published layers.** Enterprise/OCA/localization published as versioned layers per the PoC winner. Granular access via registry/repo permissions.
 - **Phase 4 — Control plane.** IDP server as the second backend: spawns dev/QA instances from manifests. Backup, governance, and audit ported from `odoo-idp` here.
