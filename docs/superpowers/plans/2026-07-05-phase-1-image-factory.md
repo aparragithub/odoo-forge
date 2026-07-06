@@ -13,7 +13,7 @@
 Copied verbatim from `docs/specs/2026-07-05-phase-1-image-factory-design.md`. Every task's requirements implicitly include these:
 
 - **Community edition only.** No addons baked. Dependencies come from Odoo's own `requirements.txt` (at the pinned branch) plus a hand-maintained `factory/extra_requirements.txt`. No `requirements.collected.txt` layer.
-- **Four versions:** 16.0, 17.0, 18.0, 19.0. Python base varies per version (16→3.10, 17→3.11, 18→3.11, 19→3.12). Dockerfile takes `ARG ODOO_VERSION` **and** `ARG PYTHON_VERSION`.
+- **Four versions:** 16.0, 17.0, 18.0, 19.0. Python base varies per version (16→3.11, 17→3.11, 18→3.11, 19→3.12). Dockerfile takes `ARG ODOO_VERSION` **and** `ARG PYTHON_VERSION`.
 - **`versions.yaml` is the single source of truth** for the matrix — versions are never hardcoded in a second place.
 - **Multi-arch** `linux/amd64` + `linux/arm64`, served as a manifest list. arm64 builds on native GitHub ARM runners (no QEMU).
 - **Registry:** `ghcr.io/aparragithub/odoo-ce`. Tags per version: moving (`:19`) + immutable (`:19.0-YYYYMMDD`).
@@ -56,8 +56,10 @@ Copied verbatim from `docs/specs/2026-07-05-phase-1-image-factory-design.md`. Ev
 # Each entry maps an Odoo Community version branch to its Python base image tag.
 # Adding a version = one entry here (plus verifying its requirements build).
 versions:
+  # 3.11, not 3.10: Odoo gates gevent/greenlet by python_version; 3.10 selects
+  # gevent==21.8.0 (no wheel, breaks under Cython 3.x), 3.11 selects 22.10.2 (wheels).
   - odoo: "16.0"
-    python: "3.10"
+    python: "3.11"
   - odoo: "17.0"
     python: "3.11"
   - odoo: "18.0"
@@ -69,7 +71,7 @@ versions:
 - [ ] **Step 2: Verify it parses and yields the expected matrix**
 
 Run: `yq -o=json -I=0 '.versions' factory/versions.yaml`
-Expected (exact): `[{"odoo":"16.0","python":"3.10"},{"odoo":"17.0","python":"3.11"},{"odoo":"18.0","python":"3.11"},{"odoo":"19.0","python":"3.12"}]`
+Expected (exact): `[{"odoo":"16.0","python":"3.11"},{"odoo":"17.0","python":"3.11"},{"odoo":"18.0","python":"3.11"},{"odoo":"19.0","python":"3.12"}]`
 
 - [ ] **Step 3: Verify a single-version lookup works (the pattern build.sh uses)**
 
@@ -590,7 +592,7 @@ git commit -m "feat(factory): reusable smoke-test publish gate"
 
 ## Task 5: Verify cross-version parameterization + document usage
 
-Proves the `ODOO_VERSION`/`PYTHON_VERSION` parameterization works for a version with a **different Python base** (16.0 → 3.10), not just the default. Ships the local-usage docs as the task deliverable.
+Proves the `ODOO_VERSION`/`PYTHON_VERSION` parameterization works for a version with a **different Python base** (16.0 → 3.11), not just the default. Ships the local-usage docs as the task deliverable.
 
 **Files:**
 - Create: `factory/README.md`
@@ -599,10 +601,10 @@ Proves the `ODOO_VERSION`/`PYTHON_VERSION` parameterization works for a version 
 - Consumes: `build.sh`, `smoke-test.sh`, `versions.yaml`.
 - Produces: `factory/README.md` documenting local build + test.
 
-- [ ] **Step 1: Build Odoo 16.0 (different Python base: 3.10)**
+- [ ] **Step 1: Build Odoo 16.0 (different Python base: 3.11)**
 
 Run: `./factory/build.sh 16.0`
-Expected: build completes on `python:3.10-slim-bookworm`; final line `Built: ghcr.io/aparragithub/odoo-ce:16`.
+Expected: build completes on `python:3.11-slim-bookworm`; final line `Built: ghcr.io/aparragithub/odoo-ce:16`.
 
 - [ ] **Step 2: Verify the 16.0 version**
 
@@ -664,7 +666,7 @@ the same gate CI runs before publishing.
 
 ```bash
 git add factory/README.md
-git commit -m "docs(factory): local build/test usage; verified 16.0 on python 3.10"
+git commit -m "docs(factory): local build/test usage; verified 16.0 on python 3.11"
 ```
 
 ---

@@ -40,14 +40,14 @@ git clone --branch ${ODOO_VERSION} --depth 1 https://github.com/odoo/odoo.git
 
 The resolved commit SHA is baked into the image as an OCI label (`org.opencontainers.image.revision`) so a future lockfile can trace exactly which Odoo source produced a given image.
 
-The Dockerfile takes **two** build args, because the Python runtime changes across Odoo versions (Odoo 16 does not run cleanly on Python 3.12):
+The Dockerfile takes **two** build args, because the correct Python runtime changes across Odoo versions. Odoo's own `requirements.txt` gates `gevent`/`greenlet` (and other C-extension deps) by `python_version` — so the Python choice is not cosmetic, it selects which pinned dep versions get installed. The chosen Python for each version must select dep versions that **have wheels** (or build cleanly on today's toolchain):
 
-| Odoo version | Python base image |
-|---|---|
-| 16.0 | `python:3.10-slim-bookworm` |
-| 17.0 | `python:3.11-slim-bookworm` |
-| 18.0 | `python:3.11-slim-bookworm` |
-| 19.0 | `python:3.12-slim-bookworm` |
+| Odoo version | Python base image | Why |
+|---|---|---|
+| 16.0 | `python:3.11-slim-bookworm` | 3.10 selects `gevent==21.8.0` (no wheel, fails under Cython 3.x); 3.11 selects `gevent==22.10.2` (wheels) |
+| 17.0 | `python:3.11-slim-bookworm` | 3.11 selects `gevent==22.10.2` (wheels) |
+| 18.0 | `python:3.11-slim-bookworm` | 3.11 selects `gevent==22.10.2` (wheels) |
+| 19.0 | `python:3.12-slim-bookworm` | 3.12 selects `gevent==24.2.1` (wheels); verified building |
 
 ```dockerfile
 ARG ODOO_VERSION
