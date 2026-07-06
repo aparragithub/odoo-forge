@@ -20,8 +20,25 @@ only — no addons are baked (enterprise/OCA/localization are Phase 3 layers).
 ## Build a version locally
 
 ```bash
-./factory/build.sh 19.0        # -> ghcr.io/aparragithub/odoo-ce:19
+./factory/build.sh 19.0        # -> ghcr.io/<owner>/odoo-ce:19
 ```
+
+The image name defaults to `ghcr.io/<owner>/odoo-ce`, where `<owner>` is parsed
+from the `origin` git remote (works for `git@github.com:owner/repo`,
+`https://github.com/owner/repo` and `ssh://git@github.com/owner/repo` forms) —
+same derivation CI uses. Override with:
+
+- `IMAGE` — build a different image name entirely, e.g.
+  `IMAGE=ghcr.io/my-fork/odoo-ce ./factory/build.sh 19.0`. Note this is a full
+  image path, unlike CI's `REGISTRY` env var (which is just the `ghcr.io`
+  hostname) — don't set `REGISTRY` expecting the same effect.
+- `ODOO_REVISION` — skip resolving the branch head via `git ls-remote` and
+  build an exact Odoo commit SHA instead, to reproduce a specific CI-built
+  image locally, e.g. `ODOO_REVISION=<sha> ./factory/build.sh 19.0`. This is
+  an escape hatch and is intentionally **not validated** against upstream —
+  the SHA is used as-given, with no check that it belongs to
+  `refs/heads/<version>`. `build.sh` prints a warning to stderr when this is
+  set as a reminder.
 
 ## Test it
 

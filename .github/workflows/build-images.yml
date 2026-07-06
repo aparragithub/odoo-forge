@@ -5,12 +5,15 @@ on:
     branches: [main]
     paths:
       - 'factory/**'
-      - '.github/workflows/build-images.yml'
+      # All workflows, not just this one: actionlint lints the whole
+      # directory, so changes to any workflow (e.g. cleanup-untagged.yml)
+      # must trigger the lint gate.
+      - '.github/workflows/**'
   pull_request:
     branches: [main]
     paths:
       - 'factory/**'
-      - '.github/workflows/build-images.yml'
+      - '.github/workflows/**'
   workflow_dispatch:
 
 env:
@@ -38,6 +41,8 @@ jobs:
         run: |
           bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
+      - name: Run build.sh unit tests
+        run: ./factory/tests/test-build-sh.sh
 
   setup:
     runs-on: ubuntu-latest
