@@ -86,7 +86,8 @@ Derived from `odoo-idp`'s `infra/build/Dockerfile` (multi-stage builder → prod
 
 Adapted from `odoo-idp`'s `infra/build/entrypoint.sh`:
 
-- Keep: dynamic `addons_path` discovery (scan for `__manifest__.py`), `wait-for-psql`, config injection ("one image, two environments"), debug/`debugpy` helper, idempotent `INIT_BASE`.
+- Keep: dynamic `addons_path` discovery (scan for `__manifest__.py`), `wait-for-psql`, config injection ("one image, two environments"), debug/`debugpy` helper.
+- **Drop `INIT_BASE` auto-init.** A base image is a neutral building block: it must not initialize a database on its own. DB init is a caller/policy decision — the smoke test passes `-i base,sale,purchase,stock` explicitly, and higher layers / the local backend (Phase 2) own init policy. Baking auto-init would impose behavior on every consumer and break the layer model.
 - The mount points remain (`/mnt/custom`, `/mnt/community`, etc.) so higher layers and the local backend can mount source later, but the base image ships with none of them populated.
 
 ## 6. CI Pipeline (`build-images.yml`)
@@ -95,7 +96,7 @@ Standard build-by-digest + merge pattern for multi-arch:
 
 1. **Matrix job** over `(version × arch)`, each on a native runner (arm64 on GitHub-hosted ARM runners — no QEMU):
    1. `docker buildx build` the image for that single arch, passing `--build-arg ODOO_VERSION`, `--build-arg PYTHON_VERSION`, `--build-arg ODOO_UID`, `--build-arg ODOO_GID`.
-   2. **Smoke test (publish gate):** start an ephemeral PostgreSQL service container, then run the freshly built image with `odoo -i base,web,mail --stop-after-init`. If Odoo fails to initialize the database with those modules, the job fails and nothing is published. This catches missing runtime Python dependencies that a bare `odoo --version` would not — exactly the class of failure that differs across Odoo versions.
+   2. **Smoke test (publish gate):** start an ephemeral PostgreSQL service container, then run the freshly built image with `odoo -i base,sale,purchase,stock --stop-after-init`. If Odoo fails to initialize the database with those modules, the job fails and nothing is published. This catches missing runtime Python dependencies that a bare `odoo --version` would not — exactly the class of failure that differs across Odoo versions.
    3. Push the image **by digest** to GHCR.
 2. **Merge job** per version: assemble the multi-arch manifest list from the per-arch digests and apply the tags.
 
