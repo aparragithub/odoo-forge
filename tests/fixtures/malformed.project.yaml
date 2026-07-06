@@ -1,0 +1,10 @@
+name: odoo-idp
+odoo_version: "19.0"
+edition: community
+layers:
+  # Missing required fields for BOTH PublishedLayer and GitLayer variants —
+  # exercises the single-member discriminated-union error scenario.
+  - type: git
+    name: localization
+client:
+  addons_path: client/addons
