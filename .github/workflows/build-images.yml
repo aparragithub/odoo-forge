@@ -48,11 +48,8 @@ jobs:
       fail-fast: false
       matrix:
         entry: ${{ fromJson(needs.setup.outputs.versions) }}
-        # arm64 temporarily disabled: native ubuntu-24.04-arm runners are not
-        # available on private repos without a paid plan. Re-add 'arm64' here
-        # once runner availability is confirmed — the runs-on line and the
-        # by-digest/merge flow below already handle both arches.
-        arch: [amd64]
+        # Public repo → native ubuntu-24.04-arm runners are free. Full multi-arch.
+        arch: [amd64, arm64]
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
