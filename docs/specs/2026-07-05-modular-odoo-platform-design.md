@@ -150,6 +150,23 @@ PoC: build the same small project (community + 2 OCA repos + 1 custom addon) bot
 - A dev may have access to the client repo only: they can still work — they pull/consume published layer artifacts (or public source for community layers) and never need image-factory access.
 - The image factory is a consumed service: devs call it or download from it; they do not build base layers.
 
+### 4.1 Personas and CLI surfaces
+
+The platform serves distinct actors, and each gets its own thin CLI surface over the **same core** (the hexagon does not change; only the entry points do):
+
+- **Developer (first and most important persona).** A junior dev must get a fully working, data-seeded environment in minutes with a minimal CLI (`up`, `db`, `unlock`-class commands) — never seeing the image factory, backends, or control plane. The bar to beat: "I download Odoo and Sublime and I'm developing in 8 hours." If onboarding takes longer to understand than that, the product has failed this persona.
+- **Ops / platform team.** Full surface: layer publishing, instance management, governance, backups.
+
+Devs never install the mega-project: the client repo holds only `project.yaml` + custom addons; the CLI installs via `uvx`/`pipx`; backends are separate packages (§6.1).
+
+### 4.2 Decentralized servers
+
+The control plane is installable on N servers: one IDP server for internal dev/QA, another deployment server for client instances (with governance, client privacy, and security policies). The dev CLI connects to whichever server URL the project points at. This is the backend contract (§2.4) instantiated per server — not a new mechanism.
+
+### 4.3 Dev-environment data seeding
+
+A dev environment is code **and data**. `backup/restore` in the backend contract (§2.4) is an ops operation; seeding is a first-class dev concern: the manifest (or the server the CLI connects to) declares where the initial database snapshot comes from, and client-derived snapshots must pass **anonymization** before reaching a dev machine. Designed in the workspace/local-backend slices of Phase 2 and served by the control plane in Phase 4.
+
 ## 5. Reuse Map from `odoo-idp`
 
 ### Reuse now (design and early phases)
@@ -253,3 +270,4 @@ Found during the audit; listed so they are not inherited by copy-paste:
 2. Lockfile update workflow (who bumps pins, how promotions interact with pinned versions).
 3. Enterprise licensing/distribution constraints on publishing an enterprise layer artifact (legal review before Phase 3).
 4. Python dependency strategy per layer (each layer ships its resolved requirements vs project-level final resolution).
+5. Snapshot anonymization strategy for dev-environment seeding (§4.3): what is masked, where anonymization runs, and how client data policies are enforced.
