@@ -840,10 +840,12 @@ jobs:
           docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${MAJOR}"
 ```
 
-- [ ] **Step 2: Lint the workflow** (if `actionlint` is available)
+- [ ] **Step 2: Lint the workflow**
 
-Run: `actionlint .github/workflows/build-images.yml`
-Expected: exit 0. (If `actionlint` is not installed, skip — the real gate is the CI run in Step 4.)
+`actionlint` is a required CI gate, not an optional local step: the workflow's `lint` job runs it on every push/dispatch, and the `build` job depends on `lint` (`needs: [setup, lint]`), so a lint failure blocks all builds and publishing.
+
+Locally, run: `actionlint .github/workflows/build-images.yml`
+Expected: exit 0 with no findings — this mirrors what the `lint` job enforces in CI.
 
 - [ ] **Step 3: Commit and push**
 
