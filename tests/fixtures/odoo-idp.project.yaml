@@ -1,0 +1,62 @@
+name: odoo-idp
+odoo_version: "19.0"
+edition: enterprise
+core:
+  type: core
+  url: https://github.com/odoo/odoo.git
+  ref: "19.0"
+layers:
+  - type: published
+    name: enterprise
+    source: "registry://example/odoo-ee"
+    version: "19.0.1"
+    requires_edition: enterprise
+  - type: git
+    name: localization
+    requires_edition: enterprise
+    repos:
+      - url: https://github.com/ingadhoc/odoo-argentina-ee.git
+        ref: "19.0"
+        requires_edition: enterprise
+      - url: https://github.com/ingadhoc/odoo-argentina.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-partner.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-account-payment.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-account-invoicing.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-account-financial-tools.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-account-financial-report.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-purchase.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-sale.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-stock.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-hr.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-l10n-ar-ux.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-l10n-ar-ir-txt.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-l10n-ar-afip-ws.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-l10n-ar-check.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-l10n-ar-pos.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-l10n-ar-website.git
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-web.git
+        ref: "19.0"
+client:
+  addons_path: client/addons
+  python_requirements: client/requirements.txt
+overrides:
+  - layer: localization
+    repo: odoo-argentina-ee
+    fork: https://github.com/acme/odoo-argentina-ee.git
+    ref: custom-fix
