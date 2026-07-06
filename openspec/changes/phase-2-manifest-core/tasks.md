@@ -1,5 +1,11 @@
 # Tasks: Phase 2 Slice 1 — Manifest Core
 
+**Task count reconciliation** (2026-07-06, sdd-apply Phase 2 run): actual numbered
+tasks per phase are Phase 1 = 13 (1.1–1.13), Phase 2 = 18 (2.1–2.18), Phase 3 = 8
+(3.1–3.8), Phase 4 = 3 (4.1–4.3) → **total = 42**, matching the original `sdd-tasks`
+forecast. The prior apply-progress note ("13/34 total") used a wrong denominator
+(34) — that was never the real count; use 42 going forward.
+
 ## Review Workload Forecast
 
 | Field | Value |
@@ -42,24 +48,24 @@ Chain strategy: pending
 
 ## Phase 2: Core Implementation — Hash, Composition, Drift
 
-- [ ] 2.1 RED: write `tests/manifest/test_lockfile.py::test_hash_stable_across_key_order` — two semantically-equal manifests hash identically
-- [ ] 2.2 GREEN: implement `compute_manifest_hash()` in `src/odoo_forge/manifest/lockfile.py` (sha256 over sorted-key `model_dump(mode="json")`)
-- [ ] 2.3 GREEN: implement `ResolvedRepo`, `ResolvedLayer`, `Lockfile` models in `lockfile.py`
-- [ ] 2.4 Create `src/odoo_forge/manifest/errors.py` with `ManifestError`, `CompositionError`
-- [ ] 2.5 RED: write `tests/manifest/test_composition.py::test_onion_order_core_first_client_last`
-- [ ] 2.6 GREEN: implement `compose()` ordering logic in `src/odoo_forge/manifest/composition.py`
-- [ ] 2.7 RED: write `test_composition.py::test_community_rejects_nested_enterprise_repo` (spec: enterprise repo nested in localization rejected)
-- [ ] 2.8 GREEN: implement edition-coherence check (recursive repo/layer scan) in `compose()`
-- [ ] 2.9 RED: write `test_composition.py::test_override_missing_layer_raises_no_io`
-- [ ] 2.10 GREEN: implement override-target validation in `compose()`
-- [ ] 2.11 Create `tests/fixtures/odoo-idp.project.yaml` (core odoo/odoo@19.0, enterprise layer, ~17 ingadhoc repos incl. `odoo-argentina-ee` requires_edition:enterprise, edition:enterprise)
-- [ ] 2.12 RED: write `test_composition.py::test_odoo_idp_fire_test_composes_cleanly`
-- [ ] 2.13 GREEN: verify fixture composes with zero I/O (fix any schema/composition gaps found)
-- [ ] 2.14 Create `src/odoo_forge/manifest/state.py` with `MaterializedState`, `MaterializedLayer`
-- [ ] 2.15 RED: write `tests/manifest/test_drift.py::test_clean_state_is_clean`
-- [ ] 2.16 RED: write `test_drift.py::test_manifest_changed_lock_stale`
-- [ ] 2.17 RED: write `test_drift.py::test_lock_state_drift_and_none_inputs`
-- [ ] 2.18 GREEN: implement `DriftReport`, `detect_drift()` in `src/odoo_forge/manifest/drift.py` (pure, three in-memory models)
+- [x] 2.1 RED: write `tests/manifest/test_lockfile.py::test_hash_stable_across_key_order` — two semantically-equal manifests hash identically
+- [x] 2.2 GREEN: implement `compute_manifest_hash()` in `src/odoo_forge/manifest/lockfile.py` (sha256 over sorted-key `model_dump(mode="json")`)
+- [x] 2.3 GREEN: implement `ResolvedRepo`, `ResolvedLayer`, `Lockfile` models in `lockfile.py`
+- [x] 2.4 Create `src/odoo_forge/manifest/errors.py` with `ManifestError`, `CompositionError`
+- [x] 2.5 RED: write `tests/manifest/test_composition.py::test_onion_order_core_first_client_last`
+- [x] 2.6 GREEN: implement `compose()` ordering logic in `src/odoo_forge/manifest/composition.py`
+- [x] 2.7 RED: write `test_composition.py::test_community_rejects_nested_enterprise_repo` (spec: enterprise repo nested in localization rejected)
+- [x] 2.8 GREEN: implement edition-coherence check (recursive repo/layer scan) in `compose()`
+- [x] 2.9 RED: write `test_composition.py::test_override_missing_layer_raises_no_io`
+- [x] 2.10 GREEN: implement override-target validation in `compose()`
+- [x] 2.11 Create `tests/fixtures/odoo-idp.project.yaml` (core odoo/odoo@19.0, enterprise layer, ~17 ingadhoc repos incl. `odoo-argentina-ee` requires_edition:enterprise, edition:enterprise)
+- [x] 2.12 RED: write `test_composition.py::test_odoo_idp_fire_test_composes_cleanly`
+- [x] 2.13 GREEN: verify fixture composes with zero I/O (fix any schema/composition gaps found)
+- [x] 2.14 Create `src/odoo_forge/manifest/state.py` with `MaterializedState`, `MaterializedLayer`
+- [x] 2.15 RED: write `tests/manifest/test_drift.py::test_clean_state_is_clean`
+- [x] 2.16 RED: write `test_drift.py::test_manifest_changed_lock_stale`
+- [x] 2.17 RED: write `test_drift.py::test_lock_state_drift_and_none_inputs`
+- [x] 2.18 GREEN: implement `DriftReport`, `detect_drift()` in `src/odoo_forge/manifest/drift.py` (pure, three in-memory models)
 
 ## Phase 3: Integration — Port, CLI, Arch Gate
 
