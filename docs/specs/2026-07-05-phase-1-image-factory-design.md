@@ -100,6 +100,8 @@ Standard build-by-digest + merge pattern for multi-arch:
    3. Push the image **by digest** to GHCR.
 2. **Merge job** per version: assemble the multi-arch manifest list from the per-arch digests and apply the tags.
 
+A `lint` job runs `actionlint` on the workflow itself and gates the pipeline: `build` depends on it (`needs: [setup, lint]`), so a lint failure blocks every build and publish.
+
 The matrix (versions and their Python bases) is read from `factory/versions.yaml`.
 
 ## 7. Tags

@@ -3,6 +3,8 @@
 # Docker daemon for testing. Resolves Python base + Odoo SHA from versions.yaml.
 set -euo pipefail
 
+cd "$(git rev-parse --show-toplevel)"
+
 VERSION="${1:?usage: build.sh <odoo-version>   e.g. build.sh 19.0}"
 
 PYTHON=$(yq -r ".versions[] | select(.odoo == \"$VERSION\") | .python" factory/versions.yaml)
@@ -12,7 +14,11 @@ if [ -z "$PYTHON" ] || [ "$PYTHON" = "null" ]; then
 fi
 
 REV=$(git ls-remote https://github.com/odoo/odoo.git "refs/heads/$VERSION" | cut -f1)
-TAG="ghcr.io/aparragithub/odoo-ce:${VERSION%.0}"
+if [ -z "$REV" ]; then
+    echo "ERROR: could not resolve Odoo commit SHA for branch $VERSION (does refs/heads/$VERSION exist upstream?)" >&2
+    exit 1
+fi
+TAG="ghcr.io/aparragithub/odoo-ce:${VERSION%%.*}"
 
 echo "Building $TAG  (odoo $VERSION, python $PYTHON, rev ${REV:0:7})"
 docker buildx build \

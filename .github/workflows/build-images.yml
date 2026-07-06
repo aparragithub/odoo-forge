@@ -17,6 +17,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color
+
   setup:
     runs-on: ubuntu-latest
     outputs:
@@ -31,7 +40,7 @@ jobs:
           echo "date=$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
   build:
-    needs: setup
+    needs: [setup, lint]
     permissions:
       contents: read
       packages: write
@@ -57,6 +66,7 @@ jobs:
         id: rev
         run: |
           sha=$(git ls-remote https://github.com/odoo/odoo.git "refs/heads/${{ matrix.entry.odoo }}" | cut -f1)
+          [ -n "$sha" ] || { echo "ERROR: could not resolve SHA for branch ${{ matrix.entry.odoo }}" >&2; exit 1; }
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Build (load for smoke test)
@@ -140,14 +150,16 @@ jobs:
       - name: Create multi-arch manifest list
         working-directory: /tmp/digests
         run: |
-          MAJOR="${{ matrix.entry.odoo }}"; MAJOR="${MAJOR%.0}"
+          MAJOR="${{ matrix.entry.odoo }}"; MAJOR="${MAJOR%%.*}"
           IMMUTABLE="${{ matrix.entry.odoo }}-${{ needs.setup.outputs.date }}"
+          srcs=()
+          for d in *; do srcs+=("${REGISTRY}/${IMAGE_NAME}@sha256:${d}"); done
           docker buildx imagetools create \
             -t "${REGISTRY}/${IMAGE_NAME}:${MAJOR}" \
             -t "${REGISTRY}/${IMAGE_NAME}:${IMMUTABLE}" \
-            $(for d in *; do echo "${REGISTRY}/${IMAGE_NAME}@sha256:${d}"; done)
+            "${srcs[@]}"
 
       - name: Inspect result
         run: |
-          MAJOR="${{ matrix.entry.odoo }}"; MAJOR="${MAJOR%.0}"
+          MAJOR="${{ matrix.entry.odoo }}"; MAJOR="${MAJOR%%.*}"
           docker buildx imagetools inspect "${REGISTRY}/${IMAGE_NAME}:${MAJOR}"
