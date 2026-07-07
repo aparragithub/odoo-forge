@@ -28,4 +28,49 @@ class LockfileError(ManifestError):
     """Raised when a `project.lock` cannot be read, decoded, or validated."""
 
 
-__all__ = ["ManifestError", "ManifestInputError", "CompositionError", "LockfileError"]
+class ResolutionError(Exception):
+    """Base class for ref-resolution errors, separate from `ManifestError`.
+
+    Raised by concrete `SourceProvider` adapters (e.g. the git adapter in
+    `odoo_forge_git`) when a `url`/`ref` pair cannot be resolved to a commit
+    SHA. Kept as its own family so callers can catch resolution failures
+    distinctly from manifest parsing/composition failures.
+    """
+
+
+class RefNotFoundError(ResolutionError):
+    """Raised when a ref does not exist on the given remote."""
+
+    def __init__(self, url: str, ref: str) -> None:
+        self.url = url
+        self.ref = ref
+        super().__init__(f"ref '{ref}' not found on remote '{url}'")
+
+
+class AuthenticationError(ResolutionError):
+    """Raised when the remote rejects ambient credentials."""
+
+    def __init__(self, url: str) -> None:
+        self.url = url
+        super().__init__(f"authentication failed for remote '{url}'")
+
+
+class NetworkError(ResolutionError):
+    """Raised when the remote cannot be reached."""
+
+    def __init__(self, url: str, detail: str) -> None:
+        self.url = url
+        self.detail = detail
+        super().__init__(f"cannot reach remote '{url}': {detail}")
+
+
+__all__ = [
+    "ManifestError",
+    "ManifestInputError",
+    "CompositionError",
+    "LockfileError",
+    "ResolutionError",
+    "RefNotFoundError",
+    "AuthenticationError",
+    "NetworkError",
+]
