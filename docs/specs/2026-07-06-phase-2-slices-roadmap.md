@@ -1,6 +1,6 @@
 # Phase 2 — Vertical Slices Roadmap
 
-**Status:** living document · **Last updated:** 2026-07-07
+**Status:** living document · **Last updated:** 2026-07-07 (Slice 2 FULLY DONE)
 
 Phase 2 (CLI core + manifest + local backend) is delivered as vertical slices, each a
 self-contained SDD change. This is the forward map: what each slice owns and what feeds
@@ -40,22 +40,34 @@ Baseline spec: `openspec/specs/manifest/spec.md` (amended 2026-07-07).
 
 ---
 
-## Slice 2b — Git Resolution & Lock Writer ⏭️ NEXT
+## Slice 2b — Git Resolution & Lock Writer ✅ DONE (archived 2026-07-07)
 
-Turns declared *intent* into resolved, materialized sources. This is where I/O enters.
+Turns declared *intent* into pinned, reproducible `project.lock`. I/O boundary successfully added.
 
-**Owns (deferred out of Slice 1 + Slice 2a):**
-- **Concrete git `SourceProvider` adapter** (new package, e.g. `odoo_forge_git`; the network/git implementation behind the Slice 1 port interface).
-- **Pin resolution — ref → commit SHA** into the lockfile (`resolve_ref()` on the port, using `git ls-remote` via subprocess).
-- **`forge lock` CLI** — produces `project.lock` by composing a manifest, substituting default refs (from 2a), and calling the concrete adapter to resolve SHAs.
-- **Error taxonomy for ref-not-found / auth-failure** — explicit error classes in `errors.py` for resolution failure modes.
-- **Import-linter third contract** — add forbidden-import contract for the new adapter package (target: 3 kept / 0 broken, preserving core purity).
+**Delivered:**
+- **Concrete git `SourceProvider` adapter** (new package `odoo_forge_git`; network/git implementation behind the Slice 1 port).
+- **Pin resolution — ref → commit SHA** via `git ls-remote` (subprocess adapter; typed error handling for ref-not-found / auth-failure / network-failure).
+- **`forge lock` CLI command** — produces canonical `project.lock` by composing manifest, substituting default refs (Slice 2a), resolving SHAs via injected adapter.
+- **Error taxonomy** — `ResolutionError`/`RefNotFoundError`/`AuthenticationError`/`NetworkError` in core errors module.
+- **Import-linter third contract** — forbidden `odoo_forge` → `odoo_forge_git` (target achieved: 3 kept / 0 broken, core purity intact).
+- **Resilient CLI boundary** — atomic write (`tempfile` + `os.replace`), clean error messages, no partial locks on failure.
 
-**Must design (not just execute):** *how* resolution behaves on network failure, missing credentials, or stale/moved refs. These are real design questions deferred from Slice 2 explore, now ready for Slice 2b.
+**Key design decisions:**
+- Adapter in new sibling package (not inside core) to preserve import-linter purity gate.
+- `git ls-remote` via argv-list subprocess (no cloning, no `shell=True`).
+- `build_lock(manifest, provider)` is a pure core use-case (Protocol-injected) — testable via fake, zero concrete imports.
+- Composition root is CLI (`_make_provider()` constructs `GitSourceProvider()`).
+
+**Deferred non-blocking debt (per design):**
+- Real-git integration test (all subprocess mocked).
+- Retry/backoff + structured observability on ls-remote.
+- Override application (fork url/ref substitution) — deferred to later slice.
+
+Baseline spec: `openspec/specs/manifest/spec.md` (amended 2026-07-07).
 
 ---
 
-## Slice 3 — Workspace Projection
+## Slice 3 — Workspace Projection ⏭️ NEXT
 
 Projects composed + materialized layers onto the developer's filesystem.
 
@@ -74,11 +86,12 @@ Projects composed + materialized layers onto the developer's filesystem.
 
 ## Cross-session pointers (Engram)
 
-- `sdd/phase-2-manifest-core/scope-boundary` (#2290) — why core.ref resolution was deferred.
+- `sdd/phase-2-manifest-core/scope-boundary` (#2290) — why core.ref resolution was deferred (Slice 1).
 - `sdd/phase-2-manifest-core/archive-report` (#2291) — Slice 1 close + deferred list.
-- `sdd/phase-2-manifest-core/verify-report` (#2289) — residual warnings (W2 fork-url test, W3 ~~lock format~~ CLOSED).
-- `sdd/phase-2-slice-2a-resolution-prep/archive-report` (#TBD) — Slice 2a close + Slice 2b handoff.
+- `sdd/phase-2-manifest-core/verify-report` (#2289) — residual warnings (W2 fork-url test, W3 ~~lock format~~ CLOSED by Slice 2a).
+- `sdd/phase-2-slice-2a-resolution-prep/archive-report` (#2297) — Slice 2a close + Slice 2b handoff.
+- `sdd/phase-2-slice-2b-resolution-io/archive-report` (#TBD) — Slice 2b close. Deferred non-blocking: real-git integration test (subprocess mocked), retry/backoff + observability (design scope line), override application (to later slice).
 
 ## Non-blocking test debt (not a slice)
 
-- **W2** — explicit fork-url override test; add when that area is next touched.
+- **W2** — explicit fork-url override test; defer until override application is implemented (later slice).
