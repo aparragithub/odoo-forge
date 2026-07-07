@@ -7,6 +7,8 @@ results — including turning structured `DriftEntry` values into human text.
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import typer
@@ -15,11 +17,24 @@ from pydantic import ValidationError
 
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
-from odoo_forge.manifest.errors import LockfileError, ManifestError, ManifestInputError
+from odoo_forge.manifest.errors import (
+    LockfileError,
+    ManifestError,
+    ManifestInputError,
+    ResolutionError,
+)
+from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.schema import Manifest
+from odoo_forge.ports.source_provider import SourceProvider
+from odoo_forge_git.git_provider import GitSourceProvider
 
 app = typer.Typer()
+
+
+def _make_provider() -> SourceProvider:
+    """Composition root: the ONE place the concrete git adapter is built."""
+    return GitSourceProvider()
 
 
 @app.callback()
@@ -51,14 +66,34 @@ def _load_lock(path: Path) -> Lockfile | None:
         raise LockfileError(f"cannot read lockfile '{path}': {exc}") from exc
 
     try:
-        data = json.loads(raw)
+        return Lockfile.from_json(raw)
     except json.JSONDecodeError as exc:
         raise LockfileError(f"invalid JSON in lockfile '{path}': {exc}") from exc
-
-    try:
-        return Lockfile.model_validate(data)
     except ValidationError as exc:
         raise LockfileError(f"invalid lockfile '{path}': {exc}") from exc
+
+
+def _write_lock_atomic(lock_path: Path, content: str) -> None:
+    """Write `content` to `lock_path` atomically.
+
+    Writes to a temp file in the SAME directory, then renames it into place
+    with `os.replace` — an atomic operation on POSIX and Windows. This
+    guarantees a pre-existing `project.lock` is never truncated/corrupted by
+    a partial write, and stays intact until the new content is fully on
+    disk. On failure the temp file is removed and the original (if any) is
+    left untouched; the raised `OSError` propagates to the caller.
+    """
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=lock_path.parent, prefix=f".{lock_path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w") as tmp_file:
+            tmp_file.write(content)
+        os.replace(tmp_path, lock_path)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _format_drift(entry: DriftEntry) -> str:
@@ -123,6 +158,45 @@ def validate(
     else:
         for entry in report.manifest_lock_drift + report.lock_state_drift:
             typer.echo(f"drift: {_format_drift(entry)}")
+
+
+@app.command()
+def lock(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+) -> None:
+    """Resolve every declared ref to a commit SHA and write `project.lock`."""
+    try:
+        data = _read_manifest_data(manifest)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"])
+            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        raise typer.Exit(code=1)
+
+    # Resilient boundary, mirroring `validate`: a `CompositionError`, any
+    # `ResolutionError` (ref-not-found/auth/network), or an `OSError` while
+    # writing surfaces as a single clean message, never a raw traceback, and
+    # never leaves a partial/corrupt `project.lock` on disk — the write
+    # itself is atomic (temp file + `os.replace`), so a failure here also
+    # leaves a pre-existing lock byte-identical.
+    lock_path = manifest.parent / "project.lock"
+    try:
+        provider = _make_provider()
+        lockfile = build_lock(parsed, provider)
+        _write_lock_atomic(lock_path, lockfile.to_canonical_json())
+    except (ManifestError, ResolutionError, OSError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"wrote {lock_path}")
 
 
 __all__ = ["app"]
