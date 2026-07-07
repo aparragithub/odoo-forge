@@ -31,6 +31,7 @@ testpaths = ["tests"]
 
 [tool.importlinter]
 root_packages = ["odoo_forge", "odoo_forge_cli"]
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "Core never imports infrastructure or framework"
