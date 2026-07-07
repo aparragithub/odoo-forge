@@ -7,6 +7,8 @@ results — including turning structured `DriftEntry` values into human text.
 """
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 import typer
@@ -69,6 +71,29 @@ def _load_lock(path: Path) -> Lockfile | None:
         raise LockfileError(f"invalid JSON in lockfile '{path}': {exc}") from exc
     except ValidationError as exc:
         raise LockfileError(f"invalid lockfile '{path}': {exc}") from exc
+
+
+def _write_lock_atomic(lock_path: Path, content: str) -> None:
+    """Write `content` to `lock_path` atomically.
+
+    Writes to a temp file in the SAME directory, then renames it into place
+    with `os.replace` — an atomic operation on POSIX and Windows. This
+    guarantees a pre-existing `project.lock` is never truncated/corrupted by
+    a partial write, and stays intact until the new content is fully on
+    disk. On failure the temp file is removed and the original (if any) is
+    left untouched; the raised `OSError` propagates to the caller.
+    """
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=lock_path.parent, prefix=f".{lock_path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w") as tmp_file:
+            tmp_file.write(content)
+        os.replace(tmp_path, lock_path)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+        raise
 
 
 def _format_drift(entry: DriftEntry) -> str:
@@ -156,19 +181,21 @@ def lock(
             typer.echo(f"error: {location}: {error['msg']}", err=True)
         raise typer.Exit(code=1)
 
-    # Resilient boundary, mirroring `validate`: a `CompositionError` or any
-    # `ResolutionError` (ref-not-found/auth/network) surfaces as a single
-    # clean message, never a raw traceback, and never leaves a partial
-    # `project.lock` on disk.
+    # Resilient boundary, mirroring `validate`: a `CompositionError`, any
+    # `ResolutionError` (ref-not-found/auth/network), or an `OSError` while
+    # writing surfaces as a single clean message, never a raw traceback, and
+    # never leaves a partial/corrupt `project.lock` on disk — the write
+    # itself is atomic (temp file + `os.replace`), so a failure here also
+    # leaves a pre-existing lock byte-identical.
+    lock_path = manifest.parent / "project.lock"
     try:
         provider = _make_provider()
         lockfile = build_lock(parsed, provider)
-    except (ManifestError, ResolutionError) as exc:
+        _write_lock_atomic(lock_path, lockfile.to_canonical_json())
+    except (ManifestError, ResolutionError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
 
-    lock_path = manifest.parent / "project.lock"
-    lock_path.write_text(lockfile.to_canonical_json())
     typer.echo(f"wrote {lock_path}")
 
 
