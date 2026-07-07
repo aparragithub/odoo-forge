@@ -15,11 +15,24 @@ from pydantic import ValidationError
 
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
-from odoo_forge.manifest.errors import LockfileError, ManifestError, ManifestInputError
+from odoo_forge.manifest.errors import (
+    LockfileError,
+    ManifestError,
+    ManifestInputError,
+    ResolutionError,
+)
+from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.schema import Manifest
+from odoo_forge.ports.source_provider import SourceProvider
+from odoo_forge_git.git_provider import GitSourceProvider
 
 app = typer.Typer()
+
+
+def _make_provider() -> SourceProvider:
+    """Composition root: the ONE place the concrete git adapter is built."""
+    return GitSourceProvider()
 
 
 @app.callback()
@@ -51,12 +64,9 @@ def _load_lock(path: Path) -> Lockfile | None:
         raise LockfileError(f"cannot read lockfile '{path}': {exc}") from exc
 
     try:
-        data = json.loads(raw)
+        return Lockfile.from_json(raw)
     except json.JSONDecodeError as exc:
         raise LockfileError(f"invalid JSON in lockfile '{path}': {exc}") from exc
-
-    try:
-        return Lockfile.model_validate(data)
     except ValidationError as exc:
         raise LockfileError(f"invalid lockfile '{path}': {exc}") from exc
 
@@ -123,6 +133,43 @@ def validate(
     else:
         for entry in report.manifest_lock_drift + report.lock_state_drift:
             typer.echo(f"drift: {_format_drift(entry)}")
+
+
+@app.command()
+def lock(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+) -> None:
+    """Resolve every declared ref to a commit SHA and write `project.lock`."""
+    try:
+        data = _read_manifest_data(manifest)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"])
+            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        raise typer.Exit(code=1)
+
+    # Resilient boundary, mirroring `validate`: a `CompositionError` or any
+    # `ResolutionError` (ref-not-found/auth/network) surfaces as a single
+    # clean message, never a raw traceback, and never leaves a partial
+    # `project.lock` on disk.
+    try:
+        provider = _make_provider()
+        lockfile = build_lock(parsed, provider)
+    except (ManifestError, ResolutionError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    lock_path = manifest.parent / "project.lock"
+    lock_path.write_text(lockfile.to_canonical_json())
+    typer.echo(f"wrote {lock_path}")
 
 
 __all__ = ["app"]
