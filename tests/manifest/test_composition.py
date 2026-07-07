@@ -136,6 +136,16 @@ def test_override_missing_repo_in_existing_layer_raises() -> None:
         compose(manifest)
 
 
+def test_compose_preserves_unresolved_core_ref() -> None:
+    manifest = Manifest.model_validate(_base_kwargs())
+
+    assert manifest.core.ref is None
+
+    chain = compose(manifest)
+
+    assert chain[0].ref is None
+
+
 def test_odoo_idp_fire_test_composes_cleanly() -> None:
     raw = yaml.safe_load((FIXTURES_DIR / "odoo-idp.project.yaml").read_text())
     manifest = Manifest.model_validate(raw)

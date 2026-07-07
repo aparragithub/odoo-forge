@@ -80,6 +80,6 @@ Chain strategy: pending
 
 ## Phase 4: Verification
 
-- [ ] 4.1 Run full suite `uv run pytest` — confirm all RED tests now GREEN, no skips
-- [ ] 4.2 Run `uv run lint-imports` locally to confirm the CI gate mirrors local result
-- [ ] 4.3 Manual smoke: `forge validate --manifest tests/fixtures/odoo-idp.project.yaml` exits 0
+- [x] 4.1 Run full suite `uv run pytest` — confirm all RED tests now GREEN, no skips
+- [x] 4.2 Run `uv run lint-imports` locally to confirm the CI gate mirrors local result
+- [x] 4.3 Manual smoke: `forge validate --manifest tests/fixtures/odoo-idp.project.yaml` exits 0
