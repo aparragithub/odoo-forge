@@ -45,12 +45,21 @@ def _check_overrides(manifest: Manifest) -> None:
         if layer is None:
             raise CompositionError(f"override references unknown layer '{override.layer}'")
 
+        # Contract: `override.repo` names a repo *within* a git layer. A
+        # non-git (published) layer has no repos, so a repo-level override
+        # against it is meaningless and is rejected rather than silently
+        # ignored.
         if isinstance(layer, GitLayer):
-            repo_urls = {_repo_name(repo.url) for repo in layer.repos}
-            if override.repo not in repo_urls:
+            repo_names = {_repo_name(repo.url) for repo in layer.repos}
+            if override.repo not in repo_names:
                 raise CompositionError(
                     f"override references unknown repo '{override.repo}' in layer '{override.layer}'"
                 )
+        else:
+            raise CompositionError(
+                f"override for layer '{override.layer}' specifies repo "
+                f"'{override.repo}', but that layer has no repos (not a git layer)"
+            )
 
 
 def _repo_name(url: str) -> str:
