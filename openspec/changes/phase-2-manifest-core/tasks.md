@@ -69,14 +69,14 @@ Chain strategy: pending
 
 ## Phase 3: Integration — Port, CLI, Arch Gate
 
-- [ ] 3.1 Create `src/odoo_forge/ports/source_provider.py` with `SourceProvider` Protocol (`resolve_ref`), no adapter this slice
-- [ ] 3.2 RED: write `tests/cli/test_validate.py::test_valid_manifest_exits_zero`
-- [ ] 3.3 RED: write `test_validate.py::test_malformed_manifest_single_cause_error_nonzero_exit`
-- [ ] 3.4 RED: write `test_validate.py::test_reports_manifest_lock_drift_when_lock_exists`
-- [ ] 3.5 GREEN: implement `src/odoo_forge_cli/__init__.py` + `main.py` Typer app `forge validate [--manifest project.yaml]` delegating to core (parse → compose → drift → print)
-- [ ] 3.6 Add `[tool.importlinter]` contracts to `pyproject.toml` (core-is-pure: forbid docker/boto3/kubernetes/git/typer/subprocess/requests/httpx; core-ignores-cli: forbid `odoo_forge_cli`)
-- [ ] 3.7 Verify `uv run lint-imports` passes with zero violations
-- [ ] 3.8 Create `.github/workflows/quality.yml` (paths filter `src/**, tests/**, pyproject.toml, .github/workflows/**`; steps: setup-uv → uv sync → lint-imports (blocking) → pytest)
+- [x] 3.1 Create `src/odoo_forge/ports/source_provider.py` with `SourceProvider` Protocol (`resolve_ref`), no adapter this slice
+- [x] 3.2 RED: write `tests/cli/test_validate.py::test_valid_manifest_exits_zero`
+- [x] 3.3 RED: write `test_validate.py::test_malformed_manifest_single_cause_error_nonzero_exit`
+- [x] 3.4 RED: write `test_validate.py::test_reports_manifest_lock_drift_when_lock_exists`
+- [x] 3.5 GREEN: implement `src/odoo_forge_cli/__init__.py` + `main.py` Typer app `forge validate [--manifest project.yaml]` delegating to core (parse → compose → drift → print)
+- [x] 3.6 Add `[tool.importlinter]` contracts to `pyproject.toml` (core-is-pure: forbid docker/boto3/kubernetes/git/typer/subprocess/requests/httpx; core-ignores-cli: forbid `odoo_forge_cli`) — contracts existed from Phase 1 scaffold; added missing `include_external_packages = true` needed for external forbidden modules to actually run
+- [x] 3.7 Verify `uv run lint-imports` passes with zero violations
+- [x] 3.8 Create `.github/workflows/quality.yml` (paths filter `src/**, tests/**, pyproject.toml, .github/workflows/**`; steps: setup-uv → uv sync → lint-imports (blocking) → pytest)
 
 ## Phase 4: Verification
 
