@@ -41,9 +41,34 @@ class ResolvedLayer(BaseModel):
     repos: list[ResolvedRepo] = []
 
 
+# Bumped whenever the `project.lock` on-disk shape changes. Absent on a
+# legacy (pre-Slice-2a) lock document, which validates as version 1.
+LOCKFILE_SCHEMA_VERSION = 1
+
+
 class Lockfile(BaseModel):
+    schema_version: int = LOCKFILE_SCHEMA_VERSION
     generated_from: str
     layers: list[ResolvedLayer] = []
 
+    def to_canonical_json(self) -> str:
+        """Canonical, byte-stable `project.lock` serialization.
 
-__all__ = ["compute_manifest_hash", "ResolvedRepo", "ResolvedLayer", "Lockfile"]
+        Sorted dict keys + fixed indent for a diff/git-friendly on-disk file.
+        List order (e.g. `layers`) is semantically meaningful and preserved —
+        `sort_keys` only reorders dict keys, never list elements.
+        """
+        return json.dumps(self.model_dump(mode="json"), sort_keys=True, indent=2) + "\n"
+
+    @classmethod
+    def from_json(cls, raw: str) -> "Lockfile":
+        return cls.model_validate(json.loads(raw))
+
+
+__all__ = [
+    "compute_manifest_hash",
+    "ResolvedRepo",
+    "ResolvedLayer",
+    "Lockfile",
+    "LOCKFILE_SCHEMA_VERSION",
+]
