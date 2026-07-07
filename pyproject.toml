@@ -1,0 +1,55 @@
+[project]
+name = "odoo-forge"
+version = "0.1.0"
+description = "Pure Pydantic domain + CLI for composing decentralized Odoo project manifests"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+]
+
+[project.scripts]
+forge = "odoo_forge_cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/odoo_forge", "src/odoo_forge_cli"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "import-linter>=2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.importlinter]
+root_packages = ["odoo_forge", "odoo_forge_cli"]
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+name = "Core never imports infrastructure or framework"
+type = "forbidden"
+source_modules = ["odoo_forge"]
+forbidden_modules = [
+    "docker",
+    "boto3",
+    "kubernetes",
+    "git",
+    "typer",
+    "subprocess",
+    "requests",
+    "httpx",
+]
+
+[[tool.importlinter.contracts]]
+name = "Core never imports the CLI"
+type = "forbidden"
+source_modules = ["odoo_forge"]
+forbidden_modules = ["odoo_forge_cli"]
