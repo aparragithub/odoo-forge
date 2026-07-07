@@ -26,6 +26,10 @@ def _manifest_b() -> Manifest:
 
 
 def test_hash_stable_across_key_order() -> None:
+    # Guards INPUT-side stability: two dicts with different key order parse to an
+    # equal Manifest and therefore hash identically (Pydantic normalizes order).
+    # This does not exercise json.dumps(sort_keys=True); see the comment in
+    # compute_manifest_hash for why sort_keys guards future dict-typed fields.
     hash_a = compute_manifest_hash(_manifest_a())
     hash_b = compute_manifest_hash(_manifest_b())
 
