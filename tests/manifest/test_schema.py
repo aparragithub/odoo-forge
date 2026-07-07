@@ -105,6 +105,14 @@ def test_client_and_override_and_manifest_parse() -> None:
     assert manifest.overrides[0].repo == "odoo-argentina-ee"
 
 
+def test_client_has_type_discriminator_default() -> None:
+    manifest = Manifest.model_validate(_base_manifest_kwargs())
+
+    # Client carries a `type` tag so the whole composed chain
+    # (core -> layers -> client) is uniformly discriminable.
+    assert manifest.client.type == "client"
+
+
 def test_valid_fixture_parses_into_manifest() -> None:
     raw = yaml.safe_load((FIXTURES_DIR / "valid.project.yaml").read_text())
 

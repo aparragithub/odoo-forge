@@ -38,10 +38,18 @@ class GitLayer(BaseModel):
     requires_edition: Literal["enterprise"] | None = None
 
 
+# NOTE: `CoreLayer` is intentionally NOT a member of this discriminated union.
+# Despite sharing the "Layer" suffix and a `type` discriminator, core is a
+# singleton composed separately (always first in the chain, with defaults) and
+# is never user-listed under `layers:`. Keeping it out of the union avoids
+# accepting a second `type: core` entry inside `layers`.
 Layer = Annotated[PublishedLayer | GitLayer, Field(discriminator="type")]
 
 
 class Client(BaseModel):
+    # `type` tags the client so the composed chain (core -> layers -> client)
+    # is uniformly discriminable by `.type`, mirroring the layer models.
+    type: Literal["client"] = "client"
     addons_path: Path
     python_requirements: Path | None = None
 

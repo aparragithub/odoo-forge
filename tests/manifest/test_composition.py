@@ -43,6 +43,36 @@ def test_onion_order_core_first_client_last() -> None:
     assert chain[-1] == manifest.client
 
 
+def test_composed_chain_is_uniformly_type_tagged() -> None:
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "published",
+                    "name": "extra",
+                    "source": "registry://example/extra",
+                    "version": "1.0.0",
+                },
+            ],
+        )
+    )
+
+    chain = compose(manifest)
+
+    # Every member of the chain exposes a `type` discriminator.
+    assert [member.type for member in chain] == ["core", "published", "client"]
+
+
+def test_compose_empty_layers_chain_is_core_then_client() -> None:
+    manifest = Manifest.model_validate(_base_kwargs(layers=[]))
+
+    chain = compose(manifest)
+
+    assert len(chain) == 2
+    assert isinstance(chain[0], CoreLayer)
+    assert chain[1] is manifest.client
+
+
 def test_community_rejects_nested_enterprise_repo() -> None:
     manifest = Manifest.model_validate(
         _base_kwargs(
