@@ -1,8 +1,10 @@
+import inspect
 from pathlib import Path
 
 import pytest
 import yaml
 
+from odoo_forge.manifest import composition
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.errors import CompositionError
 from odoo_forge.manifest.schema import CoreLayer, GitLayer, GitRepo, Manifest, PublishedLayer
@@ -253,6 +255,19 @@ def test_compose_passes_core_through_unchanged() -> None:
 
     assert chain[0] is manifest.core
     assert chain[0].ref is None
+
+
+def test_compose_regression_core_ref_stays_none_and_helper_never_called() -> None:
+    # Slice 2a introduces `resolve_default_ref` as a standalone, opt-in helper.
+    # This regression guards that `compose()` stays byte-for-byte behaviorally
+    # unchanged: it must never import or call it, and the composed core's `ref`
+    # must remain `None` for an unresolved manifest.
+    manifest = Manifest.model_validate(_base_kwargs())
+
+    chain = compose(manifest)
+
+    assert chain[0].ref is None
+    assert "resolve_default_ref" not in inspect.getsource(composition)
 
 
 def test_odoo_idp_fire_test_composes_cleanly() -> None:

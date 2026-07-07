@@ -177,6 +177,53 @@ def test_lock_layer_not_materialized() -> None:
     assert report.lock_state_drift == [DriftEntry(kind="not_materialized", layer="localization")]
 
 
+def test_slice1_era_lock_dict_yields_identical_drift_report() -> None:
+    # A Slice-1-era lock dict has no `schema_version` key at all. It must
+    # validate (defaulting to schema_version=1) and produce a DriftReport
+    # identical to an explicit-schema_version=1 Lockfile built from the same
+    # data — the versioned serialization contract is drift-neutral.
+    manifest = _manifest()
+    legacy_lock_dict = {
+        "generated_from": compute_manifest_hash(manifest),
+        "layers": [
+            {
+                "name": "localization",
+                "repos": [
+                    {
+                        "url": "https://github.com/ingadhoc/odoo-partner.git",
+                        "ref": "19.0",
+                        "commit": "abc123",
+                    }
+                ],
+            }
+        ],
+    }
+    legacy_lock = Lockfile.model_validate(legacy_lock_dict)
+
+    explicit_lock = Lockfile(
+        schema_version=1,
+        generated_from=compute_manifest_hash(manifest),
+        layers=[
+            ResolvedLayer(
+                name="localization",
+                repos=[
+                    ResolvedRepo(
+                        url="https://github.com/ingadhoc/odoo-partner.git",
+                        ref="19.0",
+                        commit="abc123",
+                    )
+                ],
+            )
+        ],
+    )
+
+    legacy_report = detect_drift(manifest, legacy_lock, None)
+    explicit_report = detect_drift(manifest, explicit_lock, None)
+
+    assert legacy_lock.schema_version == 1
+    assert legacy_report == explicit_report
+
+
 def test_lock_repo_not_materialized() -> None:
     manifest = _multi_repo_manifest()
     lock = Lockfile(
