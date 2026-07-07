@@ -96,6 +96,83 @@ def test_community_rejects_nested_enterprise_repo() -> None:
         compose(manifest)
 
 
+def test_community_rejects_layer_level_enterprise_published() -> None:
+    # Layer-level `requires_edition: enterprise` (a PublishedLayer, no nested
+    # repos) must fail under community — exercises the layer-level gating branch.
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "published",
+                    "name": "enterprise",
+                    "source": "registry://example/odoo-ee",
+                    "version": "19.0.1",
+                    "requires_edition": "enterprise",
+                },
+            ],
+        )
+    )
+
+    with pytest.raises(CompositionError, match="enterprise"):
+        compose(manifest)
+
+
+def test_override_targeting_git_layer_repo_is_accepted() -> None:
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "git",
+                    "name": "localization",
+                    "repos": [
+                        {"url": "https://github.com/ingadhoc/odoo-partner.git", "ref": "19.0"},
+                    ],
+                },
+            ],
+            overrides=[
+                {
+                    "layer": "localization",
+                    "repo": "odoo-partner",
+                    "fork": "https://github.com/acme/odoo-partner.git",
+                    "ref": "custom",
+                }
+            ],
+        )
+    )
+
+    chain = compose(manifest)
+
+    assert len(chain) == 3
+
+
+def test_override_targeting_published_layer_is_rejected() -> None:
+    # A repo-level override is meaningless for a PublishedLayer (it has no repos),
+    # so it must be rejected instead of silently passing.
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "published",
+                    "name": "extra",
+                    "source": "registry://example/extra",
+                    "version": "1.0.0",
+                },
+            ],
+            overrides=[
+                {
+                    "layer": "extra",
+                    "repo": "whatever",
+                    "fork": "https://github.com/acme/fork.git",
+                    "ref": "custom",
+                }
+            ],
+        )
+    )
+
+    with pytest.raises(CompositionError, match="extra"):
+        compose(manifest)
+
+
 def test_enterprise_manifest_accepts_same_repo() -> None:
     manifest = Manifest.model_validate(
         _base_kwargs(
@@ -166,13 +243,15 @@ def test_override_missing_repo_in_existing_layer_raises() -> None:
         compose(manifest)
 
 
-def test_compose_preserves_unresolved_core_ref() -> None:
+def test_compose_passes_core_through_unchanged() -> None:
+    # compose() does NO ref resolution (there is none in this slice); it simply
+    # places `manifest.core` first in the chain unchanged. This guards that
+    # identity/passthrough, not any (nonexistent) resolution logic.
     manifest = Manifest.model_validate(_base_kwargs())
-
-    assert manifest.core.ref is None
 
     chain = compose(manifest)
 
+    assert chain[0] is manifest.core
     assert chain[0].ref is None
 
 
