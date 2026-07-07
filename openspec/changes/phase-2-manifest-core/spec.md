@@ -10,14 +10,23 @@ drift detection, and a thin `forge validate` CLI. No git/docker/network.
 ### Requirement: Core layer is a first-class field
 
 `Manifest.core` MUST be a required `CoreLayer` with `type: Literal["core"]`,
-`url: str = "https://github.com/odoo/odoo.git"`, `ref: str | None = None`.
-When `ref` is `None`, composition MUST resolve it to the `odoo_version` branch
-name; the field itself MUST NOT duplicate `factory/versions.yaml`.
+`url: str = "https://github.com/odoo/odoo.git"`, `ref: str | None = None`. The
+field itself MUST NOT duplicate `factory/versions.yaml`.
 
-#### Scenario: Default core ref
+`core.ref: None` MUST be accepted as valid unresolved intent at the schema
+level: a manifest with no explicit core ref is valid, and `compose()` MUST
+preserve the `None` value unchanged — it MUST NOT resolve, mutate, or reject
+it. Resolving `core.ref: None` to the `odoo_version` branch name (or any other
+concrete ref) is OUT OF SCOPE for this pure manifest-core slice and belongs to
+the future resolution/materialization slice, which will consume `Manifest`
+alongside a `SourceProvider` adapter to produce concrete refs.
+
+#### Scenario: Unresolved core ref is valid and untouched by composition
 - GIVEN a manifest with `odoo_version: "19.0"` and no `core.ref`
-- WHEN the manifest is composed
-- THEN the resolved core ref is `"19.0"`
+- WHEN the manifest is parsed and then composed
+- THEN parsing succeeds with `core.ref is None`
+- AND composition succeeds without error
+- AND the composed core layer's `ref` remains `None` (no resolution attempted)
 
 #### Scenario: Overridden core url
 - GIVEN a manifest with `core.url` set to a fork
