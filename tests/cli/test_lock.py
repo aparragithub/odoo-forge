@@ -87,6 +87,12 @@ def test_resolution_error_exits_one_with_clean_message_no_traceback(
 def test_lock_then_validate_round_trip_no_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """`validate` reports no drift against a lock just written by `lock`.
+
+    This only proves manifest<->lock hash agreement; it says nothing about
+    the *content* of the written lock, so a direct structural assertion on
+    the lock's layers is added below to prove the lock itself is correct.
+    """
     monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
 
     project_yaml = tmp_path / "project.yaml"
@@ -95,10 +101,73 @@ def test_lock_then_validate_round_trip_no_drift(
     lock_result = runner.invoke(app, ["lock", "--manifest", str(project_yaml)])
     assert lock_result.exit_code == 0
 
+    lock = Lockfile.from_json((tmp_path / "project.lock").read_text())
+    assert [layer.name for layer in lock.layers] == ["core", "localization"]
+    core_layer = lock.layers[0]
+    assert len(core_layer.repos) == 1
+    assert core_layer.repos[0].commit == "sha-19.0"
+    localization_layer = lock.layers[1]
+    assert [repo.url for repo in localization_layer.repos] == [
+        "https://github.com/ingadhoc/odoo-argentina-ee.git"
+    ]
+    # The manifest declares an override (fork + custom-fix ref) for this repo,
+    # but override application is deferred past Slice 2b — the original ref's
+    # SHA is pinned, not the fork's.
+    assert localization_layer.repos[0].ref == "19.0"
+    assert localization_layer.repos[0].commit == "sha-19.0"
+
     validate_result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
 
     assert validate_result.exit_code == 0
     assert "no manifest/lock drift detected" in validate_result.output
+
+
+def test_write_failure_exits_clean_no_traceback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An OSError during the atomic write is mapped to the same clean error
+    contract as resolution/manifest failures — never a raw traceback."""
+    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
+
+    def _raise_os_error(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(main.os, "replace", _raise_os_error)
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
+
+    result = runner.invoke(app, ["lock", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "Traceback" not in result.output
+    assert not (tmp_path / "project.lock").exists()
+
+
+def test_write_failure_preserves_existing_lock_byte_identical(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If a valid `project.lock` already exists, a failed re-write must leave
+    it byte-identical — the atomic rename never truncates the original."""
+    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
+
+    def _raise_os_error(*args: object, **kwargs: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(main.os, "replace", _raise_os_error)
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
+
+    lock_path = tmp_path / "project.lock"
+    original_content = '{"schema_version": 1, "generated_from": "original", "layers": []}'
+    lock_path.write_text(original_content)
+
+    result = runner.invoke(app, ["lock", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert lock_path.read_text() == original_content
 
 
 def test_load_lock_uses_from_json_roundtrip(tmp_path: Path) -> None:
