@@ -54,6 +54,18 @@ def _check_overrides(manifest: Manifest) -> None:
 
 
 def _repo_name(url: str) -> str:
+    """Return the repo name used to match `Override.repo` against a git URL.
+
+    Convention: the URL basename with any trailing slash and `.git` suffix
+    removed. For example ``https://github.com/ingadhoc/odoo-partner.git`` ->
+    ``odoo-partner``.
+
+    Edge case: this is a basename, not a fully-qualified path, so two repos
+    from different owners with the same last path segment (e.g.
+    ``acme/odoo-web`` and ``ingadhoc/odoo-web``) collapse to the same name and
+    cannot be distinguished by an override. This is acceptable within a single
+    layer today; disambiguation is deferred to a later slice if needed.
+    """
     return url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
 
 
