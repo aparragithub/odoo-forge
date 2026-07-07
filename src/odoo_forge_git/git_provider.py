@@ -5,6 +5,7 @@ without importing it — the port stays a pure interface and this adapter is
 the only place in the codebase that shells out to `git`.
 """
 
+import os
 import re
 import subprocess
 
@@ -15,7 +16,7 @@ from odoo_forge.manifest.errors import (
     ResolutionError,
 )
 
-_BARE_SHA = re.compile(r"[0-9a-f]{40}")
+_BARE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
 
 _AUTH_MARKERS = (
     "authentication failed",
@@ -24,9 +25,31 @@ _AUTH_MARKERS = (
     "publickey",
 )
 
+DEFAULT_TIMEOUT_SECONDS = 30
+
+
+def _non_interactive_env() -> dict[str, str]:
+    """Build a subprocess env that never blocks on credential prompts.
+
+    Starts from the current environment and disables interactive git
+    prompting so a missing/expired credential fails fast instead of
+    hanging. Also pins the locale so stderr text used for error
+    classification (see `_AUTH_MARKERS`) stays stable regardless of the
+    caller's locale.
+    """
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    env["GIT_ASKPASS"] = ""
+    env["LANG"] = "C"
+    env["LC_ALL"] = "C"
+    return env
+
 
 class GitSourceProvider:
     """Resolves `url`/`ref` pairs to full commit SHAs via `git ls-remote`."""
+
+    def __init__(self, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
+        self._timeout = timeout
 
     def resolve_ref(self, url: str, ref: str) -> str:
         if _BARE_SHA.fullmatch(ref):
@@ -38,9 +61,16 @@ class GitSourceProvider:
                 capture_output=True,
                 text=True,
                 check=False,
+                timeout=self._timeout,
+                env=_non_interactive_env(),
             )
         except FileNotFoundError as exc:
             raise ResolutionError(f"git executable not found: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise NetworkError(
+                url,
+                f"ref '{ref}': timed out after {self._timeout}s",
+            ) from exc
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
@@ -78,7 +108,10 @@ def _select_sha(stdout: str, ref: str) -> str:
         if candidate is not None:
             return candidate
 
-    raise AssertionError("unreachable: non-empty stdout always yields at least one sha")
+    raise RuntimeError(
+        f"no SHA candidate found for ref {ref!r} despite non-empty ls-remote output "
+        "(unreachable under normal parsing)"
+    )
 
 
 __all__ = ["GitSourceProvider"]
