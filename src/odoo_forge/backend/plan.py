@@ -129,10 +129,18 @@ def plan_backend(
     signature stable for later slices (e.g. seeding); this PR's mount plan
     is the fixed 5-root table (`entrypoint.sh:82` scans all five and skips
     absent directories at runtime, so mounting unconditionally is safe).
+
+    `instance` is user-facing (the CLI's `--instance` option) and is
+    sanitized through the SAME `sanitize_name` as `manifest.name` before it
+    is interpolated into any docker resource name or label — this is the
+    single source of truth for identity, so `run` and `status` (which both
+    call `plan_backend` independently, with no persisted registry) always
+    derive the exact same sanitized name for the same raw input.
     """
     del state  # unused this PR — see docstring; kept for signature stability
 
     project = sanitize_name(manifest.name)
+    instance = sanitize_name(instance)
     db_name = project
 
     network_name = f"odoo-forge-{project}-{instance}"
