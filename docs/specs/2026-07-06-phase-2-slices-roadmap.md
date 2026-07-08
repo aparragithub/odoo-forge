@@ -95,10 +95,54 @@ Baseline spec: `openspec/specs/manifest/spec.md` (amended 2026-07-08).
 
 ---
 
-## Slice 4 — Local Docker Backend
+## Slice 4 — Local Docker Backend ✅ DONE: 4b archived 2026-07-08 | 4a DEFERRED
 
-- Local Docker backend.
-- HTTP / registry client libraries (not called by any earlier slice).
+### Slice 4b ✅ DONE (archived 2026-07-08)
+
+**Delivered:** Local Docker backend (BackendProvider port + pure planner + docker CLI adapter + 5 CLI commands), own-Postgres provisioning, label-based state introspection, named persistent volumes (PG data + Odoo filestore), created-only rollback (critical data-loss guard), PG TCP readiness gate + Odoo health-wait >=180s floor, injectable clock seams, ephemeral host ports.
+
+- 6-PR feature-branch-chain (PR-1a/1b/2a-i/2a-ii/2b/3a/3b): all merged to main
+- Baseline spec: `openspec/specs/local-backend/spec.md` (5 capabilities, 17 scenarios)
+- CLI commands: `forge run`, `forge status`, `forge stop`, `forge logs`, `forge exec`
+- Gates: ✅ 242 tests passed, 1 deselected (integration skeleton); ✅ 5 import-linter contracts kept, 0 broken
+- Pure core: `BackendProvider` port + error family + `plan_backend` + `parse_status` (zero subprocess/docker imports)
+- Adapter: `odoo_forge_docker` (subprocess-based docker CLI, mirrors git/workspace adapters)
+- Size exception: PR-2a-ii 537 lines (34% over budget) — root cause: 14 judgment-day-hardened tests (full run() ordering, PG/Odoo gates, created-only rollback, reattach-then-fail guard, 3 error classification variants) ported verbatim from snapshot; not re-split per explicit orchestrator boundary instruction; flagged for visibility
+
+**Design decisions (judgment-day-hardened):**
+- Pure planner emits typed specs; adapter builds argv (keeps core import-pure)
+- Env plan: single source of truth (Postgres `{POSTGRES_PASSWORD,POSTGRES_USER,POSTGRES_DB}`, Odoo `{DB_HOST,DB_PORT,DB_USER,DB_PASSWORD,POSTGRES_DB}` — no `DB_NAME`; exact entrypoint match per factory/entrypoint.sh:143-159)
+- Named PG data + Odoo filestore volumes both persist across stop→run
+- Created-only rollback: pre-existing volumes NEVER removed (critical data-loss guard, tested by reattach-then-fail case)
+- Running-state-first readiness: exited container never maps to "unknown"
+- Postgres TCP readiness gate: `docker exec <db> pg_isready -h 127.0.0.1 -U <user> -d <db>` (bounded retries)
+- Odoo health-wait timeout default floor: >=180s (start-period 60s + >=1 interval 30s + cold-boot margin)
+- Ephemeral host ports (-p 0:8069/-p 0:8072): supersedes spec's PortConflict requirement (collisions structurally unreachable)
+- Docker adapter via subprocess (not HTTP SDK): matches existing adapters, Strict-TDD-compatible
+- Status no-raise / stop/logs/exec InstanceNotFoundError divergence: status returns not-running without raising; others raise when absent
+- 5th import-linter contract: forbidden `odoo_forge → odoo_forge_docker`
+
+**Deferred non-blocking debt (tracked):**
+- **DEBT-1** (monotonic-deadline refinement for _wait_pg_ready/_wait_odoo_healthy): poll loops bound by attempt-count, not wall-clock deadline; under slow daemon real wait can exceed timeout (bounded, no leak — SLA imprecision only). Deferred to hardening pass.
+- **DEBT-2** (pure-identity ops without workspace scan): stop/logs/exec/status derive identity via full scan, blocking when workspace corrupted; should derive from manifest.name+instance without scanning. Deferred (couples to plan_backend(state) consumption).
+
+**Out of scope (explicitly deferred):**
+- Backup/restore (Phase 4)
+- Doctor command (typed DockerUnavailableError covers dependency check)
+- Destroy op (stop preserves volumes; reclaim future slice)
+
+Baseline spec: `openspec/specs/local-backend/spec.md` (new).
+
+---
+
+### Slice 4a DEFERRED (future slice)
+
+**Registry Resolution:** Resolve `PublishedLayer.source`/`version` to lockfile entries via HTTP registry API call.
+
+- **Separate infrastructure concern**: network I/O boundary (HTTP) distinct from Docker I/O (subprocess)
+- **Different seam**: plugs into `build_lock`/`SourceProvider`, not backend chain
+- **Evidence**: `locking.py:27-29` comment ("until registry resolution lands"); explore.md confirms 4a/4b split
+- **Deferred alongside**: backup/restore (Phase 4), doctor (hardening), destroy (hardening)
 
 ---
 
@@ -110,6 +154,11 @@ Baseline spec: `openspec/specs/manifest/spec.md` (amended 2026-07-08).
 - `sdd/phase-2-slice-2a-resolution-prep/archive-report` (#2297) — Slice 2a close + Slice 2b handoff.
 - `sdd/phase-2-slice-2b-resolution-io/archive-report` (#TBD) — Slice 2b close. Deferred non-blocking: real-git integration test (subprocess mocked), retry/backoff + observability (design scope line), override application (to later slice).
 
-## Non-blocking test debt (not a slice)
+## Non-blocking tracked debt (Slice 4b)
+
+- **DEBT-1** — `_wait_pg_ready`/`_wait_odoo_healthy` (PR-2a-ii tasks section): poll loops bound by attempt-count instead of monotonic wall-clock deadline; under slow daemon real wall-clock wait can exceed configured timeout (bounded, no leak — SLA imprecision only). Deferred to future hardening pass.
+- **DEBT-2** — `stop`/`logs`/`exec`/`status` (PR-3b tasks section): derive instance identity via full workspace scan (plan_backend ignores state this slice), so corrupted/absent workspace blocks pure-identity ops with clean ScanError→Exit(1). Should derive identity from manifest.name+instance without scanning, allowing ops when workspace broken. Deferred (couples to plan_backend(state) consumption); current safe behavior documented by `test_scan_error_from_corrupted_checkout_exits_clean_one_error` (parametrized over all 5 commands).
+
+## Non-blocking test debt (earlier slices)
 
 - **W2** — explicit fork-url override test; defer until override application is implemented (later slice).

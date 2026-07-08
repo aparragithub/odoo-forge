@@ -18,7 +18,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace"]
+packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace", "src/odoo_forge_docker"]
 
 [dependency-groups]
 dev = [
@@ -28,9 +28,13 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: real-daemon-only backend tests (PG socket-vs-TCP race, ephemeral-port assignment, health timing); deselected by default, run explicitly with `-m integration`",
+]
 
 [tool.importlinter]
-root_packages = ["odoo_forge", "odoo_forge_cli", "odoo_forge_git", "odoo_forge_workspace"]
+root_packages = ["odoo_forge", "odoo_forge_cli", "odoo_forge_git", "odoo_forge_workspace", "odoo_forge_docker"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -65,3 +69,9 @@ name = "Core never imports the workspace adapter"
 type = "forbidden"
 source_modules = ["odoo_forge"]
 forbidden_modules = ["odoo_forge_workspace"]
+
+[[tool.importlinter.contracts]]
+name = "Core never imports the docker adapter"
+type = "forbidden"
+source_modules = ["odoo_forge"]
+forbidden_modules = ["odoo_forge_docker"]
