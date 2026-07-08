@@ -67,13 +67,31 @@ Baseline spec: `openspec/specs/manifest/spec.md` (amended 2026-07-07).
 
 ---
 
-## Slice 3 — Workspace Projection ⏭️ NEXT
+## Slice 3 — Workspace Projection ✅ DONE (archived 2026-07-08)
 
 Projects composed + materialized layers onto the developer's filesystem.
 
-- Workspace projection.
-- `Layer.name → /mnt/*` mount-root mapping.
-- `unlock`.
+**Delivered:**
+- **Workspace projection** (`plan_projection`, fixed 5-root mount-root classification via optional `category` field).
+- **Workspace scan and materialization** (`materialize_state` in core; `WorkspaceProvider` port with git adapter for checkout/scan/promote).
+- **`unlock` promotion** to writable worktrees (`forge unlock --layer --repo`); promotes read-only projection to `/mnt/worktrees/<layer>/<repo>` writable copy.
+- **`forge project` CLI** executes projection plan through resilient boundary (atomic per-repo, stop-on-failure).
+- **`forge validate` scan wiring** now calls real scan, derives `MaterializedState`, and activates the previously-dead `detect_drift(..., materialized=state)` path (no more `materialized=None`).
+- **4th import-linter contract** (forbidden `odoo_forge → odoo_forge_workspace`) kept intact.
+- **5-PR feature-branch-chain delivery** (all PRs under 400-line budget): PR-1 core schema/port, PR-2a pure execution+checkout adapter, PR-2b scan/promote/materialize, PR-3 forge-project+validate-wiring, PR-4 forge-unlock.
+
+**Key design decisions:**
+- Layer→root classification: additive optional `category` field (back-compat, no lock format change).
+- `unlock` = git worktree promotion (non-destructive, keeps read-only projection pristine at locked commit).
+- Pure core (`plan_projection`, `materialize_state`) with dumb adapter (checkout/scan/promote execute core-decided paths/branch).
+
+**Deferred non-blocking debt:**
+- Override application (fork url/ref substitution) — re-deferred to later slice.
+- Docker/local-backend mount execution — Slice 4.
+- Retry/backoff/observability on checkout — deferred (design scope line).
+- Branch naming convention confirmation at next spec update.
+
+Baseline spec: `openspec/specs/manifest/spec.md` (amended 2026-07-08).
 
 ---
 
