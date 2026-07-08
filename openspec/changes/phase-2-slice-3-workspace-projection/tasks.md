@@ -50,23 +50,32 @@ Recommended review lenses: review-resilience + review-reliability (filesystem/su
 
 **PR-1 Gate**: `uv run pytest` + `uv run lint-imports` (3 contracts, no regression).
 
-## PR-2a: Pure project_workspace + Checkout Adapter + 4th Contract
+## PR-2a: Pure project_workspace + Checkout Adapter + 4th Contract — STATUS: DONE (this apply batch)
 
 ### Phase 4: Pure execution use-case (`manifest/projection.py`)
-- [ ] 4.1 RED: `test_projection.py::test_project_workspace_calls_provider_checkout_per_entry` (fake in-memory provider, no I/O)
-- [ ] 4.2 GREEN: implement `project_workspace(plan, provider) -> WorkspaceReport`
+- [x] 4.1 RED: `test_projection.py::TestProjectWorkspace::test_calls_provider_checkout_per_entry` (fake in-memory provider, no I/O)
+- [x] 4.2 GREEN: implement `project_workspace(plan, provider) -> None` (deviation from `-> WorkspaceReport` — see Known Deviation note below)
 
 ### Phase 5: Checkout adapter `src/odoo_forge_workspace/`
-- [ ] 5.1 Create `odoo_forge_workspace/__init__.py` + `provider.py` (`GitWorkspaceProvider` scaffold)
-- [ ] 5.2 RED: `test_provider.py::test_checkout_idempotent_and_dirty_refusal` (monkeypatch `subprocess.run`)
-- [ ] 5.3 GREEN: implement `checkout` — temp clone + `os.replace`, skip if `HEAD` matches, refuse dirty/worktree with `CheckoutError`
+- [x] 5.1 Create `odoo_forge_workspace/__init__.py` + `provider.py` (`GitWorkspaceProvider` scaffold)
+- [x] 5.2 RED: `tests/adapters/test_workspace_provider.py` — idempotent skip, dirty refusal, linked-worktree refusal, clean-replace, missing-git-binary (monkeypatch `subprocess.run`)
+- [x] 5.3 GREEN: implement `checkout` — temp clone + `os.replace`, skip if `HEAD` matches, refuse dirty/worktree with `CheckoutError`
 
 ### Phase 6: Purity contract
-- [ ] 6.1 Add `odoo_forge_workspace` to `pyproject.toml` root packages + wheel include
-- [ ] 6.2 Add 4th `[[tool.importlinter.contracts]]`: forbidden, `source_modules=["odoo_forge"]`, `forbidden_modules=["odoo_forge_workspace"]`
-- [ ] 6.3 Verify `uv run lint-imports` — 4 kept, 0 broken
+- [x] 6.1 Add `odoo_forge_workspace` to `pyproject.toml` root packages + wheel include
+- [x] 6.2 Add 4th `[[tool.importlinter.contracts]]`: forbidden, `source_modules=["odoo_forge"]`, `forbidden_modules=["odoo_forge_workspace"]`
+- [x] 6.3 Verify `uv run lint-imports` — 4 kept, 0 broken
 
-**PR-2a Gate**: `uv run pytest` + `uv run lint-imports`.
+**PR-2a Gate**: `uv run pytest` (114 passed) + `uv run lint-imports` (4 kept, 0 broken) — PASSED.
+
+**Known Deviation (PR-2a)**: `project_workspace(plan, provider)` returns `None`, not `WorkspaceReport` as
+written in tasks.md/design.md. Neither the spec nor the design define `WorkspaceReport`'s fields anywhere —
+it appears only as a bare return-type name. The spec's actual behavioral requirements for `forge project`
+(atomic per-step checkout, stop-on-failure, no partial-step rollback) are fully satisfiable via plain
+iteration with exceptions propagating uncaught, mirroring `build_lock(manifest, provider) -> Lockfile`'s
+precedent exactly (a pure loop over provider calls, no wrapper report object). Flag for sdd-verify /
+judgment-day: confirm PR-3's `forge project` CLI does not need a `WorkspaceReport` for its exit-code/message
+contract before this is locked in permanently.
 
 ## PR-2b: Pure materialize_state + Scan/Promote Adapters
 

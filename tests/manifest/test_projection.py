@@ -1,8 +1,17 @@
+from pathlib import Path
+
 import pytest
 
 from odoo_forge.manifest.errors import ProjectionError
 from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo
-from odoo_forge.manifest.projection import MOUNT_ROOTS, classify_root, plan_projection
+from odoo_forge.manifest.projection import (
+    MOUNT_ROOTS,
+    WorkspacePlan,
+    WorkspacePlanEntry,
+    classify_root,
+    plan_projection,
+    project_workspace,
+)
 from odoo_forge.manifest.schema import Client, CoreLayer, GitLayer, GitRepo, Manifest, PublishedLayer
 
 
@@ -143,3 +152,65 @@ class TestPlanProjection:
 
         with pytest.raises(ProjectionError, match="ghost-layer"):
             plan_projection(manifest, lock)
+
+
+class _FakeWorkspaceProvider:
+    """In-memory `WorkspaceProvider` test double — no I/O, records calls."""
+
+    def __init__(self) -> None:
+        self.checkout_calls: list[tuple[str, str, Path]] = []
+
+    def checkout(self, url: str, commit: str, dest: Path) -> None:
+        self.checkout_calls.append((url, commit, dest))
+
+    def scan(self, roots: object) -> list[object]:
+        raise NotImplementedError("scan is PR-2b scope")
+
+    def promote(self, source: Path, dest: Path, branch: str) -> None:
+        raise NotImplementedError("promote is PR-2b scope")
+
+
+class TestProjectWorkspace:
+    def test_calls_provider_checkout_per_entry(self) -> None:
+        plan = WorkspacePlan(
+            steps=[
+                WorkspacePlanEntry(
+                    mount_root="community",
+                    layer="core",
+                    url="https://github.com/odoo/odoo.git",
+                    commit="sha-core",
+                    target_path=Path("/mnt/community/core/odoo"),
+                ),
+                WorkspacePlanEntry(
+                    mount_root="custom",
+                    layer="custom-x",
+                    url="https://github.com/ingadhoc/odoo-partner.git",
+                    commit="sha-partner",
+                    target_path=Path("/mnt/custom/custom-x/odoo-partner"),
+                ),
+            ]
+        )
+        provider = _FakeWorkspaceProvider()
+
+        project_workspace(plan, provider)
+
+        assert provider.checkout_calls == [
+            (
+                "https://github.com/odoo/odoo.git",
+                "sha-core",
+                Path("/mnt/community/core/odoo"),
+            ),
+            (
+                "https://github.com/ingadhoc/odoo-partner.git",
+                "sha-partner",
+                Path("/mnt/custom/custom-x/odoo-partner"),
+            ),
+        ]
+
+    def test_empty_plan_calls_provider_zero_times(self) -> None:
+        plan = WorkspacePlan(steps=[])
+        provider = _FakeWorkspaceProvider()
+
+        project_workspace(plan, provider)
+
+        assert provider.checkout_calls == []
