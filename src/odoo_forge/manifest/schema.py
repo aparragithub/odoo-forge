@@ -23,12 +23,20 @@ class CoreLayer(BaseModel):
     ref: str | None = None
 
 
+# Additive, optional projection-mount classification (Phase 2 Slice 3). Absent
+# on all Slice 1/2a/2b fixtures — defaults to `None`, which `classify_root`
+# treats as "custom". Distinct from `requires_edition`: `requires_edition ==
+# "enterprise"` always overrides `category` when classifying a mount root.
+LayerCategory = Literal["custom", "community", "localization", "enterprise"]
+
+
 class PublishedLayer(BaseModel):
     type: Literal["published"]
     name: str
     source: str
     version: str
     requires_edition: Literal["enterprise"] | None = None
+    category: LayerCategory | None = None
 
 
 class GitLayer(BaseModel):
@@ -36,6 +44,7 @@ class GitLayer(BaseModel):
     name: str
     repos: list[GitRepo]
     requires_edition: Literal["enterprise"] | None = None
+    category: LayerCategory | None = None
 
 
 # NOTE: `CoreLayer` is intentionally NOT a member of this discriminated union.
@@ -73,6 +82,7 @@ class Manifest(BaseModel):
 
 __all__ = [
     "GitRepo",
+    "LayerCategory",
     "CoreLayer",
     "PublishedLayer",
     "GitLayer",

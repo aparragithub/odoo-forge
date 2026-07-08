@@ -105,6 +105,40 @@ def test_client_and_override_and_manifest_parse() -> None:
     assert manifest.overrides[0].repo == "odoo-argentina-ee"
 
 
+def test_git_layer_category_defaults_to_none() -> None:
+    """Additive optional field: absent `category` (legacy Slice 1/2a/2b
+    fixtures) must still validate, defaulting to `None`."""
+    layer = GitLayer(
+        type="git",
+        name="localization",
+        repos=[GitRepo(url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0")],
+    )
+
+    assert layer.category is None
+
+
+def test_git_layer_accepts_explicit_category() -> None:
+    layer = GitLayer(
+        type="git",
+        name="localization",
+        repos=[GitRepo(url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0")],
+        category="localization",
+    )
+
+    assert layer.category == "localization"
+
+
+def test_published_layer_category_defaults_to_none() -> None:
+    layer = PublishedLayer(
+        type="published",
+        name="enterprise",
+        source="registry://example/odoo-ee",
+        version="19.0.1",
+    )
+
+    assert layer.category is None
+
+
 def test_client_has_type_discriminator_default() -> None:
     manifest = Manifest.model_validate(_base_manifest_kwargs())
 
