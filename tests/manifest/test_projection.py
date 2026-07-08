@@ -2,13 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from odoo_forge.manifest.errors import ProjectionError
+from odoo_forge.manifest.errors import ProjectionError, ScanError
 from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo
 from odoo_forge.manifest.projection import (
     MOUNT_ROOTS,
+    ScannedRepo,
     WorkspacePlan,
     WorkspacePlanEntry,
     classify_root,
+    materialize_state,
     plan_projection,
     project_workspace,
 )
@@ -214,3 +216,70 @@ class TestProjectWorkspace:
         project_workspace(plan, provider)
 
         assert provider.checkout_calls == []
+
+
+class TestMaterializeState:
+    def test_layout_and_worktrees_precedence(self) -> None:
+        scanned = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url="https://github.com/odoo/odoo.git",
+                commit="sha-core",
+            ),
+            ScannedRepo(
+                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                url="https://github.com/ingadhoc/odoo-partner.git",
+                commit="sha-partner",
+            ),
+            # Same repo also promoted to a writable worktree at a newer commit —
+            # the worktrees-root entry MUST win over the read-only projection.
+            ScannedRepo(
+                path=Path("/mnt/worktrees/custom-x/odoo-partner"),
+                url="https://github.com/ingadhoc/odoo-partner.git",
+                commit="sha-partner-writable",
+            ),
+        ]
+
+        state = materialize_state(scanned, MOUNT_ROOTS)
+
+        layers_by_name = {layer.name: layer for layer in state.layers}
+        assert set(layers_by_name) == {"core", "custom-x"}
+        assert [repo.commit for repo in layers_by_name["core"].repos] == ["sha-core"]
+
+        custom_x_repos = {repo.url: repo.commit for repo in layers_by_name["custom-x"].repos}
+        assert custom_x_repos == {
+            "https://github.com/ingadhoc/odoo-partner.git": "sha-partner-writable",
+        }
+
+    def test_missing_directory_is_not_an_error(self) -> None:
+        # No scanned entry for the "custom-x" layer at all — completes fine,
+        # drift detection (not this function) reports `not_materialized`.
+        state = materialize_state([], MOUNT_ROOTS)
+
+        assert state.layers == []
+
+    def test_malformed_scanned_path_raises_scan_error_naming_the_path(self) -> None:
+        bad_path = Path("/mnt/custom/odoo-partner")  # missing the <layer> segment
+        scanned = [
+            ScannedRepo(
+                path=bad_path,
+                url="https://github.com/ingadhoc/odoo-partner.git",
+                commit="sha-partner",
+            )
+        ]
+
+        with pytest.raises(ScanError, match=str(bad_path)):
+            materialize_state(scanned, MOUNT_ROOTS)
+
+    def test_path_outside_any_known_root_raises_scan_error(self) -> None:
+        bad_path = Path("/some/other/place/repo")
+        scanned = [
+            ScannedRepo(
+                path=bad_path,
+                url="https://github.com/ingadhoc/odoo-partner.git",
+                commit="sha-partner",
+            )
+        ]
+
+        with pytest.raises(ScanError, match=str(bad_path)):
+            materialize_state(scanned, MOUNT_ROOTS)

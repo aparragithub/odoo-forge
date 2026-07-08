@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from odoo_forge.manifest.errors import CheckoutError
+from odoo_forge.manifest.errors import AlreadyUnlockedError, CheckoutError, PromotionError, ScanError
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
@@ -290,16 +290,137 @@ def test_final_replace_failure_restores_original_dest(
     assert (dest / "keep.txt").read_text() == "original"
 
 
-def test_scan_and_promote_are_not_yet_implemented() -> None:
-    """PR-2a scope is `checkout` only — `scan`/`promote` land in PR-2b."""
-    provider = GitWorkspaceProvider()
-
-    with pytest.raises(NotImplementedError):
-        provider.scan([Path("/mnt/community")])
-
-    with pytest.raises(NotImplementedError):
-        provider.promote(Path("/mnt/community/core/odoo"), Path("/mnt/worktrees/core/odoo"), "unlock/core")
-
-
 def test_adapter_satisfies_workspace_provider_protocol() -> None:
     assert isinstance(GitWorkspaceProvider(), WorkspaceProvider)
+
+
+class TestScan:
+    def test_scan_reads_head_and_remote_url_skips_non_git_dirs(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "custom"
+        repo_dir = root / "custom-x" / "odoo-partner"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / ".git").mkdir()
+        # Sibling non-git directory must be skipped, not raise.
+        (root / "custom-x" / "not-a-repo").mkdir(parents=True)
+        (root / "custom-x" / "not-a-repo" / "readme.txt").write_text("hi")
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            if "rev-parse" in argv:
+                return _FakeCompletedProcess(0, stdout=f"{COMMIT}\n")
+            if "get-url" in argv:
+                return _FakeCompletedProcess(0, stdout=f"{URL}\n")
+            return _FakeCompletedProcess(0, stdout="")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        provider = GitWorkspaceProvider()
+        scanned = provider.scan([root])
+
+        assert len(scanned) == 1
+        assert scanned[0].path == repo_dir
+        assert scanned[0].url == URL
+        assert scanned[0].commit == COMMIT
+
+    def test_scan_skips_nonexistent_root(self, tmp_path: Path) -> None:
+        provider = GitWorkspaceProvider()
+
+        assert provider.scan([tmp_path / "does-not-exist"]) == []
+
+    def test_scan_raises_scan_error_on_corrupted_head(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "custom"
+        repo_dir = root / "custom-x" / "odoo-partner"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / ".git").mkdir()
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            if "rev-parse" in argv:
+                return _FakeCompletedProcess(128, stderr="fatal: not a valid object name HEAD")
+            return _FakeCompletedProcess(0, stdout="")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        provider = GitWorkspaceProvider()
+
+        with pytest.raises(ScanError):
+            provider.scan([root])
+
+    def test_scan_does_not_leak_credential_url_in_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "custom"
+        repo_dir = root / "custom-x" / "odoo-partner"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / ".git").mkdir()
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            if "rev-parse" in argv:
+                return _FakeCompletedProcess(0, stdout=f"{COMMIT}\n")
+            if "get-url" in argv:
+                return _FakeCompletedProcess(128, stderr="fatal: no such remote 'origin'")
+            return _FakeCompletedProcess(0, stdout="")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        provider = GitWorkspaceProvider()
+
+        with pytest.raises(ScanError) as excinfo:
+            provider.scan([root])
+
+        assert SECRET_URL not in str(excinfo.value)
+
+
+class TestPromote:
+    def test_promote_creates_worktree_and_raises_if_already_writable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "custom" / "custom-x" / "odoo-partner"
+        source.mkdir(parents=True)
+        (source / ".git").mkdir()
+        dest = tmp_path / "worktrees" / "custom-x" / "odoo-partner"
+
+        calls: list[list[str]] = []
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            calls.append(list(argv))
+            return _FakeCompletedProcess(0, stdout="")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        provider = GitWorkspaceProvider()
+        provider.promote(source, dest, "unlock/custom-x/odoo-partner")
+
+        assert any("worktree" in argv and "add" in argv for argv in calls)
+        assert any(
+            "-b" in argv and "unlock/custom-x/odoo-partner" in argv for argv in calls
+        )
+
+        # Re-unlocking a repo that is already a writable worktree fails loud
+        # without invoking `git worktree add` again.
+        dest.mkdir(parents=True)
+        calls.clear()
+
+        with pytest.raises(AlreadyUnlockedError):
+            provider.promote(source, dest, "unlock/custom-x/odoo-partner")
+
+        assert calls == []
+
+    def test_promote_failure_raises_promotion_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "custom" / "custom-x" / "odoo-partner"
+        source.mkdir(parents=True)
+        dest = tmp_path / "worktrees" / "custom-x" / "odoo-partner"
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            return _FakeCompletedProcess(128, stderr="fatal: could not create worktree")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        provider = GitWorkspaceProvider()
+
+        with pytest.raises(PromotionError):
+            provider.promote(source, dest, "unlock/custom-x/odoo-partner")
