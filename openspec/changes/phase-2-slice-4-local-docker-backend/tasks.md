@@ -67,13 +67,13 @@ boundary, rollback/idempotency, partial-failure modes) for PR-2a, PR-2b, PR-3a.
 ## PR-1b: Pure Status Parser (`backend/status.py`)
 
 ### Phase 3: InstanceRef/InstanceStatus/ExecResult + parse_status
-- [ ] 3.1 RED: `test_status.py::test_parse_status_running_state_first` (both roles) — `Running=false` maps to not-running/exited regardless of role or stale health, never `unknown`
-- [ ] 3.2 RED: `test_status.py::test_parse_status_odoo_health_mapping` — `starting`/`unhealthy`/`healthy`/null-on-running -> `unknown`
-- [ ] 3.3 RED: `test_status.py::test_parse_status_postgres_null_health_running_not_unready` — running Postgres with null health is "no-healthcheck" running, not not-ready
-- [ ] 3.4 RED: `test_status.py::test_parse_status_empty_absent_inspect_not_running_no_raise`
-- [ ] 3.5 GREEN: implement `InstanceRef`/`InstanceStatus`/`ExecResult` (pydantic) + `instance_ref()` + `parse_status(json)` — two-stage (running-first, then per-role health)
+- [x] 3.1 RED: `test_status.py::test_parse_status_running_state_first` (both roles) — `Running=false` maps to not-running/exited regardless of role or stale health, never `unknown`
+- [x] 3.2 RED: `test_status.py::test_parse_status_odoo_health_mapping` — `starting`/`unhealthy`/`healthy`/null-on-running -> `unknown`
+- [x] 3.3 RED: `test_status.py::test_parse_status_postgres_null_health_running_not_unready` — running Postgres with null health is "no-healthcheck" running, not not-ready
+- [x] 3.4 RED: `test_status.py::test_parse_status_empty_absent_inspect_not_running_no_raise`
+- [x] 3.5 GREEN: implement `InstanceRef`/`InstanceStatus`/`ExecResult` (pydantic) + `instance_ref()` + `parse_status(json)` — two-stage (running-first, then per-role health)
 
-**PR-1b Gate**: `uv run pytest` + `uv run lint-imports`.
+**PR-1b Gate**: `uv run pytest` + `uv run lint-imports`. ✅ 176 passed, 0 failed; 4 kept, 0 broken.
 
 ## PR-2a: Docker Adapter — run() Orchestration + Rollback
 
