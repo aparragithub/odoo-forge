@@ -147,27 +147,31 @@ boundary, rollback/idempotency, partial-failure modes) for PR-2a, PR-2b, PR-3a.
 ## PR-2b: Docker Adapter — status/stop/logs/exec + Contract Conformance
 
 ### Phase 8: status/stop
-- [ ] 8.1 RED: `test_docker_provider.py::test_status_derives_from_inspect_labels_no_registry`
-- [ ] 8.2 RED: `test_docker_provider.py::test_status_absent_container_not_running_no_raise`
-- [ ] 8.3 GREEN: implement `status()` — `docker inspect` + label filter, delegates to `parse_status`
-- [ ] 8.4 RED: `test_docker_provider.py::test_stop_argv_preserves_named_volumes` — stop + `rm -f -v` + network rm, named PG/filestore volumes untouched
-- [ ] 8.5 RED: `test_docker_provider.py::test_stop_unknown_instance_raises_instance_not_found`
-- [ ] 8.6 GREEN: implement `stop()` — `docker stop` + `rm -f -v` + `network rm`, `InstanceNotFoundError` when absent
+- [x] 8.1 RED: `test_docker_provider.py::test_status_derives_from_inspect_labels_no_registry`
+- [x] 8.2 RED: `test_docker_provider.py::test_status_absent_container_not_running_no_raise`
+- [x] 8.3 GREEN: implement `status()` — `docker inspect` + label filter, delegates to `parse_status`
+- [x] 8.4 RED: `test_docker_provider.py::test_stop_argv_preserves_named_volumes` — stop + `rm -f -v` + network rm, named PG/filestore volumes untouched
+- [x] 8.5 RED: `test_docker_provider.py::test_stop_unknown_instance_raises_instance_not_found`
+- [x] 8.6 GREEN: implement `stop()` — `docker stop` + `rm -f -v` + `network rm`, `InstanceNotFoundError` when absent
 
 ### Phase 9: logs/exec
-- [ ] 9.1 RED: `test_docker_provider.py::test_logs_returns_str_per_role`
-- [ ] 9.2 RED: `test_docker_provider.py::test_logs_absent_instance_raises_instance_not_found`
-- [ ] 9.3 GREEN: implement `logs(ref, role) -> str`
-- [ ] 9.4 RED: `test_docker_provider.py::test_exec_returns_exit_code_stdout_stderr`
-- [ ] 9.5 RED: `test_docker_provider.py::test_exec_absent_instance_raises_instance_not_found`
-- [ ] 9.6 GREEN: implement `exec(ref, argv) -> ExecResult`
+- [x] 9.1 RED: `test_docker_provider.py::test_logs_returns_str_per_role`
+- [x] 9.2 RED: `test_docker_provider.py::test_logs_absent_instance_raises_instance_not_found`
+- [x] 9.3 GREEN: implement `logs(ref, role) -> str`
+- [x] 9.4 RED: `test_docker_provider.py::test_exec_returns_exit_code_stdout_stderr`
+- [x] 9.5 RED: `test_docker_provider.py::test_exec_absent_instance_raises_instance_not_found`
+- [x] 9.6 GREEN: implement `exec(ref, argv) -> ExecResult`
 
 ### Phase 10: Contract conformance
-- [ ] 10.1 RED: `test_docker_provider.py::test_isinstance_backend_provider_conformance`
-- [ ] 10.2 RED: `test_docker_provider.py::test_signature_conformance_per_method` — `inspect.signature` comparison per method vs the port (isinstance alone verifies names only)
-- [ ] 10.3 GREEN: reconcile signatures until both pass
+- [x] 10.1 RED: `test_docker_provider.py::test_isinstance_backend_provider_conformance`
+- [x] 10.2 RED: `test_docker_provider.py::test_signature_conformance_per_method` — `inspect.signature` comparison per method vs the port (isinstance alone verifies names only)
+- [x] 10.3 GREEN: reconcile signatures until both pass
 
-**PR-2b Gate**: `uv run pytest` + `uv run lint-imports`.
+**PR-2b Gate**: `uv run pytest` + `uv run lint-imports`. ✅ 219 passed, 0 failed (207 PR-2a-ii baseline + 12 net new PR-2b tests: 3 status, 3 stop [incl. partial-instance case], 2 logs, 2 exec, 2 conformance); 4 kept, 0 broken (5th contract still deferred to PR-3a). Changed lines (git diff --numstat vs PR-2a-ii): `provider.py` 74+3=77, `test_docker_provider.py` 249+1=250 → **327 changed lines, under the 400-line budget**.
+
+**Post-review-reliability follow-up (still PR-2b, pre-merge)**: two should-fix items closed:
+1. `test_signature_conformance_per_method` strengthened from a names-only `list(inspect.signature(...).parameters)` comparison to also compare every parameter's AND the return's type annotation via `typing.get_type_hints` (with an explicit `localns` supplying the port's `TYPE_CHECKING`-only types, since the port uses `from __future__ import annotations`) — now catches drift like `logs(...) -> str` becoming `-> bytes` or `role: ContainerRole` becoming `role: str`.
+2. Added `test_stop_partial_instance_stops_only_existing_container` — covers the previously-untested `if not exists: continue` branch in `stop()` (postgres exists, odoo does not): asserts only the existing container is stopped/removed, the network is still removed, and no `docker volume rm` occurs.
 
 ## PR-3a: forge run/status CLI + Composition Root + 5th Contract
 
