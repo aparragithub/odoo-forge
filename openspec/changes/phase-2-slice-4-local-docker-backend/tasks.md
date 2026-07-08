@@ -106,32 +106,43 @@ boundary, rollback/idempotency, partial-failure modes) for PR-2a, PR-2b, PR-3a.
 ### Phase 4: Package scaffold + argv plumbing
 - [x] 4.1 Create `odoo_forge_docker/__init__.py` package marker (PR-2a-i)
 - [x] 4.1a (PR-2a-i) RED+GREEN: pure argv builders (`_network_create_argv`/`_volume_create_argv`/`_run_container_argv`) + `_docker_env` (`LANG=C`/`LC_ALL=C`) — unit-tested directly in `test_docker_provider.py` without a full `run()`
-- [ ] 4.2 RED: `test_docker_provider.py::test_run_argv_network_volume_container_order` — exact `docker` argv sequence (network create, volume create x2, run pg, exec pg_isready, run odoo) through the full `run()` orchestration (PR-2a-ii)
-- [ ] 4.3 GREEN: implement `DockerBackendProvider.run()` composing the PR-2a-i argv builders via `subprocess.run` (monkeypatched like `test_git_provider.py`) (PR-2a-ii)
+- [x] 4.2 RED: `test_docker_provider.py::test_run_argv_network_volume_container_order` — exact `docker` argv sequence (network create, volume create x2, run pg, exec pg_isready, run odoo) through the full `run()` orchestration (PR-2a-ii)
+- [x] 4.3 GREEN: implement `DockerBackendProvider.run()` composing the PR-2a-i argv builders via `subprocess.run` (monkeypatched like `test_git_provider.py`) (PR-2a-ii)
 
 ### Phase 5: Readiness gates + injectable clock (PR-2a-ii)
-- [ ] 5.1 RED: `test_docker_provider.py::test_pg_readiness_gate_tcp_scoped` — `docker exec <db> pg_isready -h 127.0.0.1 -U <user> -d <db>`; bounded retries via injectable clock; timeout raises `PostgresReadinessError`
-- [ ] 5.2 GREEN: implement PG readiness gate with constructor-injected sleep/clock seam (default `time.sleep`)
-- [ ] 5.3 RED: `test_docker_provider.py::test_odoo_health_wait_default_floor` — default timeout is configurable and floors at >=180s
-- [ ] 5.4 GREEN: implement Odoo health-wait polling `docker inspect .State.Health.Status == healthy`, configurable timeout (default floor >=180s), injectable clock; timeout raises `ContainerRunError`
-- [ ] 5.5 `test_docker_provider.py::test_health_status_no_healthcheck_configured` — `_health_status` returns `None` when `.State.Health` is absent (no `HEALTHCHECK` on the image), exercised via `_wait_odoo_healthy`'s polling loop (deferred from PR-2a-i per review-reliability finding: belongs with the health-wait consumer, not the isolated pure-helper tests)
-- [ ] 5.6 `test_docker_provider.py::test_health_status_empty_inspect_list` — `_health_status` returns `None` when `docker inspect` returns `[]` (container removed mid-poll), exercised via `_wait_odoo_healthy`'s polling loop (deferred from PR-2a-i, same reason as 5.5)
+- [x] 5.1 RED: `test_docker_provider.py::test_pg_readiness_gate_tcp_scoped` — `docker exec <db> pg_isready -h 127.0.0.1 -U <user> -d <db>`; bounded retries via injectable clock; timeout raises `PostgresReadinessError`
+- [x] 5.2 GREEN: implement PG readiness gate with constructor-injected sleep/clock seam (default `time.sleep`)
+- [x] 5.3 RED: `test_docker_provider.py::test_odoo_health_wait_default_floor` — default timeout is configurable and floors at >=180s
+- [x] 5.4 GREEN: implement Odoo health-wait polling `docker inspect .State.Health.Status == healthy`, configurable timeout (default floor >=180s), injectable clock; timeout raises `ContainerRunError`
+- [x] 5.5 `test_docker_provider.py::test_health_status_no_healthcheck_configured` — `_health_status` returns `None` when `.State.Health` is absent (no `HEALTHCHECK` on the image), exercised via `_wait_odoo_healthy`'s polling loop (deferred from PR-2a-i per review-reliability finding: belongs with the health-wait consumer, not the isolated pure-helper tests)
+- [x] 5.6 `test_docker_provider.py::test_health_status_empty_inspect_list` — `_health_status` returns `None` when `docker inspect` returns `[]` (container removed mid-poll), exercised via `_wait_odoo_healthy`'s polling loop (deferred from PR-2a-i, same reason as 5.5)
 
 ### Phase 6: Created-only rollback (PR-2a-ii)
-- [ ] 6.1 RED: `test_docker_provider.py::test_partial_failure_rollback_removes_only_created_resources` — reverse-order `docker rm -f -v` (containers), `docker volume rm` (created volumes only), `docker network rm`
-- [ ] 6.2 RED: `test_docker_provider.py::test_reattach_then_fail_preserves_existing_volume` — pre-existing named PG/filestore volume is never pushed onto the rollback stack and is NOT removed on a subsequent failure
-- [ ] 6.3 GREEN: implement existence-check-before-create + created-resource rollback stack, teardown scoped to `com.odoo-forge.managed=true`
+- [x] 6.1 RED: `test_docker_provider.py::test_partial_failure_rollback_removes_only_created_resources` — reverse-order `docker rm -f -v` (containers), `docker volume rm` (created volumes only), `docker network rm`
+- [x] 6.2 RED: `test_docker_provider.py::test_reattach_then_fail_preserves_existing_volume` — pre-existing named PG/filestore volume is never pushed onto the rollback stack and is NOT removed on a subsequent failure
+- [x] 6.3 GREEN: implement existence-check-before-create + created-resource rollback stack, teardown scoped to `com.odoo-forge.managed=true`
 
 ### Phase 7: run() error classification
 - [x] 7.1 RED+GREEN: `test_docker_provider.py::test_run_raw_raises_docker_unavailable_on_missing_binary` — `FileNotFoundError` -> `DockerUnavailableError` (PR-2a-i, via `_run_raw`)
 - [x] 7.2 RED+GREEN: `test_docker_provider.py::test_exec_raises_docker_unavailable_on_daemon_down_stderr_marker` — non-zero exit + `Cannot connect to the Docker daemon` -> `DockerUnavailableError` (PR-2a-i, via `_exec`); existence-check daemon-down path also covered by `test_exists_raises_docker_unavailable_on_daemon_down_marker`
 - [x] 7.3 RED+GREEN: `test_docker_provider.py::test_exec_raises_image_not_found_on_stderr_marker` -> `ImageNotFoundError` (PR-2a-i, via `_exec`)
-- [ ] 7.4 RED: `test_docker_provider.py::test_run_refuses_existing_instance` — `InstanceExistsError` when a named container/network already exists, running OR stopped (PR-2a-ii, requires `run()`)
-- [ ] 7.5 GREEN: implement pre-run existence check wiring `InstanceExistsError` into `run()` (PR-2a-ii; the underlying `_container_exists`/`_network_exists`/`_volume_exists` checks and generic error classification are already implemented and tested in PR-2a-i)
+- [x] 7.4 RED: `test_docker_provider.py::test_run_refuses_existing_instance` — `InstanceExistsError` when a named container/network already exists, running OR stopped (PR-2a-ii, requires `run()`)
+- [x] 7.5 GREEN: implement pre-run existence check wiring `InstanceExistsError` into `run()` (PR-2a-ii; the underlying `_container_exists`/`_network_exists`/`_volume_exists` checks and generic error classification are already implemented and tested in PR-2a-i)
 
 **PR-2a-i Gate**: `uv run pytest` + `uv run lint-imports`. ✅ 191 passed, 0 failed; 4 kept, 0 broken. Changed lines: 390 (1 + 155 + 230 + 4, under the 400-line budget) — includes the review-reliability coverage fix for `_run_container_argv` ephemeral ports + `:ro` mounts.
 
-**PR-2a-ii Gate (pending)**: `uv run pytest` + `uv run lint-imports`.
+**PR-2a-ii Gate**: `uv run pytest` + `uv run lint-imports`. ✅ 204 passed, 0 failed (191 PR-2a-i baseline + 13 net new PR-2a-ii tests); 4 kept, 0 broken (5th contract still deferred to PR-3a). Changed lines (git diff, modified files): `provider.py` 133+15=148, `test_docker_provider.py` 300+3=303 → **451 changed lines, OVER the 400-line budget by 51 lines (~13%)**. Root cause: this batch ports 14 already-judgment-day-hardened tests verbatim from the snapshot (full `run()` ordering, PG readiness success/timeout, Odoo health default-floor/timeout, created-only rollback, the CRITICAL reattach-then-fail data-loss guard, `InstanceExistsError` precheck, 3 error-classification-via-`run()` variants, plus the 2 deferred `_health_status` edge cases) — none of which can be dropped without losing coverage the design/judgment-day process already mandated. Not re-split further per orchestrator's explicit PR-2a-i/PR-2a-ii boundary instruction; flagged here for orchestrator visibility instead.
+
+### Phase 7b: review-reliability + review-resilience follow-up (pre-merge blocker fix, still PR-2a-ii)
+- [x] 7.6 `_run_raw` now catches `subprocess.TimeoutExpired` (in addition to `FileNotFoundError`) and raises `DockerUnavailableError` — mirrors `git_provider.py`/`workspace/provider.py`'s existing timeout-to-typed-error pattern; a docker call that never returns means the daemon is unresponsive, so `DockerUnavailableError` is the correct classification
+- [x] 7.7 `_rollback` now wraps EACH teardown step in its own `try/except Exception: continue` so one stuck/failing/timed-out step never aborts the remaining teardowns and never masks the original `run()` failure; docstring corrected to state the actual best-effort-per-step guarantee
+- [x] 7.8 Tests added: `test_run_raw_raises_docker_unavailable_on_timeout`, `test_exec_raises_docker_unavailable_on_timeout`, `test_rollback_continues_after_one_teardown_step_raises` (odoo `docker rm` times out; asserts pg container/both volumes/network are still torn down and the original `ContainerRunError` from `run()` is what propagates, not the cleanup-time exception)
+- [x] 7.9 Added a one-line comment at the `InstanceExistsError` precheck in `run()` explaining `docker inspect` exits 0 for a container in ANY state (running or stopped), so one `_container_exists` check already covers both — no separate running-vs-stopped branch needed
+
+**PR-2a-ii Gate (post-fix, FINAL)**: `uv run pytest` + `uv run lint-imports`. ✅ 207 passed, 0 failed (204 + 3 new); 4 kept, 0 broken. Final changed lines for the whole PR-2a-ii scope (git diff vs. PR-2a-i merge point): `provider.py` 159+17=176, `test_docker_provider.py` 358+3=361 → **537 changed lines total, OVER the 400-line budget by 137 lines (~34%)** once the blocker fix + its 3 tests are included. Same root cause as above (verbatim-ported, judgment-day-mandated coverage) plus 3 additional required tests for the timeout-handling/rollback-resilience blocker. Flagged for orchestrator visibility; not re-split per explicit scope instruction to fix this blocker within PR-2a-ii.
+
+### Debt (tracked, not implemented — deferred past PR-2a-ii)
+- [ ] DEBT-1 Refine `_wait_pg_ready`/`_wait_odoo_healthy` to a monotonic-deadline budget instead of attempt-count: today `attempts = timeout / poll_interval` bounds the number of polls, but each poll's own `docker` subprocess call can itself take up to `docker_timeout`, so under a slow/degraded daemon the real wall-clock wait can exceed the configured `pg_readiness_timeout`/`health_wait_timeout` (bounded — no leak — just SLA imprecision). Track for PR-2b or a follow-up hardening pass.
 
 ## PR-2b: Docker Adapter — status/stop/logs/exec + Contract Conformance
 
