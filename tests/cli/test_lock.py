@@ -5,6 +5,7 @@ from typer.testing import CliRunner
 
 from odoo_forge.manifest.errors import RefNotFoundError
 from odoo_forge.manifest.lockfile import Lockfile
+from odoo_forge.manifest.projection import ScannedRepo
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 
@@ -21,6 +22,24 @@ class _FakeSourceProvider:
 class _FailingSourceProvider:
     def resolve_ref(self, url: str, ref: str) -> str:
         raise RefNotFoundError(url, ref)
+
+
+class _FakeProjectedWorkspaceProvider:
+    """A `WorkspaceProvider` double whose `scan` reports a fully-projected
+    workspace matching the lock written by `_FakeSourceProvider` — used to
+    prove `validate`'s scan wiring reports no drift on a matching tree."""
+
+    def __init__(self, scanned: list[ScannedRepo]) -> None:
+        self._scanned = scanned
+
+    def checkout(self, url: str, commit: str, dest: Path) -> None:
+        raise NotImplementedError
+
+    def scan(self, roots: object) -> list[ScannedRepo]:
+        return self._scanned
+
+    def promote(self, source: Path, dest: Path, branch: str) -> None:
+        raise NotImplementedError
 
 
 def test_valid_manifest_writes_canonical_lock(
@@ -115,6 +134,29 @@ def test_lock_then_validate_round_trip_no_drift(
     # SHA is pinned, not the fork's.
     assert localization_layer.repos[0].ref == "19.0"
     assert localization_layer.repos[0].commit == "sha-19.0"
+
+    # `validate` now scans the real mount roots (Slice 3): a fully-projected
+    # workspace — simulated here via a fake `WorkspaceProvider.scan` matching
+    # the lock exactly — reports no drift; an unprojected workspace would
+    # correctly report `not_materialized` instead (see test_validate.py).
+    monkeypatch.setattr(
+        main,
+        "_make_workspace_provider",
+        lambda: _FakeProjectedWorkspaceProvider(
+            [
+                ScannedRepo(
+                    path=Path("/mnt/community/core/odoo"),
+                    url="https://github.com/odoo/odoo.git",
+                    commit="sha-19.0",
+                ),
+                ScannedRepo(
+                    path=Path("/mnt/enterprise/localization/odoo-argentina-ee"),
+                    url="https://github.com/ingadhoc/odoo-argentina-ee.git",
+                    commit="sha-19.0",
+                ),
+            ]
+        ),
+    )
 
     validate_result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
 

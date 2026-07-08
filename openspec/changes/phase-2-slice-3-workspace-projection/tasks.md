@@ -93,19 +93,19 @@ contract before this is locked in permanently.
 
 **PR-2b Gate**: `uv run pytest` (129 passed) + `uv run lint-imports` (4 kept, 0 broken, no regression) — PASSED.
 
-## PR-3: `forge project` CLI + `forge validate` Scan Wiring
+## PR-3: `forge project` CLI + `forge validate` Scan Wiring — STATUS: DONE (this apply batch)
 
 ### Phase 10: forge project
-- [ ] 10.1 RED: `tests/cli/test_project.py::test_valid_lock_projects_every_layer` (CliRunner, monkeypatched `_make_workspace_provider`)
-- [ ] 10.2 GREEN: add `_make_workspace_provider()` + `forge project [--manifest][--lock]` in `main.py` calling `plan_projection` + `project_workspace`
-- [ ] 10.3 RED: `test_project.py::test_mid_plan_checkout_failure_stops_cleanly_exits_nonzero`
-- [ ] 10.4 GREEN: catch `WorkspaceError` family, exit 1 with single-cause message, no traceback, no touch of completed steps
+- [x] 10.1 RED: `tests/cli/test_project.py::test_valid_lock_projects_every_layer` (CliRunner, monkeypatched `_make_workspace_provider`)
+- [x] 10.2 GREEN: add `_make_workspace_provider()` + `forge project [--manifest][--lock]` in `main.py` calling `plan_projection` + `project_workspace`
+- [x] 10.3 RED: `test_project.py::test_mid_plan_checkout_failure_stops_cleanly_exits_nonzero`
+- [x] 10.4 GREEN: catch `WorkspaceError` family (via shared `ManifestError` base), exit 1 with single-cause message, no traceback, no touch of completed steps
 
 ### Phase 11: forge validate scan wiring
-- [ ] 11.1 RED: `tests/cli/test_validate.py::test_drift_detected_against_real_scanned_workspace`
-- [ ] 11.2 GREEN: `forge validate` calls `provider.scan(MOUNT_ROOTS)` + `materialize_state`, passes real `MaterializedState` into `detect_drift` (replaces hardcoded `None`)
+- [x] 11.1 RED: `tests/cli/test_validate.py::test_drift_detected_against_real_scanned_workspace`
+- [x] 11.2 GREEN: `forge validate` calls `provider.scan(MOUNT_ROOTS)` + `materialize_state`, passes real `MaterializedState` into `detect_drift` (replaces hardcoded `None`)
 
-**PR-3 Gate**: `uv run pytest` + `uv run lint-imports` + manual `forge --help`.
+**PR-3 Gate**: `uv run pytest` (136 passed) + `uv run lint-imports` (4 kept, 0 broken) + manual `forge --help` — PASSED.
 
 ## PR-4: `forge unlock` CLI
 
