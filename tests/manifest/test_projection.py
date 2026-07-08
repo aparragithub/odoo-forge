@@ -12,6 +12,7 @@ from odoo_forge.manifest.projection import (
     classify_root,
     materialize_state,
     plan_projection,
+    plan_unlock,
     project_workspace,
 )
 from odoo_forge.manifest.schema import Client, CoreLayer, GitLayer, GitRepo, Manifest, PublishedLayer
@@ -283,3 +284,29 @@ class TestMaterializeState:
 
         with pytest.raises(ScanError, match=str(bad_path)):
             materialize_state(scanned, MOUNT_ROOTS)
+
+
+class TestPlanUnlock:
+    def test_computes_source_dest_and_branch_for_a_custom_layer(self) -> None:
+        manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+
+        plan = plan_unlock(manifest, "custom-x", "https://github.com/ingadhoc/odoo-partner.git")
+
+        assert plan.source == Path("/mnt/custom/custom-x/odoo-partner")
+        assert plan.dest == Path("/mnt/worktrees/custom-x/odoo-partner")
+        assert plan.branch == "unlock/custom-x/odoo-partner"
+
+    def test_computes_source_for_the_core_layer(self) -> None:
+        manifest = _manifest()
+
+        plan = plan_unlock(manifest, "core", manifest.core.url)
+
+        assert plan.source.parts[:2] == ("/", "mnt")
+        assert "community" in plan.source.parts
+        assert plan.dest == Path("/mnt/worktrees/core") / plan.source.name
+
+    def test_unknown_layer_raises_projection_error(self) -> None:
+        manifest = _manifest()
+
+        with pytest.raises(ProjectionError, match="ghost-layer"):
+            plan_unlock(manifest, "ghost-layer", "https://example.com/ghost.git")
