@@ -100,6 +100,17 @@ Baseline spec: `openspec/specs/manifest/spec.md` (amended 2026-07-08).
 - Local Docker backend.
 - HTTP / registry client libraries (not called by any earlier slice).
 
+**Split note (recorded during PR-3a):** Slice 4 was delivered as change
+`phase-2-slice-4-local-docker-backend`, chained as 4a (port + pure
+planner/status parser: PR-1a/PR-1b) and 4b (docker adapter + CLI: PR-2a-i,
+PR-2a-ii, PR-2b, PR-3a, PR-3b), reflecting the extra readiness/rollback
+surface (`run`/`status`/`stop`/`logs`/`exec`, created-only rollback,
+PG/Odoo readiness gates) beyond what a single PR could hold under the
+400-line review budget. PR-3a adds `forge run`/`forge status` + the
+composition root + the 5th import-linter contract (`odoo_forge` ->
+`odoo_forge_docker` forbidden); PR-3b (not yet started) adds `forge
+stop`/`logs`/`exec` + the `integration` pytest marker wiring.
+
 ---
 
 ## Cross-session pointers (Engram)
