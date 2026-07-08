@@ -7,24 +7,27 @@ the only place in the codebase that shells out to `docker` (mirrors
 
 This module implements the full `run()` orchestration (PR-2a-ii): pure argv
 builders, the subprocess boundary, error classification, existence checks
-(PR-2a-i), plus readiness gates and created-only rollback (PR-2a-ii).
+(PR-2a-i), plus readiness gates and created-only rollback (PR-2a-ii). PR-2b
+adds `status()`/`stop()`/`logs()`/`exec()`, completing all five
+`BackendProvider` port methods.
 """
 
 import json
 import os
 import subprocess
 import time
-from typing import Callable
+from typing import Callable, Sequence
 
 from odoo_forge.backend.errors import (
     ContainerRunError,
     DockerUnavailableError,
     ImageNotFoundError,
     InstanceExistsError,
+    InstanceNotFoundError,
     PostgresReadinessError,
 )
 from odoo_forge.backend.plan import BackendPlan, ContainerRole, ContainerSpec, NetworkSpec, VolumeSpec
-from odoo_forge.backend.status import InstanceRef, instance_ref
+from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus, instance_ref, parse_status
 
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
 DEFAULT_PG_READINESS_TIMEOUT_SECONDS = 30.0
@@ -154,6 +157,74 @@ class DockerBackendProvider:
             raise
 
         return instance_ref(plan)
+
+    # -- status/stop/logs/exec (PR-2b) ---------------------------------------
+
+    def status(self, ref: InstanceRef) -> InstanceStatus:
+        """Report `ref`'s live state without ever raising for an absent instance.
+
+        `docker inspect` both role containers in a single call. A missing
+        container makes `docker inspect` exit non-zero while still printing
+        JSON for whichever names DO exist (or `[]` if none do) — this method
+        ignores the exit code and hands whatever JSON was decoded straight to
+        `parse_status`, which already treats absent/empty entries as
+        not-running without raising (design "Absent/empty inspect").
+        """
+        result = self._run_raw(["docker", "inspect", ref.postgres_container, ref.odoo_container])
+        stderr = (result.stderr or "").strip()
+        if _DAEMON_DOWN_MARKER in stderr:
+            raise DockerUnavailableError(stderr)
+        try:
+            data = json.loads(result.stdout) if result.stdout else []
+        except (ValueError, TypeError):
+            data = []
+        return parse_status(data)
+
+    def stop(self, ref: InstanceRef) -> None:
+        """Stop and remove both role containers plus the network.
+
+        Named PG-data/filestore volumes are deliberately NEVER passed to
+        `docker volume rm` here, preserving instance state across a
+        `stop` -> `run` cycle (design "stop semantics"). Raises
+        `InstanceNotFoundError` when NEITHER role container exists.
+        """
+        pg_exists = self._container_exists(ref.postgres_container)
+        odoo_exists = self._container_exists(ref.odoo_container)
+        if not pg_exists and not odoo_exists:
+            raise InstanceNotFoundError(f"no managed containers found for instance {ref.instance!r}")
+
+        for name, exists in (
+            (ref.postgres_container, pg_exists),
+            (ref.odoo_container, odoo_exists),
+        ):
+            if not exists:
+                continue
+            self._exec(["docker", "stop", name])
+            self._exec(["docker", "rm", "-f", "-v", name])
+
+        if self._network_exists(ref.network):
+            self._exec(["docker", "network", "rm", ref.network])
+
+    def logs(self, ref: InstanceRef, role: ContainerRole) -> str:
+        """Return `role`'s captured `docker logs` output for `ref`."""
+        name = ref.postgres_container if role == "postgres" else ref.odoo_container
+        if not self._container_exists(name):
+            raise InstanceNotFoundError(f"container not found for role {role!r}: {name!r}")
+        result = self._exec(["docker", "logs", name])
+        return result.stdout
+
+    def exec(self, ref: InstanceRef, argv: Sequence[str]) -> ExecResult:
+        """Run `argv` inside `ref`'s Odoo container and return its result.
+
+        A non-zero exit code is NOT an exception here — the caller inspects
+        `ExecResult.exit_code` themselves, mirroring `subprocess`'s own
+        `check=False` contract.
+        """
+        name = ref.odoo_container
+        if not self._container_exists(name):
+            raise InstanceNotFoundError(f"odoo container not found: {name!r}")
+        result = self._run_raw(["docker", "exec", name, *argv])
+        return ExecResult(exit_code=result.returncode, stdout=result.stdout, stderr=result.stderr)
 
     # -- resource creation (created-only rollback bookkeeping) --------------
 

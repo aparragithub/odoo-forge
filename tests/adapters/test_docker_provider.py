@@ -1,5 +1,7 @@
+import inspect
 import json
 import subprocess
+import typing
 
 import pytest
 
@@ -8,9 +10,12 @@ from odoo_forge.backend.errors import (
     DockerUnavailableError,
     ImageNotFoundError,
     InstanceExistsError,
+    InstanceNotFoundError,
     PostgresReadinessError,
 )
-from odoo_forge.backend.plan import BackendPlan, ContainerSpec, Mount, NetworkSpec, VolumeSpec
+from odoo_forge.backend.plan import BackendPlan, ContainerRole, ContainerSpec, Mount, NetworkSpec, VolumeSpec
+from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus
+from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge_docker.provider import (
     DockerBackendProvider,
     _docker_env,
@@ -101,6 +106,26 @@ def _make_plan() -> BackendPlan:
 
 def _healthy_inspect(_name: str) -> str:
     return json.dumps([{"State": {"Running": True, "Health": {"Status": "healthy"}}}])
+
+
+def _make_ref() -> InstanceRef:
+    return InstanceRef(
+        project="proj",
+        instance="default",
+        network=NETWORK,
+        postgres_container=DB_NAME,
+        odoo_container=ODOO_NAME,
+    )
+
+
+def _inspect_entry(role: str, running: bool, health: str | None) -> dict:
+    entry: dict = {
+        "Config": {"Labels": {"com.odoo-forge.role": role}},
+        "State": {"Running": running},
+    }
+    if health is not None:
+        entry["State"]["Health"] = {"Status": health}
+    return entry
 
 
 class _Router:
@@ -583,3 +608,226 @@ def test_health_status_empty_inspect_list(monkeypatch: pytest.MonkeyPatch) -> No
 
     with pytest.raises(ContainerRunError):
         provider._wait_odoo_healthy(_make_plan().odoo)
+
+
+# -- status() -----------------------------------------------------------------
+
+
+def test_status_derives_from_inspect_labels_no_registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        assert argv == ["docker", "inspect", DB_NAME, ODOO_NAME]
+        payload = [
+            _inspect_entry("postgres", running=True, health=None),
+            _inspect_entry("odoo", running=True, health="healthy"),
+        ]
+        return _FakeCompletedProcess(0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    status = DockerBackendProvider().status(_make_ref())
+
+    assert status.postgres.running is True
+    assert status.postgres.state == "no_healthcheck"
+    assert status.odoo.running is True
+    assert status.odoo.state == "healthy"
+    assert status.odoo.ready is True
+
+
+def test_status_absent_container_not_running_no_raise(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        # Both role containers externally removed: `docker inspect` exits
+        # non-zero but prints an empty JSON array, plus a stderr message —
+        # NOT the daemon-down marker.
+        return _FakeCompletedProcess(1, stdout="[]", stderr="Error: No such object")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    status = DockerBackendProvider().status(_make_ref())
+
+    assert status.postgres.running is False
+    assert status.odoo.running is False
+
+
+def test_status_daemon_down_raises_docker_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", _fake_daemon_down)
+
+    with pytest.raises(DockerUnavailableError):
+        DockerBackendProvider().status(_make_ref())
+
+
+# -- stop() ---------------------------------------------------------------
+
+
+def test_stop_argv_preserves_named_volumes(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        return _FakeCompletedProcess(0)  # both containers/network exist; every op succeeds
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    DockerBackendProvider().stop(_make_ref())
+
+    stop_calls = [c for c in calls if c[1] == "stop"]
+    rm_calls = [c for c in calls if c[1] == "rm" and "-f" in c]
+    vol_rm_calls = [c for c in calls if c[1:3] == ["volume", "rm"]]
+    net_rm_calls = [c for c in calls if c[1:3] == ["network", "rm"]]
+
+    assert {c[-1] for c in stop_calls} == {DB_NAME, ODOO_NAME}
+    assert {c[-1] for c in rm_calls} == {DB_NAME, ODOO_NAME}
+    assert vol_rm_calls == []  # named PG/filestore volumes are never touched
+    assert net_rm_calls[0][-1] == NETWORK
+
+
+def test_stop_partial_instance_stops_only_existing_container(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Half-torn-down instance: postgres container exists, odoo does not.
+
+    Only the existing container is stopped/removed; the missing one is
+    skipped without error; the network is still removed (it doesn't depend
+    on either container existing); no `docker volume rm` is ever issued.
+    """
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        if argv[1] == "inspect" and len(argv) == 3:
+            name = argv[2]
+            return _FakeCompletedProcess(0 if name == DB_NAME else 1)
+        return _FakeCompletedProcess(0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    DockerBackendProvider().stop(_make_ref())
+
+    stop_calls = [c for c in calls if c[1] == "stop"]
+    rm_calls = [c for c in calls if c[1] == "rm" and "-f" in c]
+    vol_rm_calls = [c for c in calls if c[1:3] == ["volume", "rm"]]
+    net_rm_calls = [c for c in calls if c[1:3] == ["network", "rm"]]
+
+    assert {c[-1] for c in stop_calls} == {DB_NAME}
+    assert {c[-1] for c in rm_calls} == {DB_NAME}
+    assert vol_rm_calls == []
+    assert net_rm_calls[0][-1] == NETWORK
+
+
+def test_stop_unknown_instance_raises_instance_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        return _FakeCompletedProcess(1)  # neither container exists
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(InstanceNotFoundError):
+        DockerBackendProvider().stop(_make_ref())
+
+
+# -- logs() -----------------------------------------------------------------
+
+
+def test_logs_returns_str_per_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1] == "inspect" and len(argv) == 3:
+            return _FakeCompletedProcess(0)
+        if argv[1] == "logs":
+            assert argv == ["docker", "logs", ODOO_NAME]
+            return _FakeCompletedProcess(0, stdout="odoo log lines\n")
+        raise AssertionError(f"unexpected invocation: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    text = DockerBackendProvider().logs(_make_ref(), "odoo")
+
+    assert text == "odoo log lines\n"
+
+
+def test_logs_absent_instance_raises_instance_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        return _FakeCompletedProcess(1)  # container does not exist
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(InstanceNotFoundError):
+        DockerBackendProvider().logs(_make_ref(), "postgres")
+
+
+# -- exec() -----------------------------------------------------------------
+
+
+def test_exec_returns_exit_code_stdout_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1] == "inspect" and len(argv) == 3:
+            return _FakeCompletedProcess(0)
+        if argv[1] == "exec":
+            assert argv == ["docker", "exec", ODOO_NAME, "odoo-bin", "--version"]
+            return _FakeCompletedProcess(3, stdout="out", stderr="err")
+        raise AssertionError(f"unexpected invocation: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = DockerBackendProvider().exec(_make_ref(), ["odoo-bin", "--version"])
+
+    assert result.exit_code == 3
+    assert result.stdout == "out"
+    assert result.stderr == "err"
+
+
+def test_exec_absent_instance_raises_instance_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        return _FakeCompletedProcess(1)  # odoo container does not exist
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(InstanceNotFoundError):
+        DockerBackendProvider().exec(_make_ref(), ["echo", "hi"])
+
+
+# -- Protocol conformance (task 10.1/10.2) -----------------------------------
+
+
+def test_isinstance_backend_provider_conformance() -> None:
+    assert isinstance(DockerBackendProvider(), BackendProvider)
+
+
+def test_signature_conformance_per_method() -> None:
+    """`isinstance` only checks method NAMES exist — this pins each method's
+    parameter names/order AND every parameter/return annotation against the
+    `BackendProvider` Protocol, so a drift like `logs(...) -> str` becoming
+    `-> bytes`, or `role: ContainerRole` becoming `role: str`, is caught.
+
+    The port module uses `from __future__ import annotations` (lazy string
+    annotations) and only imports its referenced types under
+    `TYPE_CHECKING`, so `typing.get_type_hints` cannot resolve them from the
+    port module's own globals alone — `port_localns` supplies the concrete
+    types so both sides resolve to the same real objects for an
+    apples-to-apples comparison.
+    """
+    port_localns = {
+        "BackendPlan": BackendPlan,
+        "ContainerRole": ContainerRole,
+        "InstanceRef": InstanceRef,
+        "InstanceStatus": InstanceStatus,
+        "ExecResult": ExecResult,
+    }
+
+    for name in ("run", "status", "stop", "logs", "exec"):
+        port_method = getattr(BackendProvider, name)
+        impl_method = getattr(DockerBackendProvider, name)
+
+        port_sig = inspect.signature(port_method)
+        impl_sig = inspect.signature(impl_method)
+        port_params = list(port_sig.parameters)
+        impl_params = list(impl_sig.parameters)
+        assert port_params == impl_params, f"{name}: {port_params} != {impl_params}"
+
+        port_hints = typing.get_type_hints(port_method, localns=port_localns)
+        impl_hints = typing.get_type_hints(impl_method)
+
+        for param in port_params:
+            if param == "self":
+                continue
+            assert str(port_hints[param]) == str(impl_hints[param]), (
+                f"{name}.{param}: {port_hints[param]!r} != {impl_hints[param]!r}"
+            )
+        assert str(port_hints["return"]) == str(impl_hints["return"]), (
+            f"{name} return: {port_hints['return']!r} != {impl_hints['return']!r}"
+        )
