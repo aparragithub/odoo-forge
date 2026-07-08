@@ -61,6 +61,14 @@ class WorkspacePlan(BaseModel):
     steps: list[WorkspacePlanEntry] = []
 
 
+class UnlockPlan(BaseModel):
+    """Core-computed promotion target for `unlock`. Pure, zero I/O."""
+
+    source: Path
+    dest: Path
+    branch: str
+
+
 def classify_root(layer: CoreLayer | GitLayer | PublishedLayer) -> MountRoot:
     """Map a layer to its read-only projection mount root. Pure, zero I/O.
 
@@ -112,6 +120,36 @@ def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
             )
 
     return WorkspacePlan(steps=steps)
+
+
+def plan_unlock(manifest: Manifest, layer_name: str, repo_url: str) -> UnlockPlan:
+    """Compute the `source`/`dest`/`branch` promotion target for `unlock`.
+
+    Pure, zero I/O: classifies `layer_name` against `manifest` to find its
+    read-only mount root (mirroring `plan_projection`), then derives the
+    `source` read-only checkout path, the `dest` writable worktree path
+    under the reserved `worktrees` root, and a deterministic `branch` name.
+    Raises `ProjectionError` naming the layer when it has no matching
+    manifest layer — the adapter's `promote` is the one that later raises
+    `AlreadyUnlockedError` if `dest` already exists.
+    """
+    manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
+        "core": manifest.core,
+    }
+    for layer in manifest.layers:
+        manifest_layers_by_name[layer.name] = layer
+
+    layer = manifest_layers_by_name.get(layer_name)
+    if layer is None:
+        raise ProjectionError(f"layer '{layer_name}' has no matching manifest layer")
+
+    mount_root = classify_root(layer)
+    repo_name = _repo_name(repo_url)
+    return UnlockPlan(
+        source=MOUNT_ROOTS[mount_root] / layer_name / repo_name,
+        dest=MOUNT_ROOTS["worktrees"] / layer_name / repo_name,
+        branch=f"unlock/{layer_name}/{repo_name}",
+    )
 
 
 def project_workspace(plan: WorkspacePlan, provider: "WorkspaceProvider") -> None:
@@ -211,8 +249,10 @@ __all__ = [
     "ScannedRepo",
     "WorkspacePlanEntry",
     "WorkspacePlan",
+    "UnlockPlan",
     "classify_root",
     "plan_projection",
+    "plan_unlock",
     "project_workspace",
     "materialize_state",
 ]

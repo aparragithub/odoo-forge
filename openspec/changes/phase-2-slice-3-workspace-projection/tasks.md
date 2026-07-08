@@ -107,15 +107,28 @@ contract before this is locked in permanently.
 
 **PR-3 Gate**: `uv run pytest` (136 passed) + `uv run lint-imports` (4 kept, 0 broken) + manual `forge --help` — PASSED.
 
-## PR-4: `forge unlock` CLI
+## PR-4: `forge unlock` CLI — STATUS: DONE (this apply batch)
 
 ### Phase 12: forge unlock
-- [ ] 12.1 RED: `tests/cli/test_unlock.py::test_unlock_succeeds_and_prints_branch`
-- [ ] 12.2 GREEN: `forge unlock --layer NAME --repo URL` in `main.py` calling `provider.promote` via `unlock`
-- [ ] 12.3 RED: `test_unlock.py::test_already_unlocked_exits_nonzero_single_cause`
-- [ ] 12.4 GREEN: catch `AlreadyUnlockedError`/`ScanError`, exit 1 with clean message
+- [x] 12.1 RED: `tests/cli/test_unlock.py::test_unlock_succeeds_and_prints_branch`
+- [x] 12.2 GREEN: `forge unlock --manifest --layer NAME --repo URL` in `main.py` calling new pure
+      `plan_unlock(manifest, layer, repo) -> UnlockPlan(source, dest, branch)` in
+      `manifest/projection.py`, then `provider.promote(source, dest, branch)`
+- [x] 12.3 RED: `test_unlock.py::test_already_unlocked_exits_nonzero_single_cause`
+- [x] 12.4 GREEN: catch `AlreadyUnlockedError`/`ProjectionError`/`ScanError` via the shared
+      `ManifestError` base, exit 1 with a single-cause message, no traceback
 
-**PR-4 Gate**: full `uv run pytest` + `uv run lint-imports` (4 kept/0 broken) + manual smoke `forge project` → `forge validate` → `forge unlock`.
+**PR-4 Gate**: `uv run pytest` (144 passed) + `uv run lint-imports` (4 kept, 0 broken) + manual
+`forge --help` showing `unlock` — PASSED.
+
+**`AlreadyUnlockedError` placement decision**: kept in the adapter (`GitWorkspaceProvider.promote`,
+shipped in PR-2b) as a `dest.exists()` filesystem guard, rather than moving it into a pure core
+planning helper. Rationale: existence-of-a-worktree-on-disk is inherently a live filesystem fact
+that can change between a pure plan computation and the actual `promote` call (TOCTOU) — checking
+it in the adapter, right before the `git worktree add`, is race-safe. `plan_unlock` stays a pure,
+zero-I/O function that only computes `source`/`dest`/`branch`; it does NOT check `dest.exists()`
+itself. This matches the design's split (core decides paths/branch, adapter executes + guards the
+side effect) and keeps `plan_unlock` trivially fakeable/testable without a filesystem.
 
 ## Scope Guardrails
 - No override (fork url/ref substitution) application — re-deferred, do not implement.
