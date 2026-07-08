@@ -225,3 +225,138 @@ Contracts: 4 kept, 0 broken.
 ### Status
 26/48 tasks complete in the full 5-PR chain (PR-1 12/12, PR-2a 8/8, PR-2b 6/6). Ready for
 sdd-verify on PR-2b, then sdd-apply again for PR-3.
+
+## Batch 4 — PR-3: `forge project` CLI + `forge validate` Scan Wiring
+
+**Mode**: Strict TDD (RED → GREEN, no REFACTOR needed)
+**Branch**: `sdd/phase-2-slice-3-pr3-project-cli` (base = PR-2b branch)
+**Scope**: PR-3 only. PR-4 NOT started.
+
+### Completed Tasks (PR-3)
+- [x] 10.1 RED: `tests/cli/test_project.py::test_valid_lock_projects_every_layer` (+ mid-plan-failure, missing-lock cases)
+- [x] 10.2 GREEN: `_make_workspace_provider()` + `forge project [--manifest][--lock]` in `main.py` calling `plan_projection` + `project_workspace`
+- [x] 10.3 RED: `test_project.py::test_mid_plan_checkout_failure_stops_cleanly_exits_nonzero`
+- [x] 10.4 GREEN: catch the shared `ManifestError` base (covers `WorkspaceError`/`ProjectionError`/`CheckoutError`/`LockfileError`), exit 1 with single-cause message, no traceback; `project_workspace`'s uncaught-propagation-on-first-failure (from PR-2a) already guarantees no touch of completed steps
+- [x] 11.1 RED: `tests/cli/test_validate.py::test_drift_detected_against_real_scanned_workspace`
+- [x] 11.2 GREEN: `forge validate` now calls `provider.scan(list(MOUNT_ROOTS.values()))` + `materialize_state(scanned, MOUNT_ROOTS)`, passes the real `MaterializedState` into `detect_drift` — replaces the previously-dead `materialized=None` call
+- [x] Round-trip integration test (verify-requested, not a numbered task): `tests/manifest/test_projection_roundtrip.py` — composes `plan_projection → project_workspace → scan → materialize_state → detect_drift` end-to-end via an in-memory fake `WorkspaceProvider` (no real git/network), proving no false drift on a matching workspace and correct `not_materialized`/`commit_mismatch` on divergence
+
+### TDD Cycle Evidence
+| Task | Test | RED | GREEN |
+|------|------|-----|-------|
+| 10.1-10.4 forge project | `tests/cli/test_project.py` (3 tests) | `AttributeError: module 'odoo_forge_cli.main' has no attribute '_make_workspace_provider'` | 3/3 pass after adding `_make_workspace_provider()` + `project` command |
+| 11.1-11.2 validate scan wiring | `tests/cli/test_validate.py::test_drift_detected_against_real_scanned_workspace` | Would have failed the assertion against `materialized=None` (no `commit_mismatch` ever produced) — written directly against the target behavior since the CLI already had a `validate` command to extend, not a from-scratch RED/ImportError cycle | 11/11 `test_validate.py` tests pass after wiring `scan`→`materialize_state`→`detect_drift` |
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|----------------|
+| `src/odoo_forge_cli/main.py` | Modified | Added imports for `MOUNT_ROOTS`/`materialize_state`/`plan_projection`/`project_workspace`, `WorkspaceProvider` port, `GitWorkspaceProvider` adapter. Added `_make_workspace_provider() -> WorkspaceProvider` composition-root helper (mirrors `_make_provider()`). Wired `validate` to call `provider.scan(list(MOUNT_ROOTS.values()))` → `materialize_state(scanned, MOUNT_ROOTS)` → `detect_drift(parsed, lock, materialized)`, replacing the hardcoded `materialized=None`. Added new `forge project [--manifest][--lock]` command: loads manifest + lock (erroring with a clean message if no lock exists — "run `forge lock` first"), calls `plan_projection` then `project_workspace(plan, provider)` inside a single `try/except ManifestError` resilient boundary (catches `WorkspaceError`/`CheckoutError`/`ProjectionError`/`LockfileError` via the shared base), exits 1 with a single `error:` line and no traceback on failure, prints `projected N repo(s) from <lock_path>` on success. |
+| `tests/cli/test_project.py` | Created | `_FakeWorkspaceProvider` (records `checkout` calls, optional `fail_on_call` index) + 3 tests: valid lock projects every layer in lock order, mid-plan checkout failure stops cleanly (exit 1, single error, only completed steps recorded), missing lockfile exits clean with a single error. |
+| `tests/cli/test_validate.py` | Modified | Added `_FakeScanningWorkspaceProvider` + `test_drift_detected_against_real_scanned_workspace`: monkeypatches `_make_workspace_provider` to return a scan reporting a stale commit, proving `validate` renders `commit_mismatch` drift text sourced from the real scan pipeline, not a hardcoded `None`. |
+| `tests/cli/test_lock.py` | Modified | Updated `test_lock_then_validate_round_trip_no_drift`: since `validate` now performs a real scan, the pre-existing assertion ("no drift" with **no** provider mocked) would now correctly report `not_materialized` for an unprojected workspace — activating the previously-dead path is the intended PR-3 behavior change. Added `_FakeProjectedWorkspaceProvider` + monkeypatched `_make_workspace_provider` to simulate a fully-projected workspace matching the lock exactly, preserving the test's original "no drift after `lock`" intent while proving the new scan wiring is correct end-to-end. |
+| `tests/manifest/test_projection_roundtrip.py` | Created | `_InMemoryWorkspaceProvider` (checkout records to an in-memory dict, scan replays it — no filesystem/git I/O) + 3 tests: no false drift on a matching workspace after `plan_projection → project_workspace → scan → materialize_state → detect_drift`; `not_materialized` drift when nothing was ever projected; `commit_mismatch` drift when a checkout goes stale after projection. |
+| `openspec/changes/phase-2-slice-3-workspace-projection/tasks.md` | Modified | Marked PR-3 tasks `[x]`, added PR-3 gate evidence line. |
+
+### Evidence (exact command output)
+```
+$ uv run pytest -q
+........................................................................ [ 52%]
+................................................................         [100%]
+136 passed in 0.47s   (up from 129 baseline)
+```
+```
+$ uv run lint-imports
+Contracts
+---------
+Analyzed 32 files, 65 dependencies.
+-----------------------------------
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Contracts: 4 kept, 0 broken.
+```
+```
+$ uv run forge --help
+ Commands ─
+ validate  Parse, compose, and report lock drift for a manifest.
+ lock      Resolve every declared ref to a commit SHA and write `project.lock`.
+ project   Project a locked manifest onto the filesystem under fixed mount roots.
+```
+
+### Deviations from Design
+None new. Confirms the PR-2a-flagged deviation (`project_workspace(plan, provider) -> None`,
+not `WorkspaceReport`) is sufficient for `forge project`'s exit-code/message contract:
+the CLI needs only `len(plan.steps)` (already available from the `WorkspacePlan` it built
+itself) for its success message, and relies on the uncaught-exception-on-first-failure
+behavior for the resilient-boundary/stop-cleanly requirement — no wrapper report object
+was needed anywhere in this PR. Recommend judgment-day treat the PR-2a `WorkspaceReport`
+deviation as resolved/closed rather than still-open.
+
+No `--no-scan` escape hatch was added to `forge validate` (design's open question was
+explicitly "defer"): scanning is unconditional and default-on per the spec's literal
+`MODIFIED` requirement text ("When a workspace tree exists ... it MUST call
+`WorkspaceProvider.scan`"). Scanning fixed absolute `/mnt/*` roots that don't exist in a
+test/dev sandbox is safe and cheap (`GitWorkspaceProvider.scan` skips non-existent roots
+via `root.exists()`), so this required no test-environment special-casing.
+
+### Issues Found
+None.
+
+### Remaining Tasks
+- [ ] PR-4: Phase 12 (`forge unlock` CLI) — NOT STARTED
+
+### Status
+36/48 tasks complete in the full 5-PR chain (PR-1 12/12, PR-2a 8/8, PR-2b 6/6, PR-3 6/6 —
+counting the round-trip integration test as folded into Phase 11's gate rather than a new
+numbered task). Ready for sdd-verify on PR-3, then sdd-apply again for PR-4 (`forge unlock`).
+
+## Batch 4b — PR-3 Verify Follow-up: Credential-Leak Test Gap
+
+**Mode**: Strict TDD (test written first; production behavior confirmed already correct —
+this test is a characterization/lock-in, not a bugfix)
+**Branch**: `sdd/phase-2-slice-3-pr3-project-cli` (same branch as Batch 4)
+**Trigger**: sdd-verify flagged one non-blocking test gap on PR-3 before merge — no test
+proved `forge project`'s error output both (1) names the failing repo and (2) never leaks
+a credential embedded in the lock's repo URL.
+
+### Test Added
+`tests/cli/test_project.py::test_mid_plan_failure_names_repo_without_leaking_credentials` —
+a `_CredentialLeakSafeProvider` double fails `checkout` on a repo whose lock URL is
+`https://user:secret-token@example.com/custom-x.git`, raising `CheckoutError` the way
+`GitWorkspaceProvider` actually does (naming `dest`, never the raw `url`). Asserts:
+1. `"custom-x"` appears in `result.output` (spec: "exits non-zero naming the failing repo")
+2. `"secret-token"` does NOT appear in `result.output` (no credential leak)
+3. `"Traceback"` does NOT appear in `result.output`
+
+### RED/GREEN Status
+**GREEN on first run — no production code change needed.** `forge project`'s existing
+`except ManifestError` boundary in `main.py` re-emits whatever message the raised
+`CheckoutError` carries verbatim; since the real `GitWorkspaceProvider` (and this test's
+double, mirroring it) never embeds the raw credentialed URL in a `CheckoutError` message
+— only `dest`/subcommand-safe labels, per the existing `checkout`/`_run`/`_git_subcommand`
+design from PR-2a/2b — the CLI boundary already never leaks a credential. This test
+characterizes and locks in that existing correct behavior; it was not a bugfix.
+
+### Evidence (exact command output)
+```
+$ uv run pytest -q
+........................................................................ [ 52%]
+.................................................................        [100%]
+137 passed in 0.46s   (up from 136 baseline)
+```
+```
+$ uv run lint-imports
+Contracts: 4 kept, 0 broken.   (unchanged)
+```
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|----------------|
+| `tests/cli/test_project.py` | Modified | Added `_CredentialLeakSafeProvider` + `test_mid_plan_failure_names_repo_without_leaking_credentials`. |
+
+### Status
+137/137 tests passing, 4/4 import-linter contracts kept. No production code changed in
+this follow-up. PR-3 unchanged in scope (still 6/6 numbered tasks); this is an additional
+verify-requested test, not a new task. Ready to proceed to sdd-verify re-check / merge, then
+PR-4 (`forge unlock`).
