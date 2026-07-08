@@ -220,3 +220,49 @@ PASS WITH WARNINGS. PR-2b fully satisfies its contract with green evidence (129 
 
 ### Verdict
 **PASS WITH WARNINGS**. PR-3 fully satisfies its contract with green evidence (136 passed, 4 kept/0 broken). `forge project` executes the plan through a correct resilient boundary; the `forge validate` behavior change is spec-faithful (real scan replaces the dead `materialized=None`, unconditional per literal spec text) and well-covered; the round-trip integration test is genuine; the `test_lock.py` change is a legitimate activation that strengthens (not weakens) coverage. Zero CRITICAL — clear for PR-4 (`forge unlock`) or archive of the PR-3 slice. The one WARNING is a targeted test-hardening item, not a defect.
+
+---
+
+## PR-4 — `forge unlock` CLI (FINAL PR of the chain)
+
+**Change**: phase-2-slice-3-workspace-projection
+**Scope verified**: PR-4 (`plan_unlock` pure core + `forge unlock` CLI)
+**Branch**: sdd/phase-2-slice-3-pr4-unlock-cli (base = PR-3 merged main). Changes UNCOMMITTED in working tree.
+**Mode**: Strict TDD.
+**Verdict: PASS** — CRITICAL 0 · WARNING 0 · SUGGESTION 3.
+
+### Evidence (exact)
+- `uv run pytest -q` → `144 passed in 0.50s` (baseline 137, +7)
+- `uv run lint-imports` → `Analyzed 32 files, 65 dependencies. Contracts: 4 kept, 0 broken` (Core-never-imports: infrastructure/CLI/git-adapter/workspace-adapter all KEPT)
+
+### Contract checks
+1. **unlock = PROMOTE, not teardown (PASS)** — Adapter `promote` runs `git -C <source> worktree add -b <branch> -- <dest>`. Creates a NEW writable worktree at `dest` under `/mnt/worktrees/<layer>/<repo>`; `source` (the read-only detached-HEAD projection) is left UNTOUCHED and the locked commit stays recoverable. No delete/teardown of the read-only projection anywhere. Matches LOCKED scope decision #2322 (unlock = promote-to-writable) and spec's "leave the repo writable … keep the originally-locked commit recoverable."
+2. **Pure `plan_unlock` (PASS)** — `plan_unlock(manifest, layer_name, repo_url) -> UnlockPlan` in `manifest/projection.py`: zero I/O, classifies via existing `classify_root`, computes `source = MOUNT_ROOTS[root]/layer/repo`, `dest = MOUNT_ROOTS["worktrees"]/layer/repo`, `branch = unlock/<layer>/<repo>`. Does NOT touch the filesystem or check `dest.exists()`. Adapter stays dumb (executes the core-decided move). Confirmed.
+3. **CLI args + resilient boundary (PASS)** — `forge unlock --manifest --layer NAME --repo URL`. `plan_unlock` + `_make_workspace_provider()` + `provider.promote(...)` inside one `try/except ManifestError`. `AlreadyUnlockedError`/`PromotionError`/`ProjectionError`/`ScanError` all subclass `WorkspaceError → ManifestError` → single `error:` line, `Exit(1)`, no traceback. already-unlocked and unknown-layer both tested (exit 1, exactly one `error:`, no `Traceback`, no `promote` call on unknown-layer). NO secret leak: `promote` runs a local `git worktree add` (no URL/credentials in argv); error messages carry only layer names + dest paths, never the `--repo` URL or credentials.
+4. **`AlreadyUnlockedError` placement (PASS)** — Kept in the adapter's `dest.exists()` guard (provider.py:125), NOT in pure core. Sound: worktree-existence is a live filesystem fact subject to TOCTOU; checking it in the adapter immediately before `git worktree add` is race-safe, whereas a core-side check would go stale. Consistent with the design split (core decides paths/branch; adapter executes + guards).
+5. **Branch naming `unlock/<layer>/<repo>` (PASS, SUGGESTION to confirm)** — Deterministic and readable, consistent with `plan_projection`'s deterministic target-path convention. Spec/design left branch naming open, so this is not spec-verbatim; reasonable and non-blocking. Recommend a one-line spec confirmation at archive.
+6. **Purity (PASS)** — 4 kept / 0 broken. `plan_unlock` lives in core and imports zero git/fs symbols; only `main.py` imports the adapter via the composition-root helper.
+7. **Tests (PASS, behavior-first)** — `tests/cli/test_unlock.py` (4): happy promote on custom layer asserts exact `source`/`dest` + branch echoed; core layer resolves `/mnt/community/core/odoo` source; already-unlocked exits 1 single-cause no-traceback; unknown-layer exits 1 single-cause + asserts `promote` NOT called. `tests/manifest/test_projection.py::TestPlanUnlock` (3): custom-layer source/dest/branch, core-layer community source, unknown-layer → `ProjectionError`. Real assertions on computed paths and recorded calls — non-tautological, no real git/network.
+
+### Full-chain completeness (all 48 numbered tasks + follow-up tests done; 0 unchecked)
+All spec requirements covered across the 5 PRs:
+- `classify_root` (category precedence, core→community, enterprise, default custom) — PR-1
+- pure `plan_projection` (lock-order, orphan → ProjectionError) — PR-1
+- `WorkspaceProvider` port (checkout/scan/promote) — PR-1
+- pure `materialize_state` (path-derived layer, worktrees-precedence, malformed → ScanError) — PR-2b
+- `unlock` promotes one repo (source/dest/branch core-computed, AlreadyUnlockedError) — PR-4
+- `forge project` resilient execution — PR-3
+- `forge validate` real scan → materialize_state → detect_drift (dead `materialized=None` retired) — PR-3
+- `forge unlock` — PR-4
+4th import-linter contract present and kept. No spec requirement left uncovered. `tasks.md` shows 0 unchecked boxes.
+
+### Suggestions (3, non-blocking)
+1. Confirm the `unlock/<layer>/<repo>` branch scheme against spec at archive (spec left branch naming open).
+2. No CLI test exercises a `PromotionError` (git worktree failure) path; it flows through the same `ManifestError` boundary as the tested `AlreadyUnlockedError`, so coverage is equivalent, but an explicit CLI test asserting the failure message names the repo (and leaks no secret) would harden the boundary — carries forward the PR-3 WARNING.
+3. PROCESS: PR-4 is UNCOMMITTED (5 tracked files + 1 untracked test). Commit before opening the PR.
+
+### Verdict — PR-4
+**PASS**. Green evidence (144 passed, 4 kept/0 broken). `forge unlock` correctly PROMOTES (never tears down), `plan_unlock` is genuinely pure, the resilient boundary is complete with no secret leak, and the `AlreadyUnlockedError` adapter placement is sound. Zero CRITICAL, zero WARNING — only advisory suggestions.
+
+### Whole-slice archive readiness
+**READY FOR ARCHIVE.** All 5 PRs (1/2a/2b/3/4) satisfy the reconciled spec; PR-1/2b/3 merged, PR-4 clean and green in the working tree. The slice delivers the complete pipeline: projection planning → mount-root mapping → checkout execution → scan/materialize → validate drift activation → unlock promotion. 4/4 purity contracts kept throughout. Residual debt is all explicitly-deferred non-goals (override application re-deferred, Docker/local-backend mount execution → Slice 4, retry/backoff/observability) plus the 3 advisory suggestions above. Recommend: commit PR-4, merge, then `sdd-archive`.

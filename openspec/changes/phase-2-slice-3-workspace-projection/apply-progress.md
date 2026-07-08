@@ -360,3 +360,90 @@ Contracts: 4 kept, 0 broken.   (unchanged)
 this follow-up. PR-3 unchanged in scope (still 6/6 numbered tasks); this is an additional
 verify-requested test, not a new task. Ready to proceed to sdd-verify re-check / merge, then
 PR-4 (`forge unlock`).
+
+## Batch 5 — PR-4: `forge unlock` CLI (FINAL PR — CHAIN COMPLETE)
+
+**Mode**: Strict TDD (RED → GREEN, no REFACTOR needed)
+**Branch**: `sdd/phase-2-slice-3-pr4-unlock-cli` (base = main, after PR-1/2a/2b/3 merged)
+**Scope**: PR-4 only — the last PR in the chain.
+
+### Completed Tasks (PR-4)
+- [x] 12.1 RED: `tests/cli/test_unlock.py::test_unlock_succeeds_and_prints_branch` (+ core-layer-source, already-unlocked, unknown-layer cases)
+- [x] 12.2 GREEN: new pure `plan_unlock(manifest, layer_name, repo_url) -> UnlockPlan(source, dest, branch)` in `manifest/projection.py`; `forge unlock --manifest --layer NAME --repo URL` in `main.py` calling `plan_unlock` then `provider.promote(source, dest, branch)`
+- [x] 12.3 RED: `test_unlock.py::test_already_unlocked_exits_nonzero_single_cause`
+- [x] 12.4 GREEN: catch `AlreadyUnlockedError`/`ProjectionError`/`ScanError`/`PromotionError` via the shared `ManifestError` base, exit 1 with a single-cause message, no traceback
+
+### TDD Cycle Evidence
+| Task | Test | RED | GREEN |
+|------|------|-----|-------|
+| 12.1-12.4 forge unlock | `tests/cli/test_unlock.py` (4 tests) | `SystemExit(2)` — Typer usage error, `unlock` subcommand did not exist | 4/4 pass after adding `plan_unlock` + `forge unlock` command |
+| plan_unlock pure unit tests | `tests/manifest/test_projection.py::TestPlanUnlock` (3 tests) | Written alongside the CLI GREEN step (function already existed by the time these were added — direct unit coverage of the new pure helper, not a separate RED cycle) | 3/3 pass |
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|----------------|
+| `src/odoo_forge/manifest/projection.py` | Modified | Added `UnlockPlan(source, dest, branch)` model + pure `plan_unlock(manifest, layer_name, repo_url) -> UnlockPlan`. Joins `layer_name` against the manifest (mirrors `plan_projection`'s name-lookup, including the `"core": manifest.core` special case), classifies the mount root via the existing `classify_root`, then computes `source = MOUNT_ROOTS[mount_root]/layer_name/repo_name`, `dest = MOUNT_ROOTS["worktrees"]/layer_name/repo_name`, `branch = f"unlock/{layer_name}/{repo_name}"` (reusing the existing `_repo_name` helper). Raises `ProjectionError` naming the layer when it has no matching manifest entry. Zero I/O — deliberately does NOT check `dest.exists()` itself (see decision below). |
+| `src/odoo_forge_cli/main.py` | Modified | Imported `plan_unlock`. Added `forge unlock --manifest --layer NAME --repo URL` command: reads+validates the manifest (same two-step boundary as `validate`/`lock`/`project`), then inside one `try/except ManifestError` block calls `plan_unlock(parsed, layer, repo)` and `provider.promote(unlock_plan.source, unlock_plan.dest, unlock_plan.branch)`, exiting 1 with a single `error:` line and no traceback on any `WorkspaceError`/`ManifestError` subclass (`ProjectionError`, `AlreadyUnlockedError`, `PromotionError`, `ScanError`). Prints `unlocked '<layer>' at '<dest>' on branch '<branch>'` on success. |
+| `tests/cli/test_unlock.py` | Created | `_FakeWorkspaceProvider` (records `promote` calls; raises `AlreadyUnlockedError` on demand via an `already_unlocked` constructor flag) + 4 tests: succeeds and reports the branch for a custom layer (asserts computed `source`/`dest` paths and that the branch string appears in CLI output); core layer resolves its `source` under the `community` root; already-unlocked exits 1 with a single `error:` line and no traceback; unknown layer exits 1 with a single error and never calls `promote`. |
+| `tests/manifest/test_projection.py` | Modified | Added `TestPlanUnlock` with 3 pure unit tests: custom-layer source/dest/branch computation (`/mnt/custom/custom-x/odoo-partner` → `/mnt/worktrees/custom-x/odoo-partner`, branch `unlock/custom-x/odoo-partner`); core-layer source resolves under the `community` mount root; unknown layer raises `ProjectionError` naming it. |
+| `openspec/changes/phase-2-slice-3-workspace-projection/tasks.md` | Modified | Marked PR-4 tasks `[x]`, added PR-4 gate evidence and the `AlreadyUnlockedError` placement decision. |
+
+### Evidence (exact command output)
+```
+$ uv run pytest -q
+........................................................................ [ 50%]
+........................................................................ [100%]
+144 passed in 0.61s   (up from 137 baseline)
+```
+```
+$ uv run lint-imports
+Contracts
+---------
+Analyzed 32 files, 65 dependencies.
+-----------------------------------
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Contracts: 4 kept, 0 broken.
+```
+```
+$ uv run forge --help
+ Commands ─
+ validate  Parse, compose, and report lock drift for a manifest.
+ lock      Resolve every declared ref to a commit SHA and write `project.lock`.
+ project   Project a locked manifest onto the filesystem under fixed mount roots.
+ unlock    Promote a repo's read-only projected checkout to a writable worktree.
+```
+
+### Decision: `AlreadyUnlockedError` placement (deferred from PR-2b/verify, resolved here)
+Kept in the adapter (`GitWorkspaceProvider.promote`'s `dest.exists()` guard, shipped in
+PR-2b) rather than moved into a new pure core helper. Rationale: whether a writable
+worktree already exists on disk is a live filesystem fact subject to TOCTOU between when
+a pure plan is computed and when `promote` actually executes — checking it in the adapter,
+immediately before `git worktree add`, is race-safe, whereas a core-side pre-check could go
+stale by the time the adapter runs. `plan_unlock` therefore stays pure and zero-I/O,
+computing only `source`/`dest`/`branch`; it never touches the filesystem or predicts
+`AlreadyUnlockedError`. This matches the design's split (core decides paths/branch; adapter
+executes the side effect and guards it) and keeps `plan_unlock` trivially unit-testable
+without any filesystem fixtures (see `TestPlanUnlock`, which needs no `tmp_path`).
+
+### Deviations from Design
+None beyond the already-flagged-and-resolved PR-2a `project_workspace -> None` deviation
+(unaffected by PR-4). The `unlock/<layer>/<repo>` branch-naming convention was not specified
+verbatim by spec or design (both left exact branch naming open, only requiring the CLI to
+"report the core-computed branch name") — chosen for determinism and readability, consistent
+with `plan_projection`'s existing deterministic target-path convention.
+
+### Issues Found
+None.
+
+### Remaining Tasks
+None — this was the final PR in the chain.
+
+### Status
+48/48 numbered tasks complete across the full 5-PR chain (PR-1 12/12, PR-2a 8/8, PR-2b 6/6,
+PR-3 6/6, PR-4 4/4), plus 3 additional non-numbered characterization/unit tests added during
+verify follow-up and this batch (PR-3's credential-leak test + PR-4's `TestPlanUnlock` suite).
+144/144 tests passing, 4/4 import-linter contracts kept. **Chain COMPLETE** — ready for
+sdd-verify on PR-4, then final merge to main.
