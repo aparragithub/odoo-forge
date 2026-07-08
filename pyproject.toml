@@ -28,6 +28,10 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not integration'"
+markers = [
+    "integration: real-daemon-only backend tests (PG socket-vs-TCP race, ephemeral-port assignment, health timing); deselected by default, run explicitly with `-m integration`",
+]
 
 [tool.importlinter]
 root_packages = ["odoo_forge", "odoo_forge_cli", "odoo_forge_git", "odoo_forge_workspace", "odoo_forge_docker"]

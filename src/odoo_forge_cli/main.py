@@ -16,8 +16,8 @@ import yaml
 from pydantic import ValidationError
 
 from odoo_forge.backend.errors import BackendError
-from odoo_forge.backend.plan import plan_backend
-from odoo_forge.backend.status import instance_ref
+from odoo_forge.backend.plan import ContainerRole, plan_backend
+from odoo_forge.backend.status import InstanceRef, instance_ref
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
 from odoo_forge.manifest.errors import (
@@ -411,6 +411,106 @@ def status(
             f"{role}: running={role_status.running} state={role_status.state} "
             f"ready={role_status.ready}"
         )
+
+
+def _derive_ref(manifest: Path, instance: str) -> InstanceRef:
+    """Shared identity derivation for `stop`/`logs`/`exec`: same no-registry
+    `plan_backend` -> `instance_ref` path `status` uses (manifest already
+    parsed by the caller), so independent invocations agree on the same
+    names without any persisted state."""
+    parsed = Manifest.model_validate(_read_manifest_data(manifest))
+    workspace_provider = _make_workspace_provider()
+    scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
+    materialized = materialize_state(scanned, MOUNT_ROOTS)
+    plan = plan_backend(parsed, materialized, instance=instance)
+    return instance_ref(plan)
+
+
+@app.command(name="stop")
+def stop(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+) -> None:
+    """Stop and remove `ref`'s containers/network, preserving named volumes."""
+    # Same boundary as `run`/`status`: a `ManifestError` (malformed manifest,
+    # `ScanError` from a corrupted checkout), a `ValidationError` (schema
+    # mismatch), or any `BackendError` (including `InstanceNotFoundError` for
+    # an absent instance) surfaces as a single clean message, never a raw
+    # traceback.
+    try:
+        ref = _derive_ref(manifest, instance)
+        backend_provider = _make_backend_provider()
+        backend_provider.stop(ref)
+    except (ManifestError, ValidationError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"stopped: project '{ref.project}' instance '{ref.instance}'")
+
+
+@app.command(name="logs")
+def logs(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+    role: ContainerRole = typer.Option(
+        "odoo", "--role", help="Which container's logs to fetch (odoo or postgres)"
+    ),
+) -> None:
+    """Print `role`'s container log text for the derived instance."""
+    try:
+        ref = _derive_ref(manifest, instance)
+        backend_provider = _make_backend_provider()
+        text = backend_provider.logs(ref, role)
+    except (ManifestError, ValidationError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(text)
+
+
+@app.command(
+    name="exec",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+def exec_(
+    ctx: typer.Context,
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+) -> None:
+    """Run the trailing ARGV inside the Odoo container, propagating its exit code."""
+    argv = list(ctx.args)
+
+    # Resilient boundary identical to `stop`/`logs`: a `ManifestError`/
+    # `ValidationError`/`BackendError` (including an absent instance) exits
+    # clean with a single-line message and code 1 — that is a DIFFERENT,
+    # error-boundary exit distinct from a successful `exec` whose command
+    # itself returned a non-zero code, which propagates `ExecResult.exit_code`
+    # verbatim below.
+    try:
+        ref = _derive_ref(manifest, instance)
+        backend_provider = _make_backend_provider()
+        result = backend_provider.exec(ref, argv)
+    except (ManifestError, ValidationError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if result.stdout:
+        typer.echo(result.stdout)
+    if result.stderr:
+        typer.echo(result.stderr, err=True)
+    raise typer.Exit(code=result.exit_code)
 
 
 __all__ = ["app"]
