@@ -198,15 +198,32 @@ boundary, rollback/idempotency, partial-failure modes) for PR-2a, PR-2b, PR-3a.
 ## PR-3b: forge stop/logs/exec CLI + Integration Marker
 
 ### Phase 12
-- [ ] 12.1 RED: `test_backend.py::test_stop_unknown_instance_exits_nonzero_single_cause`
-- [ ] 12.2 GREEN: `forge stop [--instance]` calling `provider.stop()`, catch `InstanceNotFoundError`
-- [ ] 12.3 RED: `test_backend.py::test_logs_prints_role_selected_log_text`
-- [ ] 12.4 GREEN: `forge logs [--instance][--role]` calling `provider.logs()`
-- [ ] 12.5 RED: `test_backend.py::test_exec_prints_stdout_and_propagates_exit_code`
-- [ ] 12.6 GREEN: `forge exec [--instance] -- ARGV` calling `provider.exec()`, surfaces `exit_code`
-- [ ] 12.7 Mark real-daemon-only behaviors (PG socket-vs-TCP race, ephemeral-port assignment, health timing) `@pytest.mark.integration`; deselect from the default Strict-TDD unit run via `pyproject.toml` pytest config
+- [x] 12.1 RED: `test_backend.py::test_stop_unknown_instance_exits_nonzero_single_cause`
+- [x] 12.2 GREEN: `forge stop [--instance]` calling `provider.stop()`, catch `InstanceNotFoundError`
+- [x] 12.3 RED: `test_backend.py::test_logs_prints_role_selected_log_text`
+- [x] 12.4 GREEN: `forge logs [--instance][--role]` calling `provider.logs()`
+- [x] 12.5 RED: `test_backend.py::test_exec_prints_stdout_and_propagates_exit_code`
+- [x] 12.6 GREEN: `forge exec [--instance] -- ARGV` calling `provider.exec()`, surfaces `exit_code`
+- [x] 12.7 Registered the `integration` pytest marker + `addopts = "-m 'not integration'"` in `pyproject.toml`; added one minimal skipped skeleton (`tests/adapters/test_docker_provider_integration.py`) pinning the PG socket-vs-TCP race / ephemeral-port / health-timing scenarios the design's "Integration" test row calls out, deselected by default
 
 **PR-3b Gate**: `uv run pytest` (unit-only, integration deselected) + `uv run lint-imports` (5 kept, 0 broken) + manual `forge --help` showing `run`/`status`/`stop`/`logs`/`exec`.
+
+**PR-3b Gate (FINAL)**: `uv run pytest -q` → **237 passed, 1 deselected** (the integration skeleton). `uv run lint-imports` → **5 kept, 0 broken**. `forge --help` confirmed showing all 5 backend-related commands (`run`/`status`/`stop`/`logs`/`exec`) plus the pre-existing 4 (`validate`/`lock`/`project`/`unlock`). Changed lines (git diff --numstat + new-file line count): `pyproject.toml` 4, `main.py` 102, `tests/cli/test_backend.py` 186, `tests/adapters/test_docker_provider_integration.py` 30 (new file) → **322 changed lines, under the 400-line budget**.
+
+**PR-3b review-reliability follow-up (post-pass, pre-merge, still PR-3b scope)**: 4 closed items:
+1. `_derive_ref` return type fixed from `-> object` to `-> InstanceRef` (imported `InstanceRef` from `odoo_forge.backend.status`), so callers' `.project`/`.odoo_container`/etc. attribute access is statically checked.
+2. Edge tests added: `test_logs_invalid_role_exits_clean_usage_error` (`--role bogus` -> Typer usage error, exit 2, no traceback) and `test_exec_success_exits_zero_prints_stdout` (`ExecResult(exit_code=0, ...)` -> exit 0, stdout printed), proving exit-0 success and non-zero passthrough (exit_code=3, already tested) are distinct paths.
+3. `test_scan_error_from_corrupted_checkout_exits_clean_one_error` parametrization extended from `["run", "status"]` to `["run", "status", "stop", "logs", "exec"]` (with an `exec`-only trailing `-- echo hi` argv appended), documenting that all 5 commands exit clean (single-line + exit 1, no traceback) when the workspace scan raises `ScanError`.
+4. **DEBT-2 recorded** (see Slice Close-Out below) — NOT implemented, tracked only.
+
+**PR-3b Gate (FINAL, post-follow-up)**: `uv run pytest -q` → **242 passed, 1 deselected**. `uv run lint-imports` → **5 kept, 0 broken**. Changed lines (git diff --numstat + new-file line count, full PR-3b scope): `pyproject.toml` 4, `main.py` 104, `tests/cli/test_backend.py` 240, `tests/adapters/test_docker_provider_integration.py` 30 (new file) → **378 changed lines, under the 400-line budget**.
+
+## Slice Close-Out
+
+- **DEBT-1** (monotonic-deadline refinement for `_wait_pg_ready`/`_wait_odoo_healthy`, tracked in PR-2a-ii above) remains deferred, NOT implemented in PR-3b. It is a bounded SLA-imprecision issue (no leak, no correctness bug), explicitly out of scope for this slice's final PR per instruction. Carried forward as a follow-up hardening item for a future slice/PR.
+- **DEBT-2** (tracked, NOT implemented): `stop`/`logs`/`exec` (and `status`) derive instance identity via a full workspace scan (`plan_backend` ignores `state` this slice), so a corrupted/absent workspace blocks pure-identity operations with a clean `ScanError` -> `Exit(1)`. These commands should derive identity from `manifest.name` + `instance` WITHOUT scanning, so you can stop/inspect an instance precisely when the workspace is broken. Deferred: proper fix touches PR-3a `status` + the `plan_backend(state)` deferral; revisit when `state` is consumed or in a hardening pass alongside DEBT-1. Current safe (if not ideal) behavior is documented by `test_scan_error_from_corrupted_checkout_exits_clean_one_error` (parametrized over `run`/`status`/`stop`/`logs`/`exec`).
+- No other deferred items identified at slice close: PR-1a/1b/2a-i/2a-ii/2b/3a/3b are all complete and green; the 4a registry-resolution scope, `backup`/`restore`, `doctor`, and `destroy` remain explicitly out of scope per the Scope Guardrails below (not debt — deliberate slice boundaries).
+- Slice 4 (`phase-2-slice-4-local-docker-backend`) is now fully implemented across all 6 chained PRs and ready for `sdd-verify`.
 
 ## Scope Guardrails
 - No `backup`/`restore` — deferred to Phase 4 (design §5).
