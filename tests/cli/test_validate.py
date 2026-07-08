@@ -5,7 +5,12 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo, compute_manifest_hash
+from odoo_forge.manifest.lockfile import (
+    Lockfile,
+    ResolvedLayer,
+    ResolvedRepo,
+    compute_manifest_hash,
+)
 from odoo_forge.manifest.projection import ScannedRepo
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge_cli import main
@@ -34,7 +39,9 @@ class _FakeScanningWorkspaceProvider:
 
 
 def test_valid_manifest_exits_zero() -> None:
-    result = runner.invoke(app, ["validate", "--manifest", str(FIXTURES_DIR / "valid.project.yaml")])
+    result = runner.invoke(
+        app, ["validate", "--manifest", str(FIXTURES_DIR / "valid.project.yaml")]
+    )
 
     assert result.exit_code == 0
 

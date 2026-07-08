@@ -1,4 +1,4 @@
-from typing import Sequence
+from collections.abc import Sequence
 
 from odoo_forge.ports.backend_provider import BackendProvider
 

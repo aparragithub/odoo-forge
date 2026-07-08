@@ -7,8 +7,9 @@ needed here — this module performs zero I/O and never raises anything
 except the typed `ProjectionError`.
 """
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Mapping
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 # projection only ever targets the other 4 roots.
 MountRoot = Literal["custom", "community", "localization", "enterprise"]
 
-MOUNT_ROOTS: dict[MountRoot | Literal["worktrees"], Path] = {
+MOUNT_ROOTS: dict[str, Path] = {
     "community": Path("/mnt/community"),
     "custom": Path("/mnt/custom"),
     "localization": Path("/mnt/localization"),
@@ -101,13 +102,13 @@ def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
 
     steps: list[WorkspacePlanEntry] = []
     for lock_layer in lock.layers:
-        layer = manifest_layers_by_name.get(lock_layer.name)
-        if layer is None:
+        matched_layer = manifest_layers_by_name.get(lock_layer.name)
+        if matched_layer is None:
             raise ProjectionError(
                 f"locked layer '{lock_layer.name}' has no matching manifest layer"
             )
 
-        mount_root = classify_root(layer)
+        mount_root = classify_root(matched_layer)
         for repo in lock_layer.repos:
             steps.append(
                 WorkspacePlanEntry(
@@ -139,11 +140,11 @@ def plan_unlock(manifest: Manifest, layer_name: str, repo_url: str) -> UnlockPla
     for layer in manifest.layers:
         manifest_layers_by_name[layer.name] = layer
 
-    layer = manifest_layers_by_name.get(layer_name)
-    if layer is None:
+    matched_layer = manifest_layers_by_name.get(layer_name)
+    if matched_layer is None:
         raise ProjectionError(f"layer '{layer_name}' has no matching manifest layer")
 
-    mount_root = classify_root(layer)
+    mount_root = classify_root(matched_layer)
     repo_name = _repo_name(repo_url)
     return UnlockPlan(
         source=MOUNT_ROOTS[mount_root] / layer_name / repo_name,

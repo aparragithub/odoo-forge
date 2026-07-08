@@ -16,7 +16,7 @@ import json
 import os
 import subprocess
 import time
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
 
 from odoo_forge.backend.errors import (
     ContainerRunError,
@@ -26,8 +26,20 @@ from odoo_forge.backend.errors import (
     InstanceNotFoundError,
     PostgresReadinessError,
 )
-from odoo_forge.backend.plan import BackendPlan, ContainerRole, ContainerSpec, NetworkSpec, VolumeSpec
-from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus, instance_ref, parse_status
+from odoo_forge.backend.plan import (
+    BackendPlan,
+    ContainerRole,
+    ContainerSpec,
+    NetworkSpec,
+    VolumeSpec,
+)
+from odoo_forge.backend.status import (
+    ExecResult,
+    InstanceRef,
+    InstanceStatus,
+    instance_ref,
+    parse_status,
+)
 
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
 DEFAULT_PG_READINESS_TIMEOUT_SECONDS = 30.0
@@ -191,7 +203,9 @@ class DockerBackendProvider:
         pg_exists = self._container_exists(ref.postgres_container)
         odoo_exists = self._container_exists(ref.odoo_container)
         if not pg_exists and not odoo_exists:
-            raise InstanceNotFoundError(f"no managed containers found for instance {ref.instance!r}")
+            raise InstanceNotFoundError(
+                f"no managed containers found for instance {ref.instance!r}"
+            )
 
         for name, exists in (
             (ref.postgres_container, pg_exists),
@@ -324,7 +338,7 @@ class DockerBackendProvider:
 
     # -- subprocess boundary --------------------------------------------------
 
-    def _run_raw(self, argv: list[str]) -> subprocess.CompletedProcess:
+    def _run_raw(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         """Run `argv`, raising only for a missing binary or a timed-out call.
 
         Never raises on a nonzero exit code — callers interpret the return
@@ -352,7 +366,7 @@ class DockerBackendProvider:
                 f"docker command timed out after {self._docker_timeout}s: {argv!r}"
             ) from exc
 
-    def _exec(self, argv: list[str]) -> subprocess.CompletedProcess:
+    def _exec(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
         """Run `argv`, classifying a nonzero exit into a typed `BackendError`."""
         result = self._run_raw(argv)
         if result.returncode != 0:

@@ -2,14 +2,14 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError, TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from odoo_forge.manifest.schema import CoreLayer, GitLayer, GitRepo, Layer, Manifest, PublishedLayer
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 
-def _base_manifest_kwargs() -> dict:
+def _base_manifest_kwargs() -> dict[str, object]:
     return {
         "name": "odoo-idp",
         "odoo_version": "19.0",
@@ -37,7 +37,9 @@ def test_requires_edition_on_repo_and_layer() -> None:
         ref="19.0",
         requires_edition="enterprise",
     )
-    git_layer = GitLayer(type="git", name="localization", repos=[repo], requires_edition="enterprise")
+    git_layer = GitLayer(
+        type="git", name="localization", repos=[repo], requires_edition="enterprise"
+    )
     published_layer = PublishedLayer(
         type="published",
         name="enterprise",
@@ -52,7 +54,7 @@ def test_requires_edition_on_repo_and_layer() -> None:
 
 
 def test_discriminated_layer_single_error() -> None:
-    layer_adapter = TypeAdapter(Layer)
+    layer_adapter: TypeAdapter[Layer] = TypeAdapter(Layer)
     malformed = {"type": "git", "name": "localization"}  # missing required `repos`
 
     with pytest.raises(ValidationError) as exc_info:
@@ -89,9 +91,17 @@ def test_client_and_override_and_manifest_parse() -> None:
                 ],
             },
         ],
-        "client": {"addons_path": "client/addons", "python_requirements": "client/requirements.txt"},
+        "client": {
+            "addons_path": "client/addons",
+            "python_requirements": "client/requirements.txt",
+        },
         "overrides": [
-            {"layer": "localization", "repo": "odoo-argentina-ee", "fork": "https://github.com/acme/fork.git", "ref": "custom"},
+            {
+                "layer": "localization",
+                "repo": "odoo-argentina-ee",
+                "fork": "https://github.com/acme/fork.git",
+                "ref": "custom",
+            },
         ],
     }
 

@@ -6,8 +6,9 @@ package in a sibling package (`odoo_forge_workspace`, later slice) and MUST
 NOT be imported here.
 """
 
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol, Sequence, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from odoo_forge.manifest.projection import ScannedRepo
 

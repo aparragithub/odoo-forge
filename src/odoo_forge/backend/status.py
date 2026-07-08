@@ -6,7 +6,7 @@ inspect` JSON (a Python list/dict handed to it by the adapter, which owns the
 actual `subprocess` call and JSON decoding); it never touches the wire.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -58,7 +58,7 @@ def instance_ref(plan: BackendPlan) -> InstanceRef:
 _NOT_RUNNING = RoleStatus(running=False, state="exited", ready=False)
 
 
-def _role_status(role: ContainerRole, container: dict | None) -> RoleStatus:
+def _role_status(role: ContainerRole, container: dict[str, Any] | None) -> RoleStatus:
     """Derive a single role's `RoleStatus` from its `docker inspect` entry.
 
     Two-stage rule (design "Readiness signal: running-state first..."):
@@ -94,7 +94,7 @@ def _role_status(role: ContainerRole, container: dict | None) -> RoleStatus:
     return RoleStatus(running=True, state="unknown", ready=False)
 
 
-def parse_status(inspect_json: list[dict] | dict | None) -> InstanceStatus:
+def parse_status(inspect_json: list[dict[str, Any]] | dict[str, Any] | None) -> InstanceStatus:
     """Parse already-decoded `docker inspect` JSON into an `InstanceStatus`.
 
     Pure, zero I/O — the adapter runs `docker inspect` and decodes JSON;
@@ -103,13 +103,13 @@ def parse_status(inspect_json: list[dict] | dict | None) -> InstanceStatus:
     WITHOUT raising (design "Absent/empty inspect").
     """
     if inspect_json is None:
-        containers: list[dict] = []
+        containers: list[dict[str, Any]] = []
     elif isinstance(inspect_json, dict):
         containers = [inspect_json]
     else:
         containers = inspect_json
 
-    by_role: dict[str, dict] = {}
+    by_role: dict[str, dict[str, Any]] = {}
     for container in containers:
         role = container.get("Config", {}).get("Labels", {}).get("com.odoo-forge.role")
         if role:

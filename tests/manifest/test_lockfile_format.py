@@ -1,6 +1,11 @@
 import json
 
-from odoo_forge.manifest.lockfile import LOCKFILE_SCHEMA_VERSION, Lockfile, ResolvedLayer, ResolvedRepo
+from odoo_forge.manifest.lockfile import (
+    LOCKFILE_SCHEMA_VERSION,
+    Lockfile,
+    ResolvedLayer,
+    ResolvedRepo,
+)
 
 
 def _lockfile() -> Lockfile:

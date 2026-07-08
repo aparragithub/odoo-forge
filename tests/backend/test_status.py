@@ -1,4 +1,6 @@
-from odoo_forge.backend.plan import plan_backend
+from pathlib import Path
+
+from odoo_forge.backend.plan import BackendPlan, plan_backend
 from odoo_forge.backend.status import (
     ExecResult,
     InstanceRef,
@@ -16,17 +18,19 @@ def _manifest(**overrides: object) -> Manifest:
         "name": "odoo-idp",
         "odoo_version": "19.0",
         "edition": "community",
-        "client": Client(addons_path="client/addons"),
+        "client": Client(addons_path=Path("client/addons")),
     }
     defaults.update(overrides)
     return Manifest(**defaults)  # type: ignore[arg-type]
 
 
-def _plan():
+def _plan() -> BackendPlan:
     return plan_backend(_manifest(), MaterializedState())
 
 
-def _container(*, role: str, running: bool, health_status: str | None, has_health_key: bool = True) -> dict:
+def _container(
+    *, role: str, running: bool, health_status: str | None, has_health_key: bool = True
+) -> dict[str, object]:
     state: dict[str, object] = {"Running": running, "Status": "running" if running else "exited"}
     if has_health_key:
         state["Health"] = {"Status": health_status} if health_status is not None else None
@@ -61,7 +65,6 @@ class TestParseStatusRunningStateFirst:
 
         assert status.odoo.running is False
         assert status.odoo.state == "exited"
-        assert status.odoo.state != "unknown"
 
     def test_postgres_running_false_maps_to_exited_regardless_of_stale_health(self) -> None:
         containers = [
@@ -73,7 +76,6 @@ class TestParseStatusRunningStateFirst:
 
         assert status.postgres.running is False
         assert status.postgres.state == "exited"
-        assert status.postgres.state != "unknown"
 
     def test_odoo_exited_with_null_health_is_exited_not_unknown(self) -> None:
         containers = [
@@ -84,7 +86,6 @@ class TestParseStatusRunningStateFirst:
         status = parse_status(containers)
 
         assert status.odoo.state == "exited"
-        assert status.odoo.state != "unknown"
 
 
 class TestParseStatusOdooHealthMapping:
@@ -144,7 +145,6 @@ class TestParseStatusPostgresNullHealth:
 
         assert status.postgres.running is True
         assert status.postgres.state == "no_healthcheck"
-        assert status.postgres.state != "unknown"
 
     def test_postgres_absent_health_key_running_is_no_healthcheck(self) -> None:
         containers = [

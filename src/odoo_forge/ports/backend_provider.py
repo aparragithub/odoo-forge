@@ -16,7 +16,8 @@ only inspects method NAMES at runtime, so lazy annotations do not weaken the
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from odoo_forge.backend.plan import BackendPlan, ContainerRole
@@ -25,23 +26,23 @@ if TYPE_CHECKING:
 
 @runtime_checkable
 class BackendProvider(Protocol):
-    def run(self, plan: "BackendPlan") -> "InstanceRef":
+    def run(self, plan: BackendPlan) -> InstanceRef:
         """Provision `plan` and return a handle to a ready, reachable instance."""
         ...
 
-    def status(self, ref: "InstanceRef") -> "InstanceStatus":
+    def status(self, ref: InstanceRef) -> InstanceStatus:
         """Report `ref`'s live state, derived from Docker introspection only."""
         ...
 
-    def stop(self, ref: "InstanceRef") -> None:
+    def stop(self, ref: InstanceRef) -> None:
         """Stop and remove `ref`'s containers/network, preserving named volumes."""
         ...
 
-    def logs(self, ref: "InstanceRef", role: "ContainerRole") -> str:
+    def logs(self, ref: InstanceRef, role: ContainerRole) -> str:
         """Return `role`'s container log text for `ref`."""
         ...
 
-    def exec(self, ref: "InstanceRef", argv: Sequence[str]) -> "ExecResult":
+    def exec(self, ref: InstanceRef, argv: Sequence[str]) -> ExecResult:
         """Run `argv` inside `ref`'s Odoo container and return its result."""
         ...
 
