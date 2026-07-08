@@ -48,9 +48,11 @@ class GitWorkspaceProvider:
         Idempotent: a no-op when `dest` already exists at `commit`. Refuses
         to touch a dirty checkout or a linked worktree at `dest`, raising
         `CheckoutError` instead of destroying local state. Otherwise clones
-        to a temporary directory beside `dest` and atomically `os.replace`s
-        it into place — no half-cloned directory is ever left at `dest` on
-        failure.
+        to a temporary directory beside `dest`, then swaps it into place via
+        an atomic same-filesystem rename dance: any existing `dest` is first
+        renamed to a sibling backup, the fresh clone is `os.replace`d into
+        `dest`, and only then is the backup removed. If the final swap fails
+        the backup is restored, so `dest` is never left absent or half-cloned.
         """
         if dest.exists():
             if _is_linked_worktree(dest):
@@ -76,15 +78,40 @@ class GitWorkspaceProvider:
         tmp_dir = tempfile.mkdtemp(dir=dest.parent)
         clone_path = Path(tmp_dir)
         try:
-            self._run(["git", "clone", "--no-checkout", url, str(clone_path)])
+            # `--` marks end-of-options so a `url`/`dest` beginning with `-`
+            # is always treated as a positional, never a git flag.
+            self._run(["git", "clone", "--no-checkout", "--", url, str(clone_path)])
+            # `git checkout` has no clean end-of-options form for a revision,
+            # so we rely on `commit` already being a resolved 40-char SHA and
+            # pass `--detach` to keep the checkout headless.
             self._run(["git", "-C", str(clone_path), "checkout", "--detach", commit])
-
-            if dest.exists():
-                shutil.rmtree(dest)
-            os.replace(clone_path, dest)
         except BaseException:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
+
+        self._atomic_swap(clone_path, dest)
+
+    @staticmethod
+    def _atomic_swap(clone_path: Path, dest: Path) -> None:
+        """Move `clone_path` onto `dest` without ever leaving `dest` absent."""
+        backup_path: Path | None = None
+        if dest.exists():
+            # Reserve a guaranteed-free sibling path on the same filesystem.
+            reserved = tempfile.mkdtemp(dir=dest.parent)
+            os.rmdir(reserved)
+            backup_path = Path(reserved)
+            os.replace(dest, backup_path)
+
+        try:
+            os.replace(clone_path, dest)
+        except BaseException:
+            if backup_path is not None:
+                os.replace(backup_path, dest)
+            shutil.rmtree(clone_path, ignore_errors=True)
+            raise
+
+        if backup_path is not None:
+            shutil.rmtree(backup_path, ignore_errors=True)
 
     def _current_head(self, dest: Path) -> str:
         result = self._run(["git", "-C", str(dest), "rev-parse", "HEAD"])
@@ -107,12 +134,40 @@ class GitWorkspaceProvider:
         except FileNotFoundError as exc:
             raise CheckoutError(f"git executable not found: {exc}") from exc
         except subprocess.TimeoutExpired as exc:
-            raise CheckoutError(f"git command timed out after {self._timeout}s: {argv}") from exc
+            # Never splat argv/url into the message — the clone URL may embed
+            # `user:token@` credentials. A safe subcommand label is enough.
+            raise CheckoutError(
+                f"git {_git_subcommand(argv)} timed out after {self._timeout}s"
+            ) from exc
 
         if result.returncode != 0:
-            raise CheckoutError(f"git command failed ({' '.join(argv)}): {result.stderr.strip()}")
+            # Same rule as above: report only the subcommand label + stderr,
+            # never the raw argv (which carries the credentialed clone URL).
+            raise CheckoutError(
+                f"git {_git_subcommand(argv)} failed: {result.stderr.strip()}"
+            )
 
         return result
+
+
+def _git_subcommand(argv: Sequence[str]) -> str:
+    """Extract a safe subcommand label (e.g. `clone`) from a git argv.
+
+    Skips the `git` binary and any global `-C <path>` prefix so the label
+    never includes the credentialed clone URL or other positionals.
+    """
+    tokens = list(argv)
+    i = 1 if tokens and tokens[0] == "git" else 0
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "-C":
+            i += 2  # skip the flag and its path argument
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token
+    return "command"
 
 
 def _is_linked_worktree(dest: Path) -> bool:
