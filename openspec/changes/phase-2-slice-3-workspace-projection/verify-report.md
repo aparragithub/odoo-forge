@@ -180,3 +180,43 @@ Contracts: 4 kept, 0 broken.
 ## Verdict
 
 PASS WITH WARNINGS. PR-2b fully satisfies its contract with green evidence (129 passed, 4 kept/0 broken). `materialize_state` is genuinely pure and its output exactly satisfies the `detect_drift` matching contract (traced against `state.py`/`drift.py`), finally activating the real lock<->state drift path for PR-3 to wire. `scan` stays dumb, discovers repos bounded, and does NOT leak credentialed URLs in `ScanError` (the PR-2a bug class is not reintroduced). `promote` is argv-list/no-shell/`--`-guarded with correct `AlreadyUnlockedError`/`PromotionError` taxonomy. Zero CRITICAL. Next: commit PR-2b, then sdd-apply PR-3 (which owns the materialize_state<->detect_drift round-trip integration test).
+
+---
+
+## PR-3 — `forge project` CLI + `forge validate` Scan Wiring
+
+**Verdict: PASS WITH WARNINGS** — CRITICAL 0 · WARNING 1 · SUGGESTION 3.
+**Branch**: sdd/phase-2-slice-3-pr3-project-cli (base = PR-2b). Mode: Strict TDD. Changes UNCOMMITTED in working tree.
+
+### Evidence (exact command output)
+- `uv run pytest -q` → `136 passed in 0.46s` (baseline 129, +7)
+- `uv run lint-imports` → `Analyzed 32 files, 65 dependencies. Contracts: 4 kept, 0 broken.`
+  (Core never imports infrastructure/CLI/git-adapter/workspace-adapter — all KEPT)
+
+### Scope discipline (PASS)
+`git status` = main.py, test_lock.py, test_validate.py modified; test_project.py, test_projection_roundtrip.py new; tasks.md + apply-progress.md. No `forge unlock` CLI leaked (main.py exposes only validate/lock/project; adapter `promote()` exists from PR-2b but is unwired). `factory/` untouched.
+
+### Contract checks
+1. **`forge project`** (PASS): loads manifest+lock; missing lock → `LockfileError("no lockfile found at '<path>' — run \`forge lock\` first")`. Builds provider via composition-root `_make_workspace_provider()` (importing `GitWorkspaceProvider` HERE is correct — CLI is the composition root). Calls pure `plan_projection` then `project_workspace(plan, provider)` inside ONE `try/except ManifestError` boundary. `WorkspaceError`/`CheckoutError`/`ProjectionError`/`LockfileError` all subclass `ManifestError` → single-cause `error:` line, `raise typer.Exit(1)`, no traceback. Mirrors `forge lock` conventions exactly. `project_workspace` propagates the first `checkout` failure uncaught → stops without touching later steps; `plan.steps` count printed on success only.
+2. **Modified `forge validate`** (PASS, spec-faithful): dead `materialized=None` is GONE. Now `compose → _load_lock → provider.scan(list(MOUNT_ROOTS.values())) → materialize_state(scanned, MOUNT_ROOTS) → detect_drift(parsed, lock, materialized)`. Scan is UNCONDITIONAL/default-on with NO `--no-scan` hatch — matches the spec's literal MODIFIED requirement text and design's explicit "defer the escape hatch" decision. Safe in dev/CI: `GitWorkspaceProvider.scan` skips non-existent `/mnt/*` roots, returning `[]` → empty state.
+3. **Round-trip integration test** (`test_projection_roundtrip.py`, PASS, non-tautological): `_InMemoryWorkspaceProvider.checkout` records target paths, `scan` replays them. 3 tests genuinely compose `plan_projection → project_workspace → scan → materialize_state → detect_drift`: (a) no false drift on match, (b) `not_materialized` for core+custom-x when never projected, (c) `commit_mismatch` (actual="stale-commit") on out-of-band checkout. No real git/network. Traced against drift.py (match by layer.name → repo.url → commit) — genuine, not circular.
+4. **`test_lock.py` behavior change** (PASS — legitimate activation, not regression): the pre-Slice-3 round-trip asserted "no drift" VACUOUSLY (`materialized=None` short-circuited `_lock_state_drift`). Now `validate` really scans, so the test injects `_FakeProjectedWorkspaceProvider` whose `scan` returns two `ScannedRepo` (core@sha-19.0, localization@sha-19.0) MATCHING the lock, and still asserts "no manifest/lock drift detected". Coverage IMPROVED: the assertion now exercises the real scan→materialize→drift path (would fail on a mismatched commit or broken mapping) instead of a no-op. The mock asserts something meaningful.
+5. **Purity** (PASS): 4 kept / 0 broken. Core (`odoo_forge`) still imports zero git/fs-write symbols and never the adapter; only `odoo_forge_cli/main.py` (composition root) imports `GitWorkspaceProvider`/`GitSourceProvider`.
+6. **CLI error boundary — secret/stacktrace leak** (PASS by inspection): CLI only echoes `error: {exc}`; the exc message is the sanitized typed error. The adapter's `_run` reports only a safe `_git_subcommand` label + stderr, NEVER the raw credentialed argv/URL (the JD-confirmed bug class). No `Traceback` reachable — every boundary catches and re-raises `typer.Exit(1)`.
+
+### Spec scenario → test mapping
+- "Valid lock projects every layer" → `test_valid_lock_projects_every_layer` (2 checkouts, order preserved) ✓
+- "Mid-plan checkout failure stops cleanly" → `test_mid_plan_checkout_failure_stops_cleanly_exits_nonzero` (exit 1, one `error:`, no traceback, only 1 completed step) ✓ (partial — see WARNING)
+- "Malformed manifest reports a clear error" (validate) → existing test_validate cases ✓
+- "Drift detected against a real workspace" → `test_drift_detected_against_real_scanned_workspace` (renders `commit_mismatch` as human text sourced from real scan) ✓
+
+### Warnings
+1. **TEST GAP (non-blocking, spec scenario partially covered)**: the `forge project` mid-plan-failure spec scenario says the command "exits non-zero **naming the failing repo**", and separately "step 3 leaves no half-cloned directory". `test_mid_plan_checkout_failure_stops_cleanly` asserts exit code + single `error:` + no traceback + no touched steps, but does NOT assert the error text names the failing repo, and does NOT assert no credentialed-URL leak at the CLI layer (the fake raises a URL-bearing message that the CLI would print verbatim). Half-clone atomicity is an adapter concern (covered in PR-2a). Recommend a CLI test asserting the failure message names the repo AND contains no secret. Non-blocking: the real adapter's `CheckoutError` is sanitized and repo identity reaches stderr via git.
+
+### Suggestions
+1. **UX sharp edge (design-tracked)**: unconditional scan means `forge validate` on an unprojected dev machine with a lock present now reports `not_materialized` drift for EVERY locked layer. Spec/design-consistent (`--no-scan` explicitly deferred), but consider a follow-up so a lock-only-no-workspace state reads as informational rather than drift noise.
+2. **PROCESS**: PR-3 is UNCOMMITTED (7 changed files in working tree). Commit before opening the PR.
+3. Consider one `forge project` idempotency CLI test (re-run over an already-projected tree → no-op) to lock in the design's resumable-projection guarantee at the command layer.
+
+### Verdict
+**PASS WITH WARNINGS**. PR-3 fully satisfies its contract with green evidence (136 passed, 4 kept/0 broken). `forge project` executes the plan through a correct resilient boundary; the `forge validate` behavior change is spec-faithful (real scan replaces the dead `materialized=None`, unconditional per literal spec text) and well-covered; the round-trip integration test is genuine; the `test_lock.py` change is a legitimate activation that strengthens (not weakens) coverage. Zero CRITICAL — clear for PR-4 (`forge unlock`) or archive of the PR-3 slice. The one WARNING is a targeted test-hardening item, not a defect.

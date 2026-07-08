@@ -1,16 +1,36 @@
 import json
 from pathlib import Path
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
-from odoo_forge.manifest.lockfile import Lockfile, compute_manifest_hash
+from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo, compute_manifest_hash
+from odoo_forge.manifest.projection import ScannedRepo
 from odoo_forge.manifest.schema import Manifest
+from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 runner = CliRunner()
+
+
+class _FakeScanningWorkspaceProvider:
+    """A `WorkspaceProvider` double whose `scan` returns caller-supplied
+    `ScannedRepo` facts — no real filesystem/git I/O."""
+
+    def __init__(self, scanned: list[ScannedRepo]) -> None:
+        self._scanned = scanned
+
+    def checkout(self, url: str, commit: str, dest: Path) -> None:
+        raise NotImplementedError
+
+    def scan(self, roots: object) -> list[ScannedRepo]:
+        return self._scanned
+
+    def promote(self, source: Path, dest: Path, branch: str) -> None:
+        raise NotImplementedError
 
 
 def test_valid_manifest_exits_zero() -> None:
@@ -139,3 +159,51 @@ def test_reports_manifest_lock_drift_when_lock_exists(tmp_path: Path) -> None:
 
     assert result.exit_code == 0
     assert "drift" in result.output.lower()
+
+
+def test_drift_detected_against_real_scanned_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`validate` reports `commit_mismatch` drift sourced from a real
+    `WorkspaceProvider.scan` -> `materialize_state` pipeline, not a
+    hardcoded `materialized=None` (the dead path this PR activates)."""
+    manifest_path = FIXTURES_DIR / "valid.project.yaml"
+    manifest = Manifest.model_validate(yaml.safe_load(manifest_path.read_text()))
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(manifest_path.read_text())
+
+    lock = Lockfile(
+        generated_from=compute_manifest_hash(manifest),
+        layers=[
+            ResolvedLayer(
+                name="core",
+                repos=[
+                    ResolvedRepo(
+                        url="https://github.com/odoo/odoo.git", ref="19.0", commit="expected-sha"
+                    )
+                ],
+            ),
+        ],
+    )
+    (tmp_path / "project.lock").write_text(lock.to_canonical_json())
+
+    monkeypatch.setattr(
+        main,
+        "_make_workspace_provider",
+        lambda: _FakeScanningWorkspaceProvider(
+            [
+                ScannedRepo(
+                    path=Path("/mnt/community/core/odoo"),
+                    url="https://github.com/odoo/odoo.git",
+                    commit="stale-sha",
+                )
+            ]
+        ),
+    )
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert "commit_mismatch" not in result.output  # rendered as human text, not the raw kind
+    assert "lock declares 'expected-sha' but materialized at 'stale-sha'" in result.output
