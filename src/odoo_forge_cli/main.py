@@ -29,6 +29,7 @@ from odoo_forge.manifest.projection import (
     MOUNT_ROOTS,
     materialize_state,
     plan_projection,
+    plan_unlock,
     project_workspace,
 )
 from odoo_forge.manifest.schema import Manifest
@@ -263,6 +264,45 @@ def project(
         raise typer.Exit(code=1)
 
     typer.echo(f"projected {len(plan.steps)} repo(s) from {lock_path}")
+
+
+@app.command(name="unlock")
+def unlock(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    layer: str = typer.Option(..., "--layer", help="Name of the layer to promote"),
+    repo: str = typer.Option(..., "--repo", help="URL of the repo within the layer to promote"),
+) -> None:
+    """Promote a repo's read-only projected checkout to a writable worktree."""
+    try:
+        data = _read_manifest_data(manifest)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"])
+            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        raise typer.Exit(code=1)
+
+    # Resilient boundary, mirroring `project`: `ProjectionError` (unknown
+    # layer) and any `WorkspaceError` from the adapter (`AlreadyUnlockedError`,
+    # `PromotionError`) surface as a single clean message, never a raw
+    # traceback. `source`/`dest`/`branch` are computed here in the pure core
+    # (`plan_unlock`) — the adapter only executes the worktree move.
+    try:
+        unlock_plan = plan_unlock(parsed, layer, repo)
+        provider = _make_workspace_provider()
+        provider.promote(unlock_plan.source, unlock_plan.dest, unlock_plan.branch)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"unlocked '{layer}' at '{unlock_plan.dest}' on branch '{unlock_plan.branch}'")
 
 
 __all__ = ["app"]
