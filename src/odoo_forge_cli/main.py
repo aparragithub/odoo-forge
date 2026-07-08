@@ -25,9 +25,17 @@ from odoo_forge.manifest.errors import (
 )
 from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.lockfile import Lockfile
+from odoo_forge.manifest.projection import (
+    MOUNT_ROOTS,
+    materialize_state,
+    plan_projection,
+    project_workspace,
+)
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.source_provider import SourceProvider
+from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_git.git_provider import GitSourceProvider
+from odoo_forge_workspace.provider import GitWorkspaceProvider
 
 app = typer.Typer()
 
@@ -35,6 +43,11 @@ app = typer.Typer()
 def _make_provider() -> SourceProvider:
     """Composition root: the ONE place the concrete git adapter is built."""
     return GitSourceProvider()
+
+
+def _make_workspace_provider() -> WorkspaceProvider:
+    """Composition root: the ONE place the concrete workspace adapter is built."""
+    return GitWorkspaceProvider()
 
 
 @app.callback()
@@ -141,7 +154,10 @@ def validate(
     try:
         compose(parsed)
         lock = _load_lock(manifest.parent / "project.lock")
-        report = detect_drift(parsed, lock, materialized=None)
+        provider = _make_workspace_provider()
+        scanned = provider.scan(list(MOUNT_ROOTS.values()))
+        materialized = materialize_state(scanned, MOUNT_ROOTS)
+        report = detect_drift(parsed, lock, materialized)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1)
@@ -151,8 +167,10 @@ def validate(
     if lock is None:
         return
 
-    # Only manifest<->lock drift is checked here; materialized (on-disk) state
-    # is deferred to a later slice, so the message stays scoped to what ran.
+    # Both manifest<->lock and lock<->on-disk-state drift are checked here:
+    # `materialized` is a real `MaterializedState` scanned from the fixed
+    # mount roots, so `not_materialized`/`commit_mismatch` entries reflect
+    # the actual workspace, not a hardcoded `None`.
     if report.is_clean:
         typer.echo("no manifest/lock drift detected")
     else:
@@ -197,6 +215,54 @@ def lock(
         raise typer.Exit(code=1)
 
     typer.echo(f"wrote {lock_path}")
+
+
+@app.command(name="project")
+def project(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    lock: Path = typer.Option(
+        None,
+        "--lock",
+        help="Path to the project.lock file (default: alongside the manifest)",
+    ),
+) -> None:
+    """Project a locked manifest onto the filesystem under fixed mount roots."""
+    try:
+        data = _read_manifest_data(manifest)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"])
+            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        raise typer.Exit(code=1)
+
+    lock_path = lock if lock is not None else manifest.parent / "project.lock"
+
+    # Resilient boundary, mirroring `lock`: `ProjectionError` (orphaned locked
+    # layer) and any `WorkspaceError` from the adapter (e.g. `CheckoutError`)
+    # surface as a single clean message naming the failing repo, never a raw
+    # traceback. `project_workspace` stops at the first failing step and
+    # never touches already-completed steps.
+    try:
+        loaded_lock = _load_lock(lock_path)
+        if loaded_lock is None:
+            raise LockfileError(f"no lockfile found at '{lock_path}' — run `forge lock` first")
+
+        plan = plan_projection(parsed, loaded_lock)
+        provider = _make_workspace_provider()
+        project_workspace(plan, provider)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"projected {len(plan.steps)} repo(s) from {lock_path}")
 
 
 __all__ = ["app"]
