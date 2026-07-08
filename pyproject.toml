@@ -65,3 +65,9 @@ name = "Core never imports the workspace adapter"
 type = "forbidden"
 source_modules = ["odoo_forge"]
 forbidden_modules = ["odoo_forge_workspace"]
+
+[[tool.importlinter.contracts]]
+name = "Core never imports the docker adapter"
+type = "forbidden"
+source_modules = ["odoo_forge"]
+forbidden_modules = ["odoo_forge_docker"]
