@@ -1,0 +1,130 @@
+"""Pure workspace projection planning: manifest + lock -> filesystem plan.
+
+`classify_root` and `plan_projection` are the pure, provider-free half of
+the Slice 3 projection pipeline. The lock already carries resolved commits
+(pinned by `build_lock`), so no `SourceProvider`/`WorkspaceProvider` I/O is
+needed here — this module performs zero I/O and never raises anything
+except the typed `ProjectionError`.
+"""
+
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel
+
+from odoo_forge.manifest.errors import ProjectionError
+from odoo_forge.manifest.lockfile import Lockfile
+from odoo_forge.manifest.schema import CoreLayer, GitLayer, Manifest, PublishedLayer
+
+# Fixed 5-root table. `worktrees` is reserved exclusively for `unlock`-promoted
+# writable copies and is NEVER returned by `classify_root` — read-only
+# projection only ever targets the other 4 roots.
+MountRoot = Literal["custom", "community", "localization", "enterprise"]
+
+MOUNT_ROOTS: dict[MountRoot | Literal["worktrees"], Path] = {
+    "community": Path("/mnt/community"),
+    "custom": Path("/mnt/custom"),
+    "localization": Path("/mnt/localization"),
+    "enterprise": Path("/mnt/enterprise"),
+    "worktrees": Path("/mnt/worktrees"),
+}
+
+
+class ScannedRepo(BaseModel):
+    """Raw, un-interpreted result of scanning one on-disk checkout.
+
+    Emitted by a `WorkspaceProvider.scan` adapter (later slice) straight
+    from `git -C <path> rev-parse HEAD` / `remote.origin.url` — no layer
+    attribution yet. `materialize_state` (later slice) maps a list of these
+    back into a `MaterializedState` using the mount-root/directory
+    convention written by `project_workspace`.
+    """
+
+    path: Path
+    url: str
+    commit: str
+
+
+class WorkspacePlanEntry(BaseModel):
+    mount_root: MountRoot
+    layer: str
+    url: str
+    commit: str
+    target_path: Path
+
+
+class WorkspacePlan(BaseModel):
+    steps: list[WorkspacePlanEntry] = []
+
+
+def classify_root(layer: CoreLayer | GitLayer | PublishedLayer) -> MountRoot:
+    """Map a layer to its read-only projection mount root. Pure, zero I/O.
+
+    Precedence: `CoreLayer` always classifies to `"community"`; else
+    `requires_edition == "enterprise"` always wins over any explicit
+    `category`; else the layer's explicit `category` when set; else
+    `"custom"` as the default. Never returns `"worktrees"`.
+    """
+    if isinstance(layer, CoreLayer):
+        return "community"
+    if layer.requires_edition == "enterprise":
+        return "enterprise"
+    if layer.category is not None:
+        return layer.category
+    return "custom"
+
+
+def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
+    """Join `lock.layers` to the current manifest by name and classify each
+    to a mount root, preserving `lock.layers` order. Pure, zero I/O.
+
+    Raises `ProjectionError` naming the orphaned layer when a locked layer
+    has no matching manifest layer — no partial plan is ever returned.
+    """
+    manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
+        "core": manifest.core,
+    }
+    for layer in manifest.layers:
+        manifest_layers_by_name[layer.name] = layer
+
+    steps: list[WorkspacePlanEntry] = []
+    for lock_layer in lock.layers:
+        layer = manifest_layers_by_name.get(lock_layer.name)
+        if layer is None:
+            raise ProjectionError(
+                f"locked layer '{lock_layer.name}' has no matching manifest layer"
+            )
+
+        mount_root = classify_root(layer)
+        for repo in lock_layer.repos:
+            steps.append(
+                WorkspacePlanEntry(
+                    mount_root=mount_root,
+                    layer=lock_layer.name,
+                    url=repo.url,
+                    commit=repo.commit,
+                    target_path=MOUNT_ROOTS[mount_root] / lock_layer.name / _repo_name(repo.url),
+                )
+            )
+
+    return WorkspacePlan(steps=steps)
+
+
+def _repo_name(url: str) -> str:
+    """Return the repo directory name derived from a git URL.
+
+    Convention mirrors `composition._repo_name`: URL basename with any
+    trailing slash and `.git` suffix removed.
+    """
+    return url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+
+
+__all__ = [
+    "MountRoot",
+    "MOUNT_ROOTS",
+    "ScannedRepo",
+    "WorkspacePlanEntry",
+    "WorkspacePlan",
+    "classify_root",
+    "plan_projection",
+]
