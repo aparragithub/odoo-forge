@@ -4,3 +4,11 @@ __pycache__/
 
 # Tool caches
 .atl/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Coverage data
+.coverage
+.coverage.*
+htmlcov/
