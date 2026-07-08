@@ -106,3 +106,122 @@ None.
 ### Status
 12/12 PR-1 tasks complete (12/48 tasks in the full 5-PR chain). Ready for sdd-verify
 on PR-1, then sdd-apply again for PR-2a.
+
+## Batch 2 — PR-2a: Pure project_workspace + Checkout Adapter + 4th Contract
+
+**Mode**: Strict TDD (RED → GREEN, no REFACTOR needed)
+**Branch**: `sdd/phase-2-slice-3-pr2a-checkout-adapter` (base = PR-1 branch)
+**Scope**: PR-2a only. PR-2b/3/4 NOT started.
+
+### Completed Tasks (PR-2a)
+- [x] 4.1 RED: `test_projection.py::TestProjectWorkspace::test_calls_provider_checkout_per_entry`
+- [x] 4.2 GREEN: `project_workspace(plan, provider) -> None` (deviation from `-> WorkspaceReport`, see below)
+- [x] 5.1 Create `odoo_forge_workspace/__init__.py` + `provider.py` scaffold
+- [x] 5.2 RED: `tests/adapters/test_workspace_provider.py` (idempotent skip, dirty refusal, worktree refusal, clean-replace, missing-git-binary)
+- [x] 5.3 GREEN: implement `checkout` — temp clone + `os.replace`, skip if `HEAD` matches, refuse dirty/worktree with `CheckoutError`
+- [x] 6.1 Add `odoo_forge_workspace` to `pyproject.toml` root packages + wheel include
+- [x] 6.2 Add 4th import-linter contract forbidding `odoo_forge -> odoo_forge_workspace`
+- [x] 6.3 Verify `uv run lint-imports` — 4 kept, 0 broken
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|----------------|
+| `src/odoo_forge/manifest/projection.py` | Modified | Added pure `project_workspace(plan, provider) -> None` — loops `WorkspacePlan.steps`, calls `provider.checkout` per entry; zero I/O, provider injected via Protocol (`TYPE_CHECKING` import only). |
+| `src/odoo_forge_workspace/__init__.py` | Created | Package init re-exporting `GitWorkspaceProvider`, mirrors `odoo_forge_git/__init__.py`. |
+| `src/odoo_forge_workspace/provider.py` | Created | `GitWorkspaceProvider.checkout`: idempotent (skip if `HEAD==commit`), refuses dirty checkout and linked worktrees (`CheckoutError`), otherwise clones to a `tempfile.mkdtemp()` sibling of `dest` + `git checkout --detach <commit>` + `os.replace` (atomic, same-filesystem). argv-list subprocess only, non-interactive env mirroring `odoo_forge_git`. `scan`/`promote` stubbed to raise `NotImplementedError` (PR-2b scope). |
+| `pyproject.toml` | Modified | Added `odoo_forge_workspace` to root packages + wheel packages; added 4th import-linter contract. |
+| `tests/manifest/test_projection.py` | Modified | Added `_FakeWorkspaceProvider` + `TestProjectWorkspace` (2 tests). |
+| `tests/adapters/test_workspace_provider.py` | Created | 10 tests covering clone+replace, idempotent skip, dirty refusal, linked-worktree refusal, clean-checkout-replace, missing-git-binary, credential-leak safety, argv end-of-options safety, Protocol conformance, scan/promote NotImplementedError stubs. |
+| `openspec/changes/phase-2-slice-3-workspace-projection/tasks.md` | Modified | Marked PR-2a tasks `[x]`, added Known Deviation note. |
+
+### Deviations from Design
+`project_workspace(plan, provider)` returns `None`, not `WorkspaceReport` as named in
+tasks.md/design.md's Interfaces section. Neither spec nor design define `WorkspaceReport`'s
+fields anywhere — it appears only as a bare return-type name with no schema. Mirrored
+`build_lock(manifest, provider) -> Lockfile`'s precedent exactly instead: a pure loop over
+provider calls, exceptions propagate uncaught (satisfies the spec's "forge project stops on
+first failure, no partial-step rollback" requirement without a wrapper object). Flagged for
+sdd-verify/judgment-day review before PR-3's `forge project` CLI locks in the exact call
+contract.
+
+### Evidence (exact command output)
+```
+$ uv run pytest
+114 passed in 0.41s   (up from 104 baseline)
+```
+```
+$ uv run lint-imports
+Contracts: 4 kept, 0 broken.   (up from 3 kept)
+```
+
+### Remaining Tasks (as of end of PR-2a)
+- [ ] PR-2b: `materialize_state` + scan/promote adapters
+- [ ] PR-3: `forge project` CLI + `forge validate` scan wiring
+- [ ] PR-4: `forge unlock` CLI
+
+## Batch 3 — PR-2b: Pure materialize_state + Scan/Promote Adapters
+
+**Mode**: Strict TDD (RED → GREEN, no REFACTOR needed)
+**Branch**: `sdd/phase-2-slice-3-pr2b-scan-promote` (base = PR-2a branch)
+**Scope**: PR-2b only. PR-3/4 NOT started.
+
+### Completed Tasks (PR-2b)
+- [x] 7.1 RED: `test_projection.py::TestMaterializeState::*` (layout+worktrees precedence, missing-directory-not-an-error, malformed-path raises, path-outside-any-root raises)
+- [x] 7.2 GREEN: `materialize_state(scanned, roots) -> MaterializedState`
+- [x] 8.1 RED: `test_workspace_provider.py::TestScan::*` (reads HEAD + remote url, skips non-git dirs, skips nonexistent root, corrupted-HEAD raises `ScanError`, no credential leak in error)
+- [x] 8.2 GREEN: implement `scan` — `git -C <path> rev-parse HEAD` / `git -C <path> remote get-url origin`, prunes `os.walk` at each found repo root, raises `ScanError` on failure
+- [x] 9.1 RED: `test_workspace_provider.py::TestPromote::*` (creates worktree + branch, raises `AlreadyUnlockedError` on re-unlock, `PromotionError` on failure)
+- [x] 9.2 GREEN: implement `promote` — `git worktree add -b <branch> -- <dest>` run from `source`, `AlreadyUnlockedError` if `dest` exists, `PromotionError` on non-zero exit
+
+### TDD Cycle Evidence
+| Task | Test File | RED | GREEN |
+|------|-----------|-----|-------|
+| 7.1-7.2 materialize_state | tests/manifest/test_projection.py::TestMaterializeState | `ImportError: cannot import name 'materialize_state'` | 20/20 projection tests pass |
+| 8.1-8.2 scan | tests/adapters/test_workspace_provider.py::TestScan | `NotImplementedError: scan lands in PR-2b` | 19/19 adapter tests pass |
+| 9.1-9.2 promote | tests/adapters/test_workspace_provider.py::TestPromote | `NotImplementedError: promote lands in PR-2b` | 19/19 adapter tests pass |
+
+### Files Changed
+| File | Action | What Was Done |
+|------|--------|----------------|
+| `src/odoo_forge/manifest/projection.py` | Modified | Added pure `materialize_state(scanned, roots) -> MaterializedState` + private `_match_root_and_layer(path, roots)` helper. Derives layer name from the `/mnt/<root>/<layer>/...` path segment matched against `roots` (e.g. `MOUNT_ROOTS`); groups repos by layer keyed by `url` so a `worktrees`-root entry always overrides a same-`url` read-only entry (applied in a second pass, order-independent). Raises `ScanError` naming the offending path when it matches no known root, or matches a root but is missing the `<layer>` segment. Zero I/O. |
+| `src/odoo_forge_workspace/provider.py` | Modified | Implemented `scan(roots) -> list[ScannedRepo]`: walks each root with `os.walk`, treats any directory containing `.git` as one repo (pruning further descent via `dirnames[:] = []`), reads `HEAD` + `remote.origin.url` via `git -C`, raises `ScanError` on failure. Implemented `promote(source, dest, branch) -> None`: raises `AlreadyUnlockedError` if `dest` already exists, otherwise `git -C <source> worktree add -b <branch> -- <dest>`, raises `PromotionError` on failure. Generalized `_run(argv, error_cls=CheckoutError)` to accept a caller-supplied `WorkspaceError` subclass so `scan`/`promote` raise their own typed errors through the same safe-subcommand-label / non-interactive-env plumbing as `checkout`. |
+| `tests/manifest/test_projection.py` | Modified | Added `TestMaterializeState` (4 tests: layout+worktrees precedence, missing-directory-not-an-error, malformed-path raises, path-outside-any-root raises). |
+| `tests/adapters/test_workspace_provider.py` | Modified | Replaced the PR-2a `test_scan_and_promote_are_not_yet_implemented` stub test with `TestScan` (4 tests) and `TestPromote` (2 tests). |
+| `openspec/changes/phase-2-slice-3-workspace-projection/tasks.md` | Modified | Marked PR-2b tasks `[x]`. |
+
+### Deviations from Design
+None beyond the PR-2a-flagged `WorkspaceReport` deviation (unaffected by this batch).
+`promote`'s `AlreadyUnlockedError` check (`dest.exists()`) is implemented directly in the
+adapter rather than deferred to a future pure `unlock` core use-case, since "does a path
+already exist on disk" is an adapter-level filesystem fact and task 9.2 explicitly calls
+for the adapter to raise `AlreadyUnlockedError`. This does not preclude a future `unlock`
+core use-case (PR-4 scope) from also short-circuiting before calling `promote` if it has
+already computed the answer via `materialize_state`.
+
+### Evidence (exact command output)
+```
+$ uv run pytest -q
+........................................................................ [ 55%]
+.........................................................                [100%]
+129 passed in 0.44s   (up from 114 baseline)
+```
+```
+$ uv run lint-imports
+Contracts
+---------
+Analyzed 32 files, 62 dependencies.
+-----------------------------------
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Contracts: 4 kept, 0 broken.
+```
+
+### Remaining Tasks (as of end of PR-2b)
+- [ ] PR-3: `forge project` CLI + `forge validate` scan wiring
+- [ ] PR-4: `forge unlock` CLI
+
+### Status
+26/48 tasks complete in the full 5-PR chain (PR-1 12/12, PR-2a 8/8, PR-2b 6/6). Ready for
+sdd-verify on PR-2b, then sdd-apply again for PR-3.
