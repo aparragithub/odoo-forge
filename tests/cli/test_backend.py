@@ -3,9 +3,13 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from odoo_forge.backend.errors import DockerUnavailableError, InstanceExistsError
-from odoo_forge.backend.plan import BackendPlan
-from odoo_forge.backend.status import InstanceRef, InstanceStatus, RoleStatus
+from odoo_forge.backend.errors import (
+    DockerUnavailableError,
+    InstanceExistsError,
+    InstanceNotFoundError,
+)
+from odoo_forge.backend.plan import BackendPlan, ContainerRole
+from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus, RoleStatus
 from odoo_forge.manifest.errors import ScanError
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
@@ -58,12 +62,25 @@ class _FakeBackendProvider:
         run_result: InstanceRef | None = None,
         run_error: Exception | None = None,
         status_result: InstanceStatus | None = None,
+        stop_error: Exception | None = None,
+        logs_result: str | None = None,
+        logs_error: Exception | None = None,
+        exec_result: ExecResult | None = None,
+        exec_error: Exception | None = None,
     ) -> None:
         self.run_calls: list[BackendPlan] = []
         self.status_calls: list[InstanceRef] = []
+        self.stop_calls: list[InstanceRef] = []
+        self.logs_calls: list[tuple[InstanceRef, ContainerRole]] = []
+        self.exec_calls: list[tuple[InstanceRef, tuple[str, ...]]] = []
         self._run_result = run_result
         self._run_error = run_error
         self._status_result = status_result
+        self._stop_error = stop_error
+        self._logs_result = logs_result
+        self._logs_error = logs_error
+        self._exec_result = exec_result
+        self._exec_error = exec_error
 
     def run(self, plan: BackendPlan) -> InstanceRef:
         self.run_calls.append(plan)
@@ -78,13 +95,23 @@ class _FakeBackendProvider:
         return self._status_result
 
     def stop(self, ref: InstanceRef) -> None:
-        raise NotImplementedError
+        self.stop_calls.append(ref)
+        if self._stop_error is not None:
+            raise self._stop_error
 
-    def logs(self, ref: InstanceRef, role: object) -> str:
-        raise NotImplementedError
+    def logs(self, ref: InstanceRef, role: ContainerRole) -> str:
+        self.logs_calls.append((ref, role))
+        if self._logs_error is not None:
+            raise self._logs_error
+        assert self._logs_result is not None
+        return self._logs_result
 
-    def exec(self, ref: InstanceRef, argv: object) -> object:
-        raise NotImplementedError
+    def exec(self, ref: InstanceRef, argv: object) -> ExecResult:
+        self.exec_calls.append((ref, tuple(argv)))
+        if self._exec_error is not None:
+            raise self._exec_error
+        assert self._exec_result is not None
+        return self._exec_result
 
 
 def test_run_succeeds_prints_instance_ref(
@@ -156,14 +183,17 @@ def test_status_reports_not_running_without_raising_for_absent_instance(
     assert "Traceback" not in result.output
 
 
-@pytest.mark.parametrize("command", ["run", "status"])
+@pytest.mark.parametrize("command", ["run", "status", "stop", "logs", "exec"])
 def test_scan_error_from_corrupted_checkout_exits_clean_one_error(
     command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # `ScanError` is a `WorkspaceError` -> `ManifestError`, NOT a
-    # `BackendError` — `run`/`status` must still catch it (mirrors
-    # `project`/`validate`'s identical `scan()`/`materialize_state()`
-    # boundary; both commands share that exact call).
+    # `BackendError` — every command deriving `InstanceRef` via a workspace
+    # scan (`run`/`status`/`stop`/`logs`/`exec`, all sharing the same
+    # `scan()`/`materialize_state()` call `project`/`validate` use) must
+    # still catch it and exit clean. This documents CURRENT behavior; see
+    # DEBT-2 in tasks.md for why `stop`/`logs`/`exec` arguably should NOT
+    # need a workspace scan at all to derive a pure-identity `InstanceRef`.
     fake_workspace = _FakeWorkspaceProvider(
         scan_error=ScanError("cannot read materialized repo state at '/mnt/community/core'")
     )
@@ -171,8 +201,11 @@ def test_scan_error_from_corrupted_checkout_exits_clean_one_error(
     monkeypatch.setattr(main, "_make_backend_provider", lambda: _FakeBackendProvider())
 
     project_yaml = _write_manifest(tmp_path)
+    args = [command, "--manifest", str(project_yaml)]
+    if command == "exec":
+        args += ["--", "echo", "hi"]
 
-    result = runner.invoke(app, [command, "--manifest", str(project_yaml)])
+    result = runner.invoke(app, args)
 
     assert result.exit_code == 1
     assert result.output.count("error:") == 1
@@ -225,3 +258,184 @@ def test_malformed_manifest_exits_clean_one_error(command: str, tmp_path: Path) 
 
     assert result.exit_code == 1
     assert "Traceback" not in result.output
+
+
+def test_stop_succeeds_calls_provider_with_derived_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider()
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(app, ["stop", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert len(fake_backend.stop_calls) == 1
+    assert fake_backend.stop_calls[0].project == "odoo-idp"
+
+
+def test_stop_unknown_instance_exits_nonzero_single_cause(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(
+        stop_error=InstanceNotFoundError("instance 'default' does not exist")
+    )
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(app, ["stop", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "Traceback" not in result.output
+
+
+def test_logs_prints_role_selected_log_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(logs_result="2026-07-08T00:00:00 odoo booted")
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(
+        app, ["logs", "--manifest", str(project_yaml), "--role", "postgres"]
+    )
+
+    assert result.exit_code == 0
+    assert "odoo booted" in result.output
+    assert len(fake_backend.logs_calls) == 1
+    assert fake_backend.logs_calls[0][1] == "postgres"
+
+
+def test_logs_defaults_to_odoo_role(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(logs_result="log text")
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(app, ["logs", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert len(fake_backend.logs_calls) == 1
+    assert fake_backend.logs_calls[0][1] == "odoo"
+
+
+def test_logs_absent_instance_exits_clean_one_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(
+        logs_error=InstanceNotFoundError("instance 'default' does not exist")
+    )
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(app, ["logs", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "Traceback" not in result.output
+
+
+def test_exec_prints_stdout_and_propagates_exit_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(
+        exec_result=ExecResult(exit_code=3, stdout="out-line", stderr="err-line")
+    )
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(
+        app, ["exec", "--manifest", str(project_yaml), "--", "python3", "-c", "1"]
+    )
+
+    assert result.exit_code == 3
+    assert "out-line" in result.output
+    assert "err-line" in result.output
+    assert len(fake_backend.exec_calls) == 1
+    assert fake_backend.exec_calls[0][1] == ("python3", "-c", "1")
+
+
+def test_exec_absent_instance_exits_clean_one_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(
+        exec_error=InstanceNotFoundError("instance 'default' does not exist")
+    )
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(
+        app, ["exec", "--manifest", str(project_yaml), "--", "echo", "hi"]
+    )
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "Traceback" not in result.output
+
+
+def test_logs_invalid_role_exits_clean_usage_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: _FakeBackendProvider())
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(
+        app, ["logs", "--manifest", str(project_yaml), "--role", "bogus"]
+    )
+
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output
+
+
+def test_exec_success_exits_zero_prints_stdout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(
+        exec_result=ExecResult(exit_code=0, stdout="all good", stderr="")
+    )
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(
+        app, ["exec", "--manifest", str(project_yaml), "--", "echo", "ok"]
+    )
+
+    assert result.exit_code == 0
+    assert "all good" in result.output
