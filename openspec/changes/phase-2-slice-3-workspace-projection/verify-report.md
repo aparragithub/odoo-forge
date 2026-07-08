@@ -60,3 +60,59 @@ The apply/tasks docs flagged that `scan`/`promote` signatures followed the DESIG
 ## Verdict
 
 PASS. PR-1 fully satisfies its contract with green runtime evidence. Ready to proceed to PR-2a.
+
+---
+
+# Verification Report — Phase 2 Slice 3 (PR-2a: project_workspace + Checkout Adapter + 4th Contract)
+
+**Scope verified**: PR-2a ONLY (pure `project_workspace` loop, `GitWorkspaceProvider.checkout`, 4th import-linter contract + packaging)
+**Branch**: sdd/phase-2-slice-3-pr2a-checkout-adapter
+**Mode**: Strict TDD (authoritative per orchestrator)
+**Verdict**: PASS WITH WARNINGS
+**Counts**: CRITICAL 0 · WARNING 2 · SUGGESTION 4
+
+## Runtime evidence
+
+```
+$ uv run pytest
+114 passed in 0.40s
+```
+
+```
+$ uv run lint-imports
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Contracts: 4 kept, 0 broken.
+```
+
+## PR-2a contract checks
+
+1. **Pure `project_workspace(plan, provider)`** — PASS. Provider-injected via `WorkspaceProvider` Protocol under `TYPE_CHECKING` only (string annotation), zero runtime import of any adapter. Loops `plan.steps` in order calling `provider.checkout(url, commit, target_path)` per entry; exceptions propagate uncaught (stop-on-failure). Genuinely pure — import-linter confirms core clean. Fake-tested (`TestProjectWorkspace`): per-entry call order + empty-plan zero-call.
+
+2. **`GitWorkspaceProvider.checkout`** — PASS. Atomicity: clone into `tempfile.mkdtemp(dir=dest.parent)` sibling, `git checkout --detach <commit>`, `rmtree(dest)` then `os.replace(clone, dest)`; `except BaseException: rmtree(tmp, ignore_errors=True); raise` leaves NO half-cloned dir at `dest` on failure. Subprocess safety: ALL calls via `_run(argv: list[str])`, argv-list only, NO `shell=True` anywhere — no shell-injection surface. Non-interactive env (`GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=""`, pinned `LANG`/`LC_ALL`). Idempotent: `HEAD == commit` → early no-op. Refuses to clobber: linked worktree (`.git` is a file) → `CheckoutError`; dirty checkout at wrong commit → `CheckoutError`, dest never destroyed. Error taxonomy: missing binary, timeout, non-zero rc all map to `CheckoutError`.
+
+3. **4th import-linter contract** — PASS. `[[tool.importlinter.contracts]]` "Core never imports the workspace adapter": forbidden, `source_modules=["odoo_forge"]`, `forbidden_modules=["odoo_forge_workspace"]`. Package registered in `root_packages` AND wheel `packages`. `lint-imports` = 4 kept / 0 broken.
+
+4. **Tests** — PASS. 114 passed (baseline 104, +10). 8 adapter tests behavior-first: happy clone+replace, idempotent skip, dirty refusal (no clone, dest preserved), linked-worktree refusal, clean-replace-at-wrong-commit (stale marker gone), missing-git-binary → CheckoutError, scan/promote NotImplementedError scope guard, Protocol isinstance. Not tautological.
+
+5. **Scope discipline** — PASS. `scan`/`promote` stubbed to `NotImplementedError` (PR-2b) — correct. `materialize_state` NOT in core (only a docstring mention). No `forge project`/`forge unlock` CLI, no `_make_workspace_provider` (PR-3/4). No `factory/` dir exists/touched.
+
+6. **`WorkspaceReport` deviation** — ACCEPTED (no code change recommended). `project_workspace` returns `None`. The spec's `forge project` contract (atomic per-step, stop-on-failure, exit non-zero naming failing repo, no partial-step rollback) is fully satisfied by an exception-propagating loop, mirroring `build_lock(...) -> Lockfile`'s side-effect-loop precedent. `WorkspaceReport` appears only as a bare unschematized return-type name in design/tasks. Does NOT constrain PR-3: the CLI wraps the call in `try/except WorkspaceError`; `CheckoutError` messages carry the failing clone argv (incl. url) and dest, so the failing repo is nameable without a report object. Recommend reconciling the DOCS (drop `WorkspaceReport` from design/tasks) rather than adding the type.
+
+## Warnings
+
+- **WARNING (process, not code)**: PR-2a changes are UNCOMMITTED. `git diff main...HEAD` is empty (HEAD == PR-1 merge). Working tree carries modified `projection.py`/`pyproject.toml`/`test_projection.py`/`tasks.md` + untracked `src/odoo_forge_workspace/` + `tests/adapters/test_workspace_provider.py`. apply-progress marks PR-2a DONE but no PR-2a commit exists. Orchestrator MUST commit before opening the PR.
+- **WARNING (doc drift)**: design/tasks Interfaces still name `project_workspace(...) -> WorkspaceReport`; code returns `None`. Reconcile docs.
+
+## Suggestions
+
+- **SUGGESTION**: Option-injection hardening — add `--` end-of-options before positional `url`/`commit` in `git clone`/`git checkout`. Low risk (commits are 40-hex SHAs pinned by build_lock, argv-list already blocks shell injection); defense-in-depth only.
+- **SUGGESTION**: No test explicitly guards against a `shell=True` regression. Add an assertion in the fake `subprocess.run` that `shell` is falsy.
+- **SUGGESTION**: The `subprocess.TimeoutExpired -> CheckoutError` branch in `_run` is untested.
+- **SUGGESTION**: Cosmetic — the `.marker` sanity assert in `test_checkout_clones_to_temp_and_replaces_into_dest` is trivially true (weak, harmless).
+
+## Verdict
+
+PASS WITH WARNINGS. PR-2a fully satisfies its contract with green evidence (114 passed, 4 kept/0 broken). Subprocess is argv-list/no-shell, checkout is atomic with clean failure cleanup and dirty/worktree refusal, error taxonomy correct. Zero CRITICAL. Ready to proceed to PR-2b once the working tree is committed. WorkspaceReport doc drift should be reconciled (docs, not code).

@@ -8,13 +8,16 @@ except the typed `ProjectionError`.
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
 
 from odoo_forge.manifest.errors import ProjectionError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.schema import CoreLayer, GitLayer, Manifest, PublishedLayer
+
+if TYPE_CHECKING:
+    from odoo_forge.ports.workspace_provider import WorkspaceProvider
 
 # Fixed 5-root table. `worktrees` is reserved exclusively for `unlock`-promoted
 # writable copies and is NEVER returned by `classify_root` — read-only
@@ -110,6 +113,18 @@ def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
     return WorkspacePlan(steps=steps)
 
 
+def project_workspace(plan: WorkspacePlan, provider: "WorkspaceProvider") -> None:
+    """Execute a `WorkspacePlan` by calling `provider.checkout` per entry.
+
+    Pure orchestration only — depends solely on the `WorkspaceProvider`
+    Protocol, never a concrete adapter, mirroring `build_lock`. Steps run in
+    `plan.steps` order; a `checkout` failure propagates uncaught, stopping
+    execution without touching subsequent steps.
+    """
+    for step in plan.steps:
+        provider.checkout(step.url, step.commit, step.target_path)
+
+
 def _repo_name(url: str) -> str:
     """Return the repo directory name derived from a git URL.
 
@@ -127,4 +142,5 @@ __all__ = [
     "WorkspacePlan",
     "classify_root",
     "plan_projection",
+    "project_workspace",
 ]
