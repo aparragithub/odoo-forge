@@ -15,6 +15,9 @@ import typer
 import yaml
 from pydantic import ValidationError
 
+from odoo_forge.backend.errors import BackendError
+from odoo_forge.backend.plan import ContainerRole, plan_backend
+from odoo_forge.backend.status import InstanceRef, instance_ref
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
 from odoo_forge.manifest.errors import (
@@ -33,8 +36,10 @@ from odoo_forge.manifest.projection import (
     project_workspace,
 )
 from odoo_forge.manifest.schema import Manifest
+from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
+from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
@@ -49,6 +54,11 @@ def _make_provider() -> SourceProvider:
 def _make_workspace_provider() -> WorkspaceProvider:
     """Composition root: the ONE place the concrete workspace adapter is built."""
     return GitWorkspaceProvider()
+
+
+def _make_backend_provider() -> BackendProvider:
+    """Composition root: the ONE place the concrete docker adapter is built."""
+    return DockerBackendProvider()
 
 
 @app.callback()
@@ -303,6 +313,204 @@ def unlock(
         raise typer.Exit(code=1)
 
     typer.echo(f"unlocked '{layer}' at '{unlock_plan.dest}' on branch '{unlock_plan.branch}'")
+
+
+@app.command(name="run")
+def run(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+) -> None:
+    """Provision the local Docker backend (Postgres + Odoo) for a manifest."""
+    try:
+        data = _read_manifest_data(manifest)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"])
+            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        raise typer.Exit(code=1)
+
+    # Resilient boundary, mirroring `project`/`unlock`: both a `ManifestError`
+    # (e.g. `ScanError` from a corrupted checkout, raised by the SAME
+    # `workspace_provider.scan`/`materialize_state` call `project`/`validate`
+    # use) and any `BackendError` (docker unavailable, image missing, PG/Odoo
+    # readiness timeout, instance already exists) surface as a single clean
+    # message, never a raw traceback, and never a half-provisioned instance
+    # the caller doesn't know about — `DockerBackendProvider.run` itself
+    # rolls back everything it created before raising.
+    try:
+        workspace_provider = _make_workspace_provider()
+        scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
+        materialized = materialize_state(scanned, MOUNT_ROOTS)
+        plan = plan_backend(parsed, materialized, instance=instance)
+        backend_provider = _make_backend_provider()
+        ref = backend_provider.run(plan)
+    except (ManifestError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"running: project '{ref.project}' instance '{ref.instance}' "
+        f"(odoo '{ref.odoo_container}', postgres '{ref.postgres_container}')"
+    )
+
+
+@app.command(name="status")
+def status(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+) -> None:
+    """Report the local Docker backend's live state, never raising for an absent instance."""
+    try:
+        data = _read_manifest_data(manifest)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        for error in exc.errors():
+            location = ".".join(str(part) for part in error["loc"])
+            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        raise typer.Exit(code=1)
+
+    # No registry is persisted: identity is recomputed purely from the
+    # manifest/instance name (the same `plan_backend` -> `instance_ref` path
+    # `run` uses), then handed to the provider's `status`, which itself never
+    # raises for an absent instance (design "Absent/empty inspect"). The same
+    # `ManifestError`/`BackendError` boundary as `run` applies here too, since
+    # this command runs the identical workspace scan.
+    try:
+        workspace_provider = _make_workspace_provider()
+        scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
+        materialized = materialize_state(scanned, MOUNT_ROOTS)
+        plan = plan_backend(parsed, materialized, instance=instance)
+        ref = instance_ref(plan)
+        backend_provider = _make_backend_provider()
+        report = backend_provider.status(ref)
+    except (ManifestError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    for role, role_status in (("postgres", report.postgres), ("odoo", report.odoo)):
+        typer.echo(
+            f"{role}: running={role_status.running} state={role_status.state} "
+            f"ready={role_status.ready}"
+        )
+
+
+def _derive_ref(manifest: Path, instance: str) -> InstanceRef:
+    """Shared identity derivation for `stop`/`logs`/`exec`: same no-registry
+    `plan_backend` -> `instance_ref` path `status` uses (manifest already
+    parsed by the caller), so independent invocations agree on the same
+    names without any persisted state."""
+    parsed = Manifest.model_validate(_read_manifest_data(manifest))
+    workspace_provider = _make_workspace_provider()
+    scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
+    materialized = materialize_state(scanned, MOUNT_ROOTS)
+    plan = plan_backend(parsed, materialized, instance=instance)
+    return instance_ref(plan)
+
+
+@app.command(name="stop")
+def stop(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+) -> None:
+    """Stop and remove `ref`'s containers/network, preserving named volumes."""
+    # Same boundary as `run`/`status`: a `ManifestError` (malformed manifest,
+    # `ScanError` from a corrupted checkout), a `ValidationError` (schema
+    # mismatch), or any `BackendError` (including `InstanceNotFoundError` for
+    # an absent instance) surfaces as a single clean message, never a raw
+    # traceback.
+    try:
+        ref = _derive_ref(manifest, instance)
+        backend_provider = _make_backend_provider()
+        backend_provider.stop(ref)
+    except (ManifestError, ValidationError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"stopped: project '{ref.project}' instance '{ref.instance}'")
+
+
+@app.command(name="logs")
+def logs(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+    role: ContainerRole = typer.Option(
+        "odoo", "--role", help="Which container's logs to fetch (odoo or postgres)"
+    ),
+) -> None:
+    """Print `role`'s container log text for the derived instance."""
+    try:
+        ref = _derive_ref(manifest, instance)
+        backend_provider = _make_backend_provider()
+        text = backend_provider.logs(ref, role)
+    except (ManifestError, ValidationError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(text)
+
+
+@app.command(
+    name="exec",
+    context_settings={"ignore_unknown_options": True, "allow_extra_args": True},
+)
+def exec_(
+    ctx: typer.Context,
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+    instance: str = typer.Option(
+        "default", "--instance", help="Instance name, for running multiple copies side by side"
+    ),
+) -> None:
+    """Run the trailing ARGV inside the Odoo container, propagating its exit code."""
+    argv = list(ctx.args)
+
+    # Resilient boundary identical to `stop`/`logs`: a `ManifestError`/
+    # `ValidationError`/`BackendError` (including an absent instance) exits
+    # clean with a single-line message and code 1 — that is a DIFFERENT,
+    # error-boundary exit distinct from a successful `exec` whose command
+    # itself returned a non-zero code, which propagates `ExecResult.exit_code`
+    # verbatim below.
+    try:
+        ref = _derive_ref(manifest, instance)
+        backend_provider = _make_backend_provider()
+        result = backend_provider.exec(ref, argv)
+    except (ManifestError, ValidationError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1)
+
+    if result.stdout:
+        typer.echo(result.stdout)
+    if result.stderr:
+        typer.echo(result.stderr, err=True)
+    raise typer.Exit(code=result.exit_code)
 
 
 __all__ = ["app"]
