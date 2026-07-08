@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,14 @@ from odoo_forge.manifest.projection import (
     plan_unlock,
     project_workspace,
 )
-from odoo_forge.manifest.schema import Client, CoreLayer, GitLayer, GitRepo, Manifest, PublishedLayer
+from odoo_forge.manifest.schema import (
+    Client,
+    CoreLayer,
+    GitLayer,
+    GitRepo,
+    Manifest,
+    PublishedLayer,
+)
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -23,7 +31,7 @@ def _manifest(**overrides: object) -> Manifest:
         "name": "odoo-idp",
         "odoo_version": "19.0",
         "edition": "community",
-        "client": Client(addons_path="client/addons"),
+        "client": Client(addons_path=Path("client/addons")),
     }
     defaults.update(overrides)
     return Manifest(**defaults)  # type: ignore[arg-type]
@@ -82,7 +90,10 @@ class TestClassifyRoot:
         ],
     )
     def test_never_returns_worktrees(self, layer: object) -> None:
-        assert classify_root(layer) != "worktrees"  # type: ignore[arg-type]
+        # `classify_root` is statically typed to never return "worktrees";
+        # this asserts that runtime invariant, so the comparison is
+        # intentionally always-true to mypy.
+        assert classify_root(layer) != "worktrees"  # type: ignore[arg-type, comparison-overlap]
         assert classify_root(layer) in MOUNT_ROOTS  # type: ignore[arg-type]
 
 
@@ -147,7 +158,9 @@ class TestPlanProjection:
                 ResolvedLayer(
                     name="ghost-layer",
                     repos=[
-                        ResolvedRepo(url="https://github.com/acme/ghost.git", ref="19.0", commit="sha-x")
+                        ResolvedRepo(
+                            url="https://github.com/acme/ghost.git", ref="19.0", commit="sha-x"
+                        )
                     ],
                 ),
             ],
@@ -166,7 +179,7 @@ class _FakeWorkspaceProvider:
     def checkout(self, url: str, commit: str, dest: Path) -> None:
         self.checkout_calls.append((url, commit, dest))
 
-    def scan(self, roots: object) -> list[object]:
+    def scan(self, roots: Sequence[Path]) -> list[ScannedRepo]:
         raise NotImplementedError("scan is PR-2b scope")
 
     def promote(self, source: Path, dest: Path, branch: str) -> None:

@@ -7,13 +7,13 @@ import yaml
 from odoo_forge.manifest import composition
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.errors import CompositionError
-from odoo_forge.manifest.schema import CoreLayer, GitLayer, GitRepo, Manifest, PublishedLayer
+from odoo_forge.manifest.schema import CoreLayer, GitLayer, Manifest, PublishedLayer
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 
-def _base_kwargs(**overrides) -> dict:
-    kwargs = {
+def _base_kwargs(**overrides: object) -> dict[str, object]:
+    kwargs: dict[str, object] = {
         "name": "odoo-idp",
         "odoo_version": "19.0",
         "edition": "community",
@@ -266,6 +266,7 @@ def test_compose_regression_core_ref_stays_none_and_helper_never_called() -> Non
 
     chain = compose(manifest)
 
+    assert chain[0] is manifest.core
     assert chain[0].ref is None
     assert "resolve_default_ref" not in inspect.getsource(composition)
 

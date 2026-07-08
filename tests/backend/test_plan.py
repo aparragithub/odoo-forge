@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from odoo_forge.backend.plan import (
     BackendPlan,
     ContainerRole,
@@ -16,7 +18,7 @@ def _manifest(**overrides: object) -> Manifest:
         "name": "odoo-idp",
         "odoo_version": "19.0",
         "edition": "community",
-        "client": Client(addons_path="client/addons"),
+        "client": Client(addons_path=Path("client/addons")),
     }
     defaults.update(overrides)
     return Manifest(**defaults)  # type: ignore[arg-type]

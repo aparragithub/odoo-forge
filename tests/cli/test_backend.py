@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
@@ -106,7 +107,7 @@ class _FakeBackendProvider:
         assert self._logs_result is not None
         return self._logs_result
 
-    def exec(self, ref: InstanceRef, argv: object) -> ExecResult:
+    def exec(self, ref: InstanceRef, argv: Sequence[str]) -> ExecResult:
         self.exec_calls.append((ref, tuple(argv)))
         if self._exec_error is not None:
             raise self._exec_error
@@ -114,9 +115,7 @@ class _FakeBackendProvider:
         return self._exec_result
 
 
-def test_run_succeeds_prints_instance_ref(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_workspace = _FakeWorkspaceProvider()
     monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
 
@@ -309,9 +308,7 @@ def test_logs_prints_role_selected_log_text(
 
     project_yaml = _write_manifest(tmp_path)
 
-    result = runner.invoke(
-        app, ["logs", "--manifest", str(project_yaml), "--role", "postgres"]
-    )
+    result = runner.invoke(app, ["logs", "--manifest", str(project_yaml), "--role", "postgres"])
 
     assert result.exit_code == 0
     assert "odoo booted" in result.output
@@ -319,9 +316,7 @@ def test_logs_prints_role_selected_log_text(
     assert fake_backend.logs_calls[0][1] == "postgres"
 
 
-def test_logs_defaults_to_odoo_role(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_logs_defaults_to_odoo_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_workspace = _FakeWorkspaceProvider()
     monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
 
@@ -394,9 +389,7 @@ def test_exec_absent_instance_exits_clean_one_error(
 
     project_yaml = _write_manifest(tmp_path)
 
-    result = runner.invoke(
-        app, ["exec", "--manifest", str(project_yaml), "--", "echo", "hi"]
-    )
+    result = runner.invoke(app, ["exec", "--manifest", str(project_yaml), "--", "echo", "hi"])
 
     assert result.exit_code == 1
     assert result.output.count("error:") == 1
@@ -412,9 +405,7 @@ def test_logs_invalid_role_exits_clean_usage_error(
 
     project_yaml = _write_manifest(tmp_path)
 
-    result = runner.invoke(
-        app, ["logs", "--manifest", str(project_yaml), "--role", "bogus"]
-    )
+    result = runner.invoke(app, ["logs", "--manifest", str(project_yaml), "--role", "bogus"])
 
     assert result.exit_code == 2
     assert "Traceback" not in result.output
@@ -433,9 +424,7 @@ def test_exec_success_exits_zero_prints_stdout(
 
     project_yaml = _write_manifest(tmp_path)
 
-    result = runner.invoke(
-        app, ["exec", "--manifest", str(project_yaml), "--", "echo", "ok"]
-    )
+    result = runner.invoke(app, ["exec", "--manifest", str(project_yaml), "--", "echo", "ok"])
 
     assert result.exit_code == 0
     assert "all good" in result.output

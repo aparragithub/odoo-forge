@@ -16,8 +16,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence, Type
 
 from odoo_forge.manifest.errors import (
     AlreadyUnlockedError,
@@ -180,7 +180,7 @@ class GitWorkspaceProvider:
         return bool(result.stdout.strip())
 
     def _run(
-        self, argv: list[str], error_cls: Type[WorkspaceError] = CheckoutError
+        self, argv: list[str], error_cls: type[WorkspaceError] = CheckoutError
     ) -> subprocess.CompletedProcess[str]:
         try:
             result = subprocess.run(
@@ -203,9 +203,7 @@ class GitWorkspaceProvider:
         if result.returncode != 0:
             # Same rule as above: report only the subcommand label + stderr,
             # never the raw argv (which carries the credentialed clone URL).
-            raise error_cls(
-                f"git {_git_subcommand(argv)} failed: {result.stderr.strip()}"
-            )
+            raise error_cls(f"git {_git_subcommand(argv)} failed: {result.stderr.strip()}")
 
         return result
 
@@ -238,4 +236,3 @@ def _is_linked_worktree(dest: Path) -> bool:
 
 
 __all__ = ["GitWorkspaceProvider"]
-
