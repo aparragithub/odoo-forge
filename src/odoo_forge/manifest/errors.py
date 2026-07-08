@@ -64,6 +64,38 @@ class NetworkError(ResolutionError):
         super().__init__(f"cannot reach remote '{url}': {detail}")
 
 
+class WorkspaceError(ManifestError):
+    """Base class for workspace projection/materialization errors.
+
+    Raised by the pure planning use-cases in `manifest/projection.py` and by
+    concrete `WorkspaceProvider` adapters (e.g. the git adapter in
+    `odoo_forge_workspace`) when a filesystem checkout/scan/promote step
+    cannot complete. Kept as its own family so callers can catch workspace
+    failures distinctly from manifest parsing/composition/resolution
+    failures.
+    """
+
+
+class ProjectionError(WorkspaceError):
+    """Raised when `plan_projection` cannot resolve a locked layer against the manifest."""
+
+
+class CheckoutError(WorkspaceError):
+    """Raised when a `WorkspaceProvider` cannot check out a repo cleanly."""
+
+
+class ScanError(WorkspaceError):
+    """Raised when a `WorkspaceProvider` cannot read a materialized repo's state."""
+
+
+class PromotionError(WorkspaceError):
+    """Raised when a `WorkspaceProvider` cannot promote a repo to writable."""
+
+
+class AlreadyUnlockedError(WorkspaceError):
+    """Raised when `unlock` targets a repo that is already writable."""
+
+
 __all__ = [
     "ManifestError",
     "ManifestInputError",
@@ -73,4 +105,10 @@ __all__ = [
     "RefNotFoundError",
     "AuthenticationError",
     "NetworkError",
+    "WorkspaceError",
+    "ProjectionError",
+    "CheckoutError",
+    "ScanError",
+    "PromotionError",
+    "AlreadyUnlockedError",
 ]
