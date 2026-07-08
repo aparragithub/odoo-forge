@@ -116,3 +116,67 @@ Contracts: 4 kept, 0 broken.
 ## Verdict
 
 PASS WITH WARNINGS. PR-2a fully satisfies its contract with green evidence (114 passed, 4 kept/0 broken). Subprocess is argv-list/no-shell, checkout is atomic with clean failure cleanup and dirty/worktree refusal, error taxonomy correct. Zero CRITICAL. Ready to proceed to PR-2b once the working tree is committed. WorkspaceReport doc drift should be reconciled (docs, not code).
+
+---
+
+# Verification Report — Phase 2 Slice 3 (PR-2b: Pure materialize_state + Scan/Promote Adapters)
+
+**Scope verified**: PR-2b ONLY (pure `materialize_state` + `_match_root_and_layer` in core; `GitWorkspaceProvider.scan`/`promote`; generalized `_run`)
+**Branch**: sdd/phase-2-slice-3-pr2b-scan-promote (base = PR-2a branch)
+**Mode**: Strict TDD (authoritative per orchestrator)
+**Verdict**: PASS WITH WARNINGS
+**Counts**: CRITICAL 0 · WARNING 2 · SUGGESTION 3
+
+## Runtime evidence (exact)
+
+```
+$ uv run pytest -q
+........................................................................ [ 55%]
+.........................................................                [100%]
+129 passed in 0.43s
+```
+
+```
+$ uv run lint-imports
+Analyzed 32 files, 62 dependencies.
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Contracts: 4 kept, 0 broken.
+```
+
+129 passed (baseline 114, net +15). 4 contracts kept / 0 broken — no purity regression.
+
+## PR-2b contract checks
+
+1. **Pure `materialize_state(scanned, roots)`** — PASS. Lives in `odoo_forge/manifest/projection.py` (core), zero I/O, zero adapter import (import-linter confirms). Derives layer name from the `/mnt/<root>/<layer>/...` path segment via `_match_root_and_layer` (`path.relative_to(base)`, `parts[0]` = layer), groups repos by layer keyed by `url`. Worktrees precedence is an order-independent two-pass (read-only entries first, then `worktrees`-root entries overwrite same-`url` keys). Output shape (`MaterializedLayer.name` = layer segment, `MaterializedRepo.url`/`.commit` verbatim from scan) EXACTLY satisfies `detect_drift` matching. Edge cases covered: empty scan → empty state; malformed path (missing `<layer>`) and path outside any root → `ScanError` naming the path.
+
+2. **materialize_state <-> detect_drift round-trip** — PASS (traced), UNTESTED at integration level (see WARNING). Trace: `plan_projection` emits `target_path = MOUNT_ROOTS[root]/<lock_layer.name>/<repo_name>`; `scan` reports `path=target_path`, `url=remote.origin.url` (== `repo.url`), `commit=HEAD` (== locked commit); `materialize_state` recovers `layer_name = lock_layer.name` (matches `detect_drift`'s `materialized_by_name` lookup) and `MaterializedRepo(url=repo.url, commit=locked)` (matches `materialized_by_url` lookup + commit compare). Result: `is_clean = True` for a fully-projected tree; `not_materialized` for a missing directory (materialize_state omits it). Correct against `state.py`/`drift.py`. This finally makes the previously-dead `detect_drift(..., materialized=<real state>)` path usable — wiring into `forge validate` is PR-3 scope.
+
+3. **`GitWorkspaceProvider.scan(roots)`** — PASS. Adapter stays DUMB: returns raw `ScannedRepo{path,url,commit}`, no layer/mount-root knowledge, no `MaterializedState`. Discovery bounded: `os.walk` per root; a dir containing `.git` is treated as one repo and `dirnames[:] = []` prunes descent (no nested-repo walk). Non-existent roots skipped; non-git dirs skipped silently. Reads `git -C <path> rev-parse HEAD` + `remote get-url origin`, argv-list, no `shell`, non-interactive env — via shared `_run(argv, error_cls=ScanError)`. Errors → `ScanError`. **Credential-leak check: SAFE.** `_run` reports only the safe subcommand label (`_git_subcommand` skips `git` + `-C <path>`) plus git stderr, never raw argv; scan's argv carries no URL (`remote get-url origin`), and the URL only appears on stdout on success. `test_scan_does_not_leak_credential_url_in_error` asserts `SECRET_URL` absent. Reuses PR-2a's safe-label pattern correctly.
+
+4. **`GitWorkspaceProvider.promote(source, dest, branch)`** — PASS. `git -C <source> worktree add -b <branch> -- <dest>`: argv-list, no `shell`, `--` end-of-options before `dest`, non-interactive env, via `_run(argv, error_cls=PromotionError)`. `source` untouched (locked commit recoverable). `AlreadyUnlockedError` raised when `dest.exists()` BEFORE invoking git (test asserts `calls == []` on re-unlock). Failure → `PromotionError`. See WARNING on adapter-level placement.
+
+5. **Generalized `_run(argv, error_cls=CheckoutError)`** — PASS. Single subprocess chokepoint accepts a caller-supplied `WorkspaceError` subclass so scan/promote raise their own typed errors through the same non-interactive-env + safe-label + FileNotFoundError/TimeoutExpired/nonzero plumbing as checkout. No duplication, no new injection surface, default preserves checkout behavior. (PR-2a's `--` end-of-options SUGGESTION and timeout-branch-test SUGGESTION are both now addressed in this batch.)
+
+6. **Purity** — PASS. `lint-imports` = 4 kept / 0 broken. `materialize_state` and `_match_root_and_layer` are pure core functions; adapter never imported by core.
+
+7. **Tests** — PASS, behavior-first, not tautological. `TestMaterializeState` (4): layout + worktrees precedence (writable commit wins), missing-directory-not-error (empty state), malformed-path raises `ScanError` with `match=<path>`, outside-any-root raises `ScanError` with `match=<path>`. `TestScan` (4): reads HEAD+url skipping non-git siblings, skips non-existent root, corrupted HEAD → `ScanError`, credential-URL not leaked. `TestPromote` (2): worktree add with `-b <branch>` + re-unlock raises `AlreadyUnlockedError` with zero git calls, promote failure → `PromotionError`. Failure paths for scan and promote and materialize_state edge cases all covered.
+
+8. **Scope discipline** — PASS. `git diff --stat main` = exactly `projection.py`, `provider.py`, their two test files, `tasks.md`, `apply-progress.md`. No `forge project`/`forge unlock`/`forge validate` CLI wiring leaked (`main.py` untouched — validate still passes `materialized=None`; real-scan wiring is PR-3). No `factory/` touched (dir absent). No PR-3/PR-4 work leaked.
+
+## Warnings
+
+- **WARNING (test coverage gap, non-blocking)**: The spec scenarios "Fully projected tree materializes clean" and "Missing directory is not an error" explicitly assert on `detect_drift(..., materialized=state)` (`is_clean=True` / `not_materialized`), but no test composes `materialize_state` → `detect_drift`. Both halves are independently tested and the round-trip is verified by trace, but the integration assertion the spec names does not run at runtime. PR-3 (which wires scan→materialize_state→detect_drift into `forge validate`) MUST carry that round-trip test.
+- **WARNING (design placement, note for PR-4)**: `AlreadyUnlockedError` is raised in the adapter (`dest.exists()`), whereas the spec attributes the check to the pure core `unlock` use-case. Acceptable for PR-2b — it is a filesystem fact and a dumb-adapter guard, and it does not preclude PR-4's pure `unlock` from short-circuiting earlier via `materialize_state` (worktrees-root entry present → already unlocked). PR-4 must decide whether the core owns this decision or delegates the final race-safe check to the adapter; the current placement is defensible either way.
+
+## Suggestions
+
+- **SUGGESTION**: `test_layout_and_worktrees_precedence` only exercises the worktree entry AFTER the read-only entry in scan order. The impl's two-pass is order-independent, but a companion case with the worktree entry FIRST would triangulate that claim directly.
+- **SUGGESTION**: PROCESS — PR-2b changes are UNCOMMITTED in the working tree (`git status` shows 6 modified files). Orchestrator MUST commit before opening the PR.
+- **SUGGESTION**: Cosmetic `.marker` sanity assert in the PR-2a checkout test remains weak (carried over, harmless).
+
+## Verdict
+
+PASS WITH WARNINGS. PR-2b fully satisfies its contract with green evidence (129 passed, 4 kept/0 broken). `materialize_state` is genuinely pure and its output exactly satisfies the `detect_drift` matching contract (traced against `state.py`/`drift.py`), finally activating the real lock<->state drift path for PR-3 to wire. `scan` stays dumb, discovers repos bounded, and does NOT leak credentialed URLs in `ScanError` (the PR-2a bug class is not reintroduced). `promote` is argv-list/no-shell/`--`-guarded with correct `AlreadyUnlockedError`/`PromotionError` taxonomy. Zero CRITICAL. Next: commit PR-2b, then sdd-apply PR-3 (which owns the materialize_state<->detect_drift round-trip integration test).

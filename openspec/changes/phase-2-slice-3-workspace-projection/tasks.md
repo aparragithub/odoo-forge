@@ -77,21 +77,21 @@ precedent exactly (a pure loop over provider calls, no wrapper report object). F
 judgment-day: confirm PR-3's `forge project` CLI does not need a `WorkspaceReport` for its exit-code/message
 contract before this is locked in permanently.
 
-## PR-2b: Pure materialize_state + Scan/Promote Adapters
+## PR-2b: Pure materialize_state + Scan/Promote Adapters — STATUS: DONE (this apply batch)
 
 ### Phase 7: Pure scan mapping (`manifest/projection.py`)
-- [ ] 7.1 RED: `test_projection.py::test_materialize_state_layout_and_worktrees_precedence`
-- [ ] 7.2 GREEN: implement `materialize_state(scanned, roots) -> MaterializedState`
+- [x] 7.1 RED: `test_projection.py::TestMaterializeState::test_layout_and_worktrees_precedence` (+ missing-directory, malformed-path, outside-any-root cases)
+- [x] 7.2 GREEN: implement `materialize_state(scanned, roots) -> MaterializedState`
 
 ### Phase 8: Scan adapter (`odoo_forge_workspace/provider.py`)
-- [ ] 8.1 RED: `test_provider.py::test_scan_reads_head_and_remote_url_skips_non_git_dirs`
-- [ ] 8.2 GREEN: implement `scan` — `git -C rev-parse HEAD` / `remote.origin.url`, skip non-`.git` dirs, raise `ScanError` on corrupted HEAD
+- [x] 8.1 RED: `test_workspace_provider.py::TestScan::test_scan_reads_head_and_remote_url_skips_non_git_dirs` (+ nonexistent-root, corrupted-HEAD, credential-leak cases)
+- [x] 8.2 GREEN: implement `scan` — `git -C rev-parse HEAD` / `remote get-url origin`, skip non-`.git` dirs, raise `ScanError` on corrupted HEAD
 
 ### Phase 9: Promote/worktree adapter (`odoo_forge_workspace/provider.py`)
-- [ ] 9.1 RED: `test_provider.py::test_promote_creates_worktree_and_raises_if_already_writable`
-- [ ] 9.2 GREEN: implement `promote` — `git worktree add /mnt/worktrees/<layer>/<repo>` new branch, raise `AlreadyUnlockedError`
+- [x] 9.1 RED: `test_workspace_provider.py::TestPromote::test_promote_creates_worktree_and_raises_if_already_writable` (+ promote-failure case)
+- [x] 9.2 GREEN: implement `promote` — `git worktree add -b <branch> -- <dest>` from `source`, raise `AlreadyUnlockedError` if `dest` exists, `PromotionError` on failure
 
-**PR-2b Gate**: `uv run pytest` + `uv run lint-imports` (4 kept, 0 broken, no regression).
+**PR-2b Gate**: `uv run pytest` (129 passed) + `uv run lint-imports` (4 kept, 0 broken, no regression) — PASSED.
 
 ## PR-3: `forge project` CLI + `forge validate` Scan Wiring
 
