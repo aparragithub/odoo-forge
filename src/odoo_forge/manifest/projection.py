@@ -8,13 +8,14 @@ except the typed `ProjectionError`.
 """
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, Mapping
 
 from pydantic import BaseModel
 
-from odoo_forge.manifest.errors import ProjectionError
+from odoo_forge.manifest.errors import ProjectionError, ScanError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.schema import CoreLayer, GitLayer, Manifest, PublishedLayer
+from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, MaterializedState
 
 if TYPE_CHECKING:
     from odoo_forge.ports.workspace_provider import WorkspaceProvider
@@ -125,6 +126,76 @@ def project_workspace(plan: WorkspacePlan, provider: "WorkspaceProvider") -> Non
         provider.checkout(step.url, step.commit, step.target_path)
 
 
+def materialize_state(
+    scanned: list[ScannedRepo],
+    roots: Mapping[str, Path],
+) -> MaterializedState:
+    """Map raw `ScannedRepo` facts back into a `MaterializedState`. Pure, zero I/O.
+
+    Derives each repo's layer name from the `/mnt/<root>/<layer>/...` path
+    segment (matched against `roots`, e.g. `MOUNT_ROOTS`) and groups repos by
+    layer. A repo scanned under the `worktrees` root always wins over a
+    same-`url` entry from a read-only root for the same layer, since it
+    represents that repo's current, promoted, writable state.
+
+    Raises `ScanError` naming the offending path when a `ScannedRepo.path`
+    does not match the `/mnt/<root>/<layer>/...` layout under any known root.
+    """
+    layers: dict[str, dict[str, MaterializedRepo]] = {}
+    worktree_entries: list[tuple[str, ScannedRepo]] = []
+
+    for repo in scanned:
+        match = _match_root_and_layer(repo.path, roots)
+        if match is None:
+            raise ScanError(
+                f"scanned path does not match the /mnt/<root>/<layer>/... layout: {repo.path}"
+            )
+
+        root_name, layer_name = match
+        if root_name == "worktrees":
+            worktree_entries.append((layer_name, repo))
+            continue
+
+        layers.setdefault(layer_name, {})[repo.url] = MaterializedRepo(
+            url=repo.url, commit=repo.commit
+        )
+
+    # Applied last so a promoted worktree always overrides its read-only
+    # counterpart, regardless of scan ordering.
+    for layer_name, repo in worktree_entries:
+        layers.setdefault(layer_name, {})[repo.url] = MaterializedRepo(
+            url=repo.url, commit=repo.commit
+        )
+
+    return MaterializedState(
+        layers=[
+            MaterializedLayer(name=layer_name, repos=list(repos.values()))
+            for layer_name, repos in layers.items()
+        ]
+    )
+
+
+def _match_root_and_layer(path: Path, roots: Mapping[str, Path]) -> tuple[str, str] | None:
+    """Match `path` against a known mount root and return `(root_name, layer)`.
+
+    Returns `None` when `path` is not under any known root, or is under a
+    root but missing the required `<layer>` path segment.
+    """
+    for root_name, base in roots.items():
+        try:
+            relative = path.relative_to(base)
+        except ValueError:
+            continue
+
+        parts = relative.parts
+        if len(parts) < 2:
+            return None
+
+        return root_name, parts[0]
+
+    return None
+
+
 def _repo_name(url: str) -> str:
     """Return the repo directory name derived from a git URL.
 
@@ -143,4 +214,5 @@ __all__ = [
     "classify_root",
     "plan_projection",
     "project_workspace",
+    "materialize_state",
 ]

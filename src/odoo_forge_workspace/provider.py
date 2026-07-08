@@ -5,9 +5,11 @@ without importing it — the port stays a pure interface and this adapter is
 the only place in the codebase that shells out to `git` for workspace
 projection.
 
-Only `checkout` is implemented in this slice (PR-2a). `scan` and `promote`
-are scaffolded to raise `NotImplementedError` until PR-2b completes the
-adapter's remaining two port methods.
+`checkout` (PR-2a), `scan`, and `promote` (PR-2b) are all implemented here.
+The adapter stays dumb: `scan` returns raw, un-attributed `ScannedRepo`
+facts (no layer/mount-root knowledge — that mapping is the pure core
+`materialize_state`), and `promote` only executes the worktree move to a
+`dest`/`branch` the pure core already decided.
 """
 
 import os
@@ -15,9 +17,15 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Sequence
+from typing import Sequence, Type
 
-from odoo_forge.manifest.errors import CheckoutError
+from odoo_forge.manifest.errors import (
+    AlreadyUnlockedError,
+    CheckoutError,
+    PromotionError,
+    ScanError,
+    WorkspaceError,
+)
 from odoo_forge.manifest.projection import ScannedRepo
 
 DEFAULT_TIMEOUT_SECONDS = 60
@@ -68,10 +76,60 @@ class GitWorkspaceProvider:
         self._clone_and_replace(url, commit, dest)
 
     def scan(self, roots: Sequence[Path]) -> list[ScannedRepo]:
-        raise NotImplementedError("scan lands in PR-2b")
+        """Walk `roots` and return one `ScannedRepo` per on-disk git checkout.
+
+        Raw and un-attributed: reads only `path`, `remote.origin.url`, and
+        `HEAD` off disk — no layer/mount-root interpretation (that mapping is
+        the pure core `materialize_state`). Non-git directories are skipped
+        silently; a directory containing `.git` is never recursed into
+        further (it is treated as one repo, not walked for nested repos).
+        Raises `ScanError` when a found checkout's `HEAD`/remote URL cannot
+        be read (e.g. a corrupted repo).
+        """
+        scanned: list[ScannedRepo] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            scanned.extend(self._scan_root(root))
+        return scanned
+
+    def _scan_root(self, root: Path) -> list[ScannedRepo]:
+        found: list[ScannedRepo] = []
+        for dirpath, dirnames, _filenames in os.walk(root):
+            current = Path(dirpath)
+            if (current / ".git").exists():
+                found.append(self._scan_repo(current))
+                # A repo's internals are never nested repos; stop descending.
+                dirnames[:] = []
+        return found
+
+    def _scan_repo(self, path: Path) -> ScannedRepo:
+        commit = self._run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"], error_cls=ScanError
+        ).stdout.strip()
+        url = self._run(
+            ["git", "-C", str(path), "remote", "get-url", "origin"], error_cls=ScanError
+        ).stdout.strip()
+        return ScannedRepo(path=path, url=url, commit=commit)
 
     def promote(self, source: Path, dest: Path, branch: str) -> None:
-        raise NotImplementedError("promote lands in PR-2b")
+        """Promote the checkout at `source` to a writable worktree at `dest`.
+
+        `dest` and `branch` are computed by the pure core `unlock` use-case;
+        this adapter only executes the move via `git worktree add -b <branch>
+        <dest>` from within `source`, leaving `source` itself untouched (its
+        originally-locked commit stays recoverable). Raises
+        `AlreadyUnlockedError` if `dest` already exists, and `PromotionError`
+        if the underlying `git worktree add` fails.
+        """
+        if dest.exists():
+            raise AlreadyUnlockedError(f"'{dest}' is already a writable checkout")
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        self._run(
+            ["git", "-C", str(source), "worktree", "add", "-b", branch, "--", str(dest)],
+            error_cls=PromotionError,
+        )
 
     def _clone_and_replace(self, url: str, commit: str, dest: Path) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -121,7 +179,9 @@ class GitWorkspaceProvider:
         result = self._run(["git", "-C", str(dest), "status", "--porcelain"])
         return bool(result.stdout.strip())
 
-    def _run(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self, argv: list[str], error_cls: Type[WorkspaceError] = CheckoutError
+    ) -> subprocess.CompletedProcess[str]:
         try:
             result = subprocess.run(
                 argv,
@@ -132,18 +192,18 @@ class GitWorkspaceProvider:
                 env=_non_interactive_env(),
             )
         except FileNotFoundError as exc:
-            raise CheckoutError(f"git executable not found: {exc}") from exc
+            raise error_cls(f"git executable not found: {exc}") from exc
         except subprocess.TimeoutExpired as exc:
             # Never splat argv/url into the message — the clone URL may embed
             # `user:token@` credentials. A safe subcommand label is enough.
-            raise CheckoutError(
+            raise error_cls(
                 f"git {_git_subcommand(argv)} timed out after {self._timeout}s"
             ) from exc
 
         if result.returncode != 0:
             # Same rule as above: report only the subcommand label + stderr,
             # never the raw argv (which carries the credentialed clone URL).
-            raise CheckoutError(
+            raise error_cls(
                 f"git {_git_subcommand(argv)} failed: {result.stderr.strip()}"
             )
 
@@ -178,3 +238,4 @@ def _is_linked_worktree(dest: Path) -> bool:
 
 
 __all__ = ["GitWorkspaceProvider"]
+
