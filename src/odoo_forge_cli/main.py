@@ -26,8 +26,8 @@ from odoo_forge.manifest.errors import (
     ManifestInputError,
     ResolutionError,
 )
-from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.lockfile import Lockfile
+from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.projection import (
     MOUNT_ROOTS,
     materialize_state,
@@ -150,7 +150,7 @@ def validate(
         data = _read_manifest_data(manifest)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     try:
         parsed = Manifest.model_validate(data)
@@ -158,7 +158,7 @@ def validate(
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
             typer.echo(f"error: {location}: {error['msg']}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     # Compose and load/validate the lock BEFORE announcing success, so a corrupt
     # lock is reported as a clear error rather than after a misleading "is valid".
@@ -171,7 +171,7 @@ def validate(
         report = detect_drift(parsed, lock, materialized)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     typer.echo(f"{manifest} is valid")
 
@@ -200,7 +200,7 @@ def lock(
         data = _read_manifest_data(manifest)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     try:
         parsed = Manifest.model_validate(data)
@@ -208,7 +208,7 @@ def lock(
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
             typer.echo(f"error: {location}: {error['msg']}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     # Resilient boundary, mirroring `validate`: a `CompositionError`, any
     # `ResolutionError` (ref-not-found/auth/network), or an `OSError` while
@@ -223,7 +223,7 @@ def lock(
         _write_lock_atomic(lock_path, lockfile.to_canonical_json())
     except (ManifestError, ResolutionError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     typer.echo(f"wrote {lock_path}")
 
@@ -244,7 +244,7 @@ def project(
         data = _read_manifest_data(manifest)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     try:
         parsed = Manifest.model_validate(data)
@@ -252,7 +252,7 @@ def project(
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
             typer.echo(f"error: {location}: {error['msg']}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     lock_path = lock if lock is not None else manifest.parent / "project.lock"
 
@@ -271,7 +271,7 @@ def project(
         project_workspace(plan, provider)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     typer.echo(f"projected {len(plan.steps)} repo(s) from {lock_path}")
 
@@ -289,7 +289,7 @@ def unlock(
         data = _read_manifest_data(manifest)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     try:
         parsed = Manifest.model_validate(data)
@@ -297,7 +297,7 @@ def unlock(
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
             typer.echo(f"error: {location}: {error['msg']}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     # Resilient boundary, mirroring `project`: `ProjectionError` (unknown
     # layer) and any `WorkspaceError` from the adapter (`AlreadyUnlockedError`,
@@ -310,7 +310,7 @@ def unlock(
         provider.promote(unlock_plan.source, unlock_plan.dest, unlock_plan.branch)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     typer.echo(f"unlocked '{layer}' at '{unlock_plan.dest}' on branch '{unlock_plan.branch}'")
 
@@ -329,7 +329,7 @@ def run(
         data = _read_manifest_data(manifest)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     try:
         parsed = Manifest.model_validate(data)
@@ -337,7 +337,7 @@ def run(
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
             typer.echo(f"error: {location}: {error['msg']}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     # Resilient boundary, mirroring `project`/`unlock`: both a `ManifestError`
     # (e.g. `ScanError` from a corrupted checkout, raised by the SAME
@@ -356,7 +356,7 @@ def run(
         ref = backend_provider.run(plan)
     except (ManifestError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     typer.echo(
         f"running: project '{ref.project}' instance '{ref.instance}' "
@@ -378,7 +378,7 @@ def status(
         data = _read_manifest_data(manifest)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     try:
         parsed = Manifest.model_validate(data)
@@ -386,7 +386,7 @@ def status(
         for error in exc.errors():
             location = ".".join(str(part) for part in error["loc"])
             typer.echo(f"error: {location}: {error['msg']}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     # No registry is persisted: identity is recomputed purely from the
     # manifest/instance name (the same `plan_backend` -> `instance_ref` path
@@ -404,7 +404,7 @@ def status(
         report = backend_provider.status(ref)
     except (ManifestError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     for role, role_status in (("postgres", report.postgres), ("odoo", report.odoo)):
         typer.echo(
@@ -447,7 +447,7 @@ def stop(
         backend_provider.stop(ref)
     except (ManifestError, ValidationError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     typer.echo(f"stopped: project '{ref.project}' instance '{ref.instance}'")
 
@@ -471,7 +471,7 @@ def logs(
         text = backend_provider.logs(ref, role)
     except (ManifestError, ValidationError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     typer.echo(text)
 
@@ -504,7 +504,7 @@ def exec_(
         result = backend_provider.exec(ref, argv)
     except (ManifestError, ValidationError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from exc
 
     if result.stdout:
         typer.echo(result.stdout)

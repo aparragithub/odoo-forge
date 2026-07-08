@@ -13,7 +13,14 @@ from odoo_forge.backend.errors import (
     InstanceNotFoundError,
     PostgresReadinessError,
 )
-from odoo_forge.backend.plan import BackendPlan, ContainerRole, ContainerSpec, Mount, NetworkSpec, VolumeSpec
+from odoo_forge.backend.plan import (
+    BackendPlan,
+    ContainerRole,
+    ContainerSpec,
+    Mount,
+    NetworkSpec,
+    VolumeSpec,
+)
 from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge_docker.provider import (
@@ -51,7 +58,9 @@ def _labels(role: str | None = None) -> dict[str, str]:
 
 
 def _fake_daemon_down(argv: list[str], **kwargs: object) -> "_FakeCompletedProcess":
-    return _FakeCompletedProcess(1, stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
+    return _FakeCompletedProcess(
+        1, stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+    )
 
 
 def _make_postgres_spec() -> ContainerSpec:
@@ -101,7 +110,9 @@ def _make_plan() -> BackendPlan:
         volumes=[fs_volume],
         ports={"8069": None, "8072": None},
     )
-    return BackendPlan(network=network, volumes=[pg_volume, fs_volume], postgres=postgres, odoo=odoo)
+    return BackendPlan(
+        network=network, volumes=[pg_volume, fs_volume], postgres=postgres, odoo=odoo
+    )
 
 
 def _healthy_inspect(_name: str) -> str:
@@ -118,14 +129,14 @@ def _make_ref() -> InstanceRef:
     )
 
 
-def _inspect_entry(role: str, running: bool, health: str | None) -> dict:
-    entry: dict = {
-        "Config": {"Labels": {"com.odoo-forge.role": role}},
-        "State": {"Running": running},
-    }
+def _inspect_entry(role: str, running: bool, health: str | None) -> dict[str, object]:
+    state: dict[str, object] = {"Running": running}
     if health is not None:
-        entry["State"]["Health"] = {"Status": health}
-    return entry
+        state["Health"] = {"Status": health}
+    return {
+        "Config": {"Labels": {"com.odoo-forge.role": role}},
+        "State": state,
+    }
 
 
 class _Router:
@@ -163,7 +174,9 @@ class _Router:
                     return _FakeCompletedProcess(0, stdout=_healthy_inspect(name))
                 return _FakeCompletedProcess(
                     0,
-                    stdout=json.dumps([{"State": {"Running": True, "Health": {"Status": "starting"}}}]),
+                    stdout=json.dumps(
+                        [{"State": {"Running": True, "Health": {"Status": "starting"}}}]
+                    ),
                 )
             return _FakeCompletedProcess(0, stdout=json.dumps([{"State": {"Running": True}}]))
         if argv[1:3] == ["network", "create"]:
@@ -236,7 +249,9 @@ def test_run_container_argv_ephemeral_ports_and_readonly_mount_suffix() -> None:
         network=NETWORK,
         env={},
         mounts=[
-            Mount(root="worktrees", host_path="/host/worktrees", container_path="/w", read_only=False),
+            Mount(
+                root="worktrees", host_path="/host/worktrees", container_path="/w", read_only=False
+            ),
             Mount(root="custom", host_path="/host/custom", container_path="/c", read_only=True),
         ],
         labels=_labels("odoo"),
@@ -284,7 +299,9 @@ def test_container_exists_true_and_false(monkeypatch: pytest.MonkeyPatch) -> Non
     assert provider._container_exists(DB_NAME) is False
 
 
-def test_network_and_volume_exists_dispatch_to_correct_inspect_subcommand(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_network_and_volume_exists_dispatch_to_correct_inspect_subcommand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     router = _Router()
     monkeypatch.setattr(subprocess, "run", router)
     provider = DockerBackendProvider()
@@ -296,7 +313,9 @@ def test_network_and_volume_exists_dispatch_to_correct_inspect_subcommand(monkey
     assert router.calls[1] == ["docker", "volume", "inspect", PGDATA_VOL]
 
 
-def test_exists_raises_docker_unavailable_on_daemon_down_marker(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exists_raises_docker_unavailable_on_daemon_down_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(subprocess, "run", _fake_daemon_down)
 
     with pytest.raises(DockerUnavailableError):
@@ -306,7 +325,9 @@ def test_exists_raises_docker_unavailable_on_daemon_down_marker(monkeypatch: pyt
 # -- error classification: _run_raw / _exec -----------------------------------
 
 
-def test_run_raw_raises_docker_unavailable_on_missing_binary(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_raw_raises_docker_unavailable_on_missing_binary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> None:
         raise FileNotFoundError("docker")
 
@@ -321,7 +342,10 @@ def test_run_raw_raises_docker_unavailable_on_timeout(monkeypatch: pytest.Monkey
     equivalent: a `subprocess.TimeoutExpired` must never surface as a raw traceback."""
 
     def _fake_run(argv: list[str], **kwargs: object) -> None:
-        raise subprocess.TimeoutExpired(cmd=list(argv), timeout=kwargs.get("timeout", 30))
+        timeout = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(
+            cmd=list(argv), timeout=timeout if isinstance(timeout, (int, float)) else 30
+        )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -331,7 +355,10 @@ def test_run_raw_raises_docker_unavailable_on_timeout(monkeypatch: pytest.Monkey
 
 def test_exec_raises_docker_unavailable_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> None:
-        raise subprocess.TimeoutExpired(cmd=list(argv), timeout=kwargs.get("timeout", 30))
+        timeout = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(
+            cmd=list(argv), timeout=timeout if isinstance(timeout, (int, float)) else 30
+        )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -358,7 +385,9 @@ def test_exec_raises_image_not_found_on_stderr_marker(monkeypatch: pytest.Monkey
         DockerBackendProvider()._exec(["docker", "run", "-d", "--name", DB_NAME])
 
 
-def test_exec_raises_generic_container_run_error_on_other_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exec_raises_generic_container_run_error_on_other_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(1, stderr="some other docker failure")
 
@@ -384,7 +413,11 @@ def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch
     kinds = [tuple(call[:3]) for call in router.calls]
     assert ("docker", "inspect", DB_NAME) in kinds
     assert ("docker", "inspect", ODOO_NAME) in kinds
-    assert ["docker", "network", "create"] == router.calls[kinds.index(("docker", "network", "create"))][:3]
+    assert router.calls[kinds.index(("docker", "network", "create"))][:3] == [
+        "docker",
+        "network",
+        "create",
+    ]
 
     network_idx = next(i for i, c in enumerate(router.calls) if c[1:3] == ["network", "create"])
     volume_idxs = [i for i, c in enumerate(router.calls) if c[1:3] == ["volume", "create"]]
@@ -396,13 +429,15 @@ def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch
 
     for kwargs in router.kwargs:
         env = kwargs.get("env")
-        if env is not None:
+        if isinstance(env, dict):
             assert env["LANG"] == "C"
             assert env["LC_ALL"] == "C"
 
 
 def test_pg_readiness_gate_tcp_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME}, pg_ready_after=2)
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME}, pg_ready_after=2
+    )
     monkeypatch.setattr(subprocess, "run", router)
 
     sleeps: list[float] = []
@@ -420,7 +455,9 @@ def test_pg_readiness_gate_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(subprocess, "run", router)
 
-    provider = DockerBackendProvider(sleep=lambda _seconds: None, pg_readiness_timeout=3.0, pg_poll_interval=1.0)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, pg_readiness_timeout=3.0, pg_poll_interval=1.0
+    )
 
     with pytest.raises(PostgresReadinessError):
         provider.run(_make_plan())
@@ -438,7 +475,9 @@ def test_odoo_health_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(subprocess, "run", router)
 
-    provider = DockerBackendProvider(sleep=lambda _seconds: None, health_wait_timeout=3.0, health_poll_interval=1.0)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=3.0, health_poll_interval=1.0
+    )
 
     with pytest.raises(ContainerRunError):
         provider.run(_make_plan())
@@ -447,14 +486,18 @@ def test_odoo_health_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
 # -- created-only rollback -------------------------------------------------
 
 
-def test_partial_failure_rollback_removes_only_created_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_partial_failure_rollback_removes_only_created_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     router = _make_router(
         not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
         odoo_healthy_after=9_999,
     )
     monkeypatch.setattr(subprocess, "run", router)
 
-    provider = DockerBackendProvider(sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
 
     with pytest.raises(ContainerRunError):
         provider.run(_make_plan())
@@ -491,7 +534,9 @@ def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.M
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
-    provider = DockerBackendProvider(sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
 
     with pytest.raises(ContainerRunError):
         provider.run(_make_plan())
@@ -515,7 +560,9 @@ def test_reattach_then_fail_preserves_existing_volume(monkeypatch: pytest.Monkey
     )
     monkeypatch.setattr(subprocess, "run", router)
 
-    provider = DockerBackendProvider(sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
 
     with pytest.raises(ContainerRunError):
         provider.run(_make_plan())
@@ -541,7 +588,9 @@ def test_run_docker_unavailable_missing_binary(monkeypatch: pytest.MonkeyPatch) 
 
 def test_run_docker_unavailable_daemon_down_stderr_marker(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
-        return _FakeCompletedProcess(1, stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock")
+        return _FakeCompletedProcess(
+            1, stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+        )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -583,28 +632,34 @@ def test_run_refuses_existing_instance(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_health_status_no_healthcheck_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`Health` absent (no `HEALTHCHECK` on the image) -> `_health_status` None -> keeps polling -> times out."""
+    """`Health` absent (no `HEALTHCHECK` on the image) -> `_health_status` None ->
+    keeps polling -> times out."""
 
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(0, stdout=json.dumps([{"State": {"Running": True}}]))
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
-    provider = DockerBackendProvider(sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
 
     with pytest.raises(ContainerRunError):
         provider._wait_odoo_healthy(_make_plan().odoo)
 
 
 def test_health_status_empty_inspect_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`docker inspect` returns `[]` (container removed mid-poll) -> `_health_status` None -> times out."""
+    """`docker inspect` returns `[]` (container removed mid-poll) ->
+    `_health_status` None -> times out."""
 
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(0, stdout="[]")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
-    provider = DockerBackendProvider(sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
 
     with pytest.raises(ContainerRunError):
         provider._wait_odoo_healthy(_make_plan().odoo)
@@ -680,7 +735,9 @@ def test_stop_argv_preserves_named_volumes(monkeypatch: pytest.MonkeyPatch) -> N
     assert net_rm_calls[0][-1] == NETWORK
 
 
-def test_stop_partial_instance_stops_only_existing_container(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_stop_partial_instance_stops_only_existing_container(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Half-torn-down instance: postgres container exists, odoo does not.
 
     Only the existing container is stopped/removed; the missing one is

@@ -33,5 +33,14 @@ jobs:
       - name: Enforce architecture boundaries (import-linter)
         run: uv run lint-imports
 
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check .
+
+      - name: Type check (mypy strict)
+        run: uv run mypy
+
       - name: Run tests
         run: uv run pytest
