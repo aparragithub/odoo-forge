@@ -176,6 +176,27 @@ class TestPlanBackend:
         roles: list[ContainerRole] = ["odoo", "postgres"]
         assert plan.postgres.role in roles
 
+    def test_instance_is_sanitized_consistently_and_deterministically(self) -> None:
+        # A messy `--instance` value must sanitize through the SAME
+        # `sanitize_name` as `manifest.name` in every name/label, and do so
+        # identically across independent calls — `run`/`status` each build
+        # their own `BackendPlan` with no shared registry, so a mismatch
+        # here would mean `status` looks up the wrong container.
+        manifest = _manifest()
+        state = _state_with_all_roots()
+        messy_instance = "My Inst/2"
+        expected = sanitize_name(messy_instance)
+
+        plan = plan_backend(manifest, state, instance=messy_instance)
+
+        assert expected in plan.network.name
+        assert expected in plan.postgres.name
+        assert expected in plan.odoo.name
+        assert plan.network.labels["com.odoo-forge.instance"] == expected
+        assert " " not in plan.network.name
+        assert "/" not in plan.network.name
+        assert plan_backend(manifest, state, instance=messy_instance) == plan
+
 
 def test_backend_plan_shape_matches_design_interfaces() -> None:
     manifest = _manifest()

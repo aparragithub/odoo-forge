@@ -176,17 +176,24 @@ boundary, rollback/idempotency, partial-failure modes) for PR-2a, PR-2b, PR-3a.
 ## PR-3a: forge run/status CLI + Composition Root + 5th Contract
 
 ### Phase 11
-- [ ] 11.1 RED: `tests/cli/test_backend.py::test_run_succeeds_prints_instance_ref` (monkeypatched `_make_backend_provider`)
-- [ ] 11.2 GREEN: add `_make_backend_provider()` + `forge run [--manifest][--lock][--instance]` calling `plan_backend` + `provider.run`
-- [ ] 11.3 RED: `test_backend.py::test_run_docker_unavailable_single_line_exit1_no_traceback`
-- [ ] 11.4 GREEN: catch `BackendError` family, exit 1 with a single-cause message
-- [ ] 11.5 RED: `test_backend.py::test_status_reports_not_running_without_raising_for_absent_instance`
-- [ ] 11.6 GREEN: `forge status [--instance]` calling `provider.status()`, never raises for an absent instance
-- [ ] 11.7 Add `odoo_forge_docker` to `pyproject.toml` wheel packages + `root_packages`; add 5th import-linter contract (forbidden `odoo_forge -> odoo_forge_docker`); register `integration` pytest marker
-- [ ] 11.8 Verify `uv run lint-imports` — 5 kept, 0 broken
-- [ ] 11.9 Update `docs/specs/2026-07-06-phase-2-slices-roadmap.md` — record the 4a/4b split
+- [x] 11.1 RED: `tests/cli/test_backend.py::test_run_succeeds_prints_instance_ref` (monkeypatched `_make_backend_provider`)
+- [x] 11.2 GREEN: add `_make_backend_provider()` + `forge run [--manifest][--instance]` calling `plan_backend` + `provider.run` (input assembly mirrors `validate`'s manifest-load + workspace-scan + `materialize_state` path; `--lock` was dropped from the flag set since `plan_backend` never consumes a lockfile — kept identical to `validate`'s actual inputs rather than adding an unused option)
+- [x] 11.3 RED: `test_backend.py::test_run_docker_unavailable_single_line_exit1_no_traceback`
+- [x] 11.4 GREEN: catch `BackendError` family, exit 1 with a single-cause message
+- [x] 11.5 RED: `test_backend.py::test_status_reports_not_running_without_raising_for_absent_instance`
+- [x] 11.6 GREEN: `forge status [--manifest][--instance]` calling `plan_backend` -> `instance_ref` -> `provider.status()`, never raises for an absent instance
+- [x] 11.7 Added the 5th import-linter contract (forbidden `odoo_forge -> odoo_forge_docker`); `odoo_forge_docker` was already present in `pyproject.toml` wheel packages + `root_packages` from PR-2a/2b. Integration pytest marker registration explicitly deferred to PR-3b per scope.
+- [x] 11.8 Verify `uv run lint-imports` — 5 kept, 0 broken
+- [x] 11.9 Update `docs/specs/2026-07-06-phase-2-slices-roadmap.md` — record the 4a/4b split
 
-**PR-3a Gate**: `uv run pytest` + `uv run lint-imports` (5 kept, 0 broken).
+**PR-3a Gate (initial pass)**: `uv run pytest` + `uv run lint-imports`. ✅ 222 passed, 0 failed (219 PR-2b baseline + 3 net new CLI tests: run success, run `DockerUnavailableError`, status absent-instance); 5 kept, 0 broken (new "Core never imports the docker adapter" contract). Changed lines (git diff --numstat + new file line count): `main.py` 104 additions, `pyproject.toml` 6 additions, `tests/cli/test_backend.py` 150 (new file) → **260 changed lines, under the 400-line budget**.
+
+**Post-review-reliability follow-up (still PR-3a, pre-merge)**: one BLOCKER + one CRITICAL closed:
+1. **BLOCKER — incomplete error boundary**: `run`/`status` only caught `BackendError`, but `workspace_provider.scan()`/`materialize_state()` (the SAME call `project`/`validate` make) raise `ScanError` (`WorkspaceError` -> `ManifestError`), NOT a `BackendError` — a corrupted checkout crashed with a raw traceback instead of a clean exit. Fixed by widening both commands' `except` clause to `except (ManifestError, BackendError) as exc`, mirroring `project`'s boundary exactly. Added `test_scan_error_from_corrupted_checkout_exits_clean_one_error` (parametrized over `run`/`status`).
+2. **CRITICAL — unsanitized `--instance`**: `plan_backend` sanitized `manifest.name` via `sanitize_name` but interpolated the now-user-facing `instance` argument RAW into every docker resource name/label — a messy `--instance` value (spaces/uppercase/`/`) could produce an invalid docker name or a divergent identity between independent `plan_backend` calls. Fixed in `src/odoo_forge/backend/plan.py`: `instance = sanitize_name(instance)` added right after `project = sanitize_name(manifest.name)`, so `instance` is normalized through the SAME single source of truth before use. Added `test_instance_is_sanitized_consistently_and_deterministically` to `tests/backend/test_plan.py` (core PR-1a code, correctly touched here since this PR is what exposed the bug by making `--instance` user-facing).
+3. **Should-fix edge cases added**: `test_run_instance_exists_exits_clean_one_error` (pins the `InstanceExistsError` path the `run` docstring claims is handled), `test_missing_manifest_exits_clean_one_error` + `test_malformed_manifest_exits_clean_one_error` (both parametrized over `run`/`status`).
+
+**PR-3a Gate (FINAL, post-fix)**: `uv run pytest -q` → **230 passed**, 0 failed. `uv run lint-imports` → **5 kept, 0 broken** (unchanged). Changed lines (git diff --numstat + new-file line count, full PR-3a scope): `main.py` 108, `pyproject.toml` 6, `src/odoo_forge/backend/plan.py` 8, `tests/backend/test_plan.py` 21, `tests/cli/test_backend.py` 227 (new file) → **370 changed lines, under the 400-line budget**.
 
 ## PR-3b: forge stop/logs/exec CLI + Integration Marker
 
