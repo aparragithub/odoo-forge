@@ -72,3 +72,4 @@ No migration. Additive package + commands + optional schema field; lock format u
 - [ ] Command names: `forge project` / `forge unlock` (confirm vs `materialize`/`sync`).
 - [ ] `validate` scanning unprojected roots surfaces `not_materialized` drift (intended activation) — add `--no-scan` escape hatch? Recommend defer.
 - [ ] Deferred debt: retry/backoff/observability on checkout; auth/network reuse of `ResolutionError` during clone; override application (RE-DEFERRED). Recommend keep deferred.
+```
