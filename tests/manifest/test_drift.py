@@ -1,5 +1,10 @@
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
-from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo, compute_manifest_hash
+from odoo_forge.manifest.lockfile import (
+    Lockfile,
+    ResolvedLayer,
+    ResolvedRepo,
+    compute_manifest_hash,
+)
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, MaterializedState
 
@@ -46,7 +51,9 @@ def test_clean_state_is_clean() -> None:
             MaterializedLayer(
                 name="localization",
                 repos=[
-                    MaterializedRepo(url="https://github.com/ingadhoc/odoo-partner.git", commit="abc123")
+                    MaterializedRepo(
+                        url="https://github.com/ingadhoc/odoo-partner.git", commit="abc123"
+                    )
                 ],
             )
         ]
@@ -114,10 +121,14 @@ def test_multi_repo_layer_detects_per_repo_drift() -> None:
                 name="localization",
                 repos=[
                     ResolvedRepo(
-                        url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0", commit="partner-locked"
+                        url="https://github.com/ingadhoc/odoo-partner.git",
+                        ref="19.0",
+                        commit="partner-locked",
                     ),
                     ResolvedRepo(
-                        url="https://github.com/ingadhoc/odoo-sale.git", ref="19.0", commit="sale-locked"
+                        url="https://github.com/ingadhoc/odoo-sale.git",
+                        ref="19.0",
+                        commit="sale-locked",
                     ),
                 ],
             )
@@ -163,7 +174,9 @@ def test_lock_layer_not_materialized() -> None:
                 name="localization",
                 repos=[
                     ResolvedRepo(
-                        url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0", commit="abc123"
+                        url="https://github.com/ingadhoc/odoo-partner.git",
+                        ref="19.0",
+                        commit="abc123",
                     )
                 ],
             )
@@ -233,10 +246,14 @@ def test_lock_repo_not_materialized() -> None:
                 name="localization",
                 repos=[
                     ResolvedRepo(
-                        url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0", commit="partner-locked"
+                        url="https://github.com/ingadhoc/odoo-partner.git",
+                        ref="19.0",
+                        commit="partner-locked",
                     ),
                     ResolvedRepo(
-                        url="https://github.com/ingadhoc/odoo-sale.git", ref="19.0", commit="sale-locked"
+                        url="https://github.com/ingadhoc/odoo-sale.git",
+                        ref="19.0",
+                        commit="sale-locked",
                     ),
                 ],
             )

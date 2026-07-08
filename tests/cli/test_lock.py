@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -174,7 +175,7 @@ def test_write_failure_exits_clean_no_traceback(
     def _raise_os_error(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(main.os, "replace", _raise_os_error)
+    monkeypatch.setattr(os, "replace", _raise_os_error)
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
@@ -197,7 +198,7 @@ def test_write_failure_preserves_existing_lock_byte_identical(
     def _raise_os_error(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(main.os, "replace", _raise_os_error)
+    monkeypatch.setattr(os, "replace", _raise_os_error)
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())

@@ -3,7 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from odoo_forge.manifest.errors import AlreadyUnlockedError, CheckoutError, PromotionError, ScanError
+from odoo_forge.manifest.errors import (
+    AlreadyUnlockedError,
+    CheckoutError,
+    PromotionError,
+    ScanError,
+)
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
@@ -76,9 +81,7 @@ def test_checkout_refuses_dirty_existing_checkout(
     dest.mkdir(parents=True)
     (dest / ".git").mkdir()
 
-    fake_run = _fake_run_factory(
-        rev_parse_output=OTHER_COMMIT, status_output=" M some/file.py\n"
-    )
+    fake_run = _fake_run_factory(rev_parse_output=OTHER_COMMIT, status_output=" M some/file.py\n")
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     provider = GitWorkspaceProvider()
@@ -91,9 +94,7 @@ def test_checkout_refuses_dirty_existing_checkout(
     assert dest.exists()  # never destroyed
 
 
-def test_checkout_refuses_linked_worktree(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_checkout_refuses_linked_worktree(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     dest = tmp_path / "custom" / "acme" / "odoo"
     dest.mkdir(parents=True)
     (dest / ".git").write_text("gitdir: /mnt/community/core/odoo/.git/worktrees/odoo\n")
@@ -219,7 +220,9 @@ def test_clone_passes_url_as_positional_after_end_of_options(
     provider.checkout(hostile_url, COMMIT, dest)
 
     clone_argv = next(
-        argv for argv in fake_run.calls if "clone" in argv  # type: ignore[attr-defined]
+        argv
+        for argv in fake_run.calls  # type: ignore[attr-defined]
+        if "clone" in argv
     )
     assert "--" in clone_argv
     assert clone_argv.index("--") < clone_argv.index(hostile_url)
@@ -272,7 +275,7 @@ def test_final_replace_failure_restores_original_dest(
     real_replace = _os.replace
     failed_once = {"done": False}
 
-    def _flaky_replace(src: object, dst: object) -> None:
+    def _flaky_replace(src: str | Path, dst: str | Path) -> None:
         # Fail only the first clone->dest swap; allow the backup->dest restore.
         if Path(dst) == dest and not failed_once["done"]:
             failed_once["done"] = True
@@ -394,9 +397,7 @@ class TestPromote:
         provider.promote(source, dest, "unlock/custom-x/odoo-partner")
 
         assert any("worktree" in argv and "add" in argv for argv in calls)
-        assert any(
-            "-b" in argv and "unlock/custom-x/odoo-partner" in argv for argv in calls
-        )
+        assert any("-b" in argv and "unlock/custom-x/odoo-partner" in argv for argv in calls)
 
         # Re-unlocking a repo that is already a writable worktree fails loud
         # without invoking `git worktree add` again.

@@ -26,7 +26,8 @@ def _check_edition_coherence(manifest: Manifest) -> None:
     for layer in manifest.layers:
         if layer.requires_edition == "enterprise":
             raise CompositionError(
-                f"layer '{layer.name}' requires enterprise edition but manifest edition is 'community'"
+                f"layer '{layer.name}' requires enterprise edition "
+                "but manifest edition is 'community'"
             )
         if isinstance(layer, GitLayer):
             for repo in layer.repos:
@@ -53,7 +54,8 @@ def _check_overrides(manifest: Manifest) -> None:
             repo_names = {_repo_name(repo.url) for repo in layer.repos}
             if override.repo not in repo_names:
                 raise CompositionError(
-                    f"override references unknown repo '{override.repo}' in layer '{override.layer}'"
+                    f"override references unknown repo '{override.repo}' "
+                    f"in layer '{override.layer}'"
                 )
         else:
             raise CompositionError(

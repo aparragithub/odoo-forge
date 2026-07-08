@@ -53,9 +53,7 @@ def _write_manifest(tmp_path: Path) -> Path:
     return project_yaml
 
 
-def test_unlock_succeeds_and_prints_branch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_unlock_succeeds_and_prints_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_provider = _FakeWorkspaceProvider()
     monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
 

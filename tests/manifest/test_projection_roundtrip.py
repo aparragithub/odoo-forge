@@ -8,7 +8,12 @@ on divergence.
 from pathlib import Path
 
 from odoo_forge.manifest.drift import detect_drift
-from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo, compute_manifest_hash
+from odoo_forge.manifest.lockfile import (
+    Lockfile,
+    ResolvedLayer,
+    ResolvedRepo,
+    compute_manifest_hash,
+)
 from odoo_forge.manifest.projection import (
     MOUNT_ROOTS,
     ScannedRepo,

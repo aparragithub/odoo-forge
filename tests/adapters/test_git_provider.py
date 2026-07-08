@@ -161,7 +161,10 @@ def test_adapter_satisfies_source_provider_protocol() -> None:
 
 def test_ls_remote_timeout_raises_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> None:
-        raise subprocess.TimeoutExpired(cmd=argv, timeout=kwargs.get("timeout", 30))
+        timeout = kwargs.get("timeout")
+        raise subprocess.TimeoutExpired(
+            cmd=argv, timeout=timeout if isinstance(timeout, (int, float)) else 30
+        )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -191,6 +194,7 @@ def test_ls_remote_disables_interactive_prompts_and_pins_locale(
     provider.resolve_ref(URL, "main")
 
     env = captured_kwargs["env"]
+    assert isinstance(env, dict)
     assert env["GIT_TERMINAL_PROMPT"] == "0"
     assert env["LANG"] == "C"
     assert env["LC_ALL"] == "C"

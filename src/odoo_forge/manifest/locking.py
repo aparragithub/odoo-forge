@@ -8,7 +8,12 @@ never caught here; they propagate to the caller (the CLI boundary).
 """
 
 from odoo_forge.manifest.composition import compose
-from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo, compute_manifest_hash
+from odoo_forge.manifest.lockfile import (
+    Lockfile,
+    ResolvedLayer,
+    ResolvedRepo,
+    compute_manifest_hash,
+)
 from odoo_forge.manifest.resolution import resolve_default_ref
 from odoo_forge.manifest.schema import GitLayer, Manifest
 from odoo_forge.ports.source_provider import SourceProvider
