@@ -18,6 +18,8 @@ from pydantic import ValidationError
 from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole, plan_backend
 from odoo_forge.backend.status import InstanceRef, instance_ref
+from odoo_forge.image_registry import RegistryError
+from odoo_forge.image_registry.reference import normalize_image_reference
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
 from odoo_forge.manifest.errors import (
@@ -37,10 +39,12 @@ from odoo_forge.manifest.projection import (
 )
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
+from odoo_forge.ports.image_registry_provider import ImageRegistryProvider
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
+from odoo_forge_registry import GhcrImageRegistryProvider
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
 app = typer.Typer()
@@ -59,6 +63,11 @@ def _make_workspace_provider() -> WorkspaceProvider:
 def _make_backend_provider() -> BackendProvider:
     """Composition root: the ONE place the concrete docker adapter is built."""
     return DockerBackendProvider()
+
+
+def _make_image_registry_provider() -> ImageRegistryProvider:
+    """Composition root: the ONE place the concrete registry adapter is built."""
+    return GhcrImageRegistryProvider()
 
 
 @app.callback()
@@ -137,6 +146,32 @@ def _format_drift(entry: DriftEntry) -> str:
             f"'{entry.expected}' but materialized at '{entry.actual}'"
         )
     return f"unrecognized drift entry: {entry.kind}"
+
+
+@app.command(name="image-resolve")
+def image_resolve(ref: str = typer.Option(..., "--ref", help="Image reference to resolve")) -> None:
+    """Resolve a supported GHCR image reference to a canonical digest ref."""
+    try:
+        normalized_ref = normalize_image_reference(ref, require_digest=False)
+        provider = _make_image_registry_provider()
+        typer.echo(provider.resolve(normalized_ref))
+    except RegistryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="image-validate")
+def image_validate(
+    ref: str = typer.Option(..., "--ref", help="Digest image reference to validate"),
+) -> None:
+    """Validate a supported GHCR digest reference."""
+    try:
+        normalized_ref = normalize_image_reference(ref, require_digest=True)
+        provider = _make_image_registry_provider()
+        typer.echo(f"valid: {provider.validate(normalized_ref)}")
+    except RegistryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
 
 
 @app.command()
