@@ -35,9 +35,7 @@ def test_publish_fails_fast_with_transition_error(
         provider.publish(ImageRef("ghcr.io/acme/app:latest"))
 
     assert exc_info.value.ref == "ghcr.io/acme/app:latest"
-    assert exc_info.value.detail == (
-        "publish is not available in this transition adapter"
-    )
+    assert exc_info.value.detail == ("publish is not available in this transition adapter")
 
 
 def test_pull_fails_fast_with_transition_error(
@@ -51,14 +49,10 @@ def test_pull_fails_fast_with_transition_error(
     provider = GhcrImageRegistryProvider()
 
     with pytest.raises(RegistryPullError) as exc_info:
-        provider.pull(
-            ImageDigestRef("ghcr.io/acme/app@sha256:" + "a" * 64)
-        )
+        provider.pull(ImageDigestRef("ghcr.io/acme/app@sha256:" + "a" * 64))
 
     assert exc_info.value.ref == "ghcr.io/acme/app@sha256:" + "a" * 64
-    assert exc_info.value.detail == (
-        "pull is not available in this transition adapter"
-    )
+    assert exc_info.value.detail == ("pull is not available in this transition adapter")
 
 
 def test_resolve_digest_delegates_to_resolve(monkeypatch: pytest.MonkeyPatch) -> None:

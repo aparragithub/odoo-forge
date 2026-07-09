@@ -135,9 +135,7 @@ def test_normalize_publishable_image_reference_accepts_supported_ghcr_refs(
 
 def test_normalize_publishable_image_reference_rejects_digest_refs() -> None:
     with pytest.raises(MalformedImageReferenceError) as exc:
-        normalize_publishable_image_reference(
-            "ghcr.io/acme/app@sha256:" + "d" * 64
-        )
+        normalize_publishable_image_reference("ghcr.io/acme/app@sha256:" + "d" * 64)
 
     assert "publishable" in str(exc.value).lower()
 
