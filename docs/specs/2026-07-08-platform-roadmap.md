@@ -71,8 +71,16 @@ Note: even **reused** concerns (identity, CI/CD) are modeled as adapter-pattern 
 Principle 3 (one adapter chosen at init) applies uniformly — reuse means we do not build the
 engine, not that it escapes the port abstraction.
 
-**What else is reused (not a port):** secrets (cloud secret managers), DNS/ingress/TLS
-(target-native: ALB, ingress-nginx, Traefik), observability (target-native: CloudWatch, etc.).
+**What else is reused (not a port):**
+
+- **Secrets** — registry/DB/SSH credentials. Candidate stores: env vars · SOPS · AWS Secrets
+  Manager · Vault. Needed as soon as SP-1 (registry auth) and SP-2 (RDS credentials) land;
+  see the open decision in §8 on whether this stays non-port.
+- **DNS / ingress / TLS** — target-native: ALB, ingress-nginx, Traefik. Becomes relevant with
+  SP-3 (remote backends need routable domains per instance).
+- **Observability** — target-native: CloudWatch, etc.
+- **Backups** — destination + retention (S3 · local volume · VPS). Orchestration is owned by
+  SP-10; the storage destination choice is part of its config.
 
 Every new adapter lives in its own sibling package. There are **5 import-linter contracts
 today** (1 generic external-import ban + 1 CLI ban + 3 per-adapter-package bans for
@@ -175,6 +183,10 @@ their own (each usable from the CLI before the server exists).
   SP-6 (pre-prod test data), and SP-8 (QA-from-PROD: real vs. randomized data). Default is
   **anonymized**; real PROD data requires explicit, audited authorization.
 - Whether SP-3 ships one target at a time (recommended) or a batch.
+- **Secrets handling** — currently "reused, not a port" (§3), but SP-1 needs registry
+  credentials and SP-2 needs RDS credentials. Decide the concrete store (env vars · SOPS ·
+  AWS Secrets Manager · Vault) and whether it should be promoted to a `SecretsProvider` port
+  once more than one store is in play.
 - **Principle 3 scope** — "one adapter per port at init" vs. a central control plane deploying
   to multiple targets/clients simultaneously — under separate discussion; likely resolution is
   to scope Principle 3 (foundation/CLI = one-at-init; control plane = per-instance adapter
