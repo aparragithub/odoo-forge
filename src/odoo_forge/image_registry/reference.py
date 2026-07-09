@@ -6,6 +6,7 @@ from odoo_forge.image_registry.errors import (
     MalformedImageReferenceError,
     UnsupportedRegistryError,
 )
+from odoo_forge.image_registry.types import ImageDigestRef, ImageRef
 
 _SUPPORTED_REGISTRY = "ghcr.io"
 _TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")
@@ -14,6 +15,8 @@ _NAME_PART_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 
 
 def normalize_image_reference(ref: str, *, require_digest: bool) -> str:
+    """Normalize a supported GHCR reference to its canonical string form."""
+
     registry, remainder = _split_registry(ref)
     if registry != _SUPPORTED_REGISTRY:
         raise UnsupportedRegistryError(registry, supported=_SUPPORTED_REGISTRY)
@@ -38,6 +41,21 @@ def normalize_image_reference(ref: str, *, require_digest: bool) -> str:
     return f"{registry}/{name}:{tag}"
 
 
+def normalize_publishable_image_reference(ref: str) -> ImageRef:
+    """Normalize a publishable GHCR tag reference."""
+
+    normalized = normalize_image_reference(ref, require_digest=False)
+    if "@" in normalized:
+        raise MalformedImageReferenceError(ref, "digest references are not publishable")
+    return ImageRef(normalized)
+
+
+def normalize_digest_image_reference(ref: str) -> ImageDigestRef:
+    """Normalize a digest-backed GHCR reference."""
+
+    return ImageDigestRef(normalize_image_reference(ref, require_digest=True))
+
+
 def _split_registry(ref: str) -> tuple[str, str]:
     if not ref or any(char.isspace() for char in ref):
         raise MalformedImageReferenceError(ref, "reference must not be empty or contain whitespace")
@@ -60,4 +78,8 @@ def _validate_name(name: str, ref: str) -> None:
             raise MalformedImageReferenceError(ref, "image path contains unsupported characters")
 
 
-__all__ = ["normalize_image_reference"]
+__all__ = [
+    "normalize_image_reference",
+    "normalize_publishable_image_reference",
+    "normalize_digest_image_reference",
+]

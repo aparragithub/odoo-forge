@@ -39,7 +39,6 @@ from odoo_forge.manifest.projection import (
 )
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
-from odoo_forge.ports.image_registry_provider import ImageRegistryProvider
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_docker.provider import DockerBackendProvider
@@ -65,7 +64,7 @@ def _make_backend_provider() -> BackendProvider:
     return DockerBackendProvider()
 
 
-def _make_image_registry_provider() -> ImageRegistryProvider:
+def _make_image_registry_provider() -> GhcrImageRegistryProvider:
     """Composition root: the ONE place the concrete registry adapter is built."""
     return GhcrImageRegistryProvider()
 
