@@ -2,75 +2,108 @@
 
 ## Purpose
 
-Define the first immutable image identity capability for GHCR so operators can resolve and validate digest-backed image references before any runtime pull or backend integration exists.
+Define the platform image registry contract for publishing built images, resolving immutable digests, checking digest existence, and pre-pulling digest refs without duplicating backend runtime ownership.
 
 ## Requirements
 
+### Requirement: Publish built images as immutable digests
+
+The system MUST publish a Phase 1-built image reference and return an immutable digest without rebuilding the image.
+
+#### Scenario: Publish returns a digest
+
+- GIVEN a built image reference from the Phase 1 factory
+- WHEN publish runs
+- THEN the system returns an immutable digest reference
+
+#### Scenario: Publish input is not publishable
+
+- GIVEN the image reference is missing or not publishable
+- WHEN publish runs
+- THEN the system fails with a single-cause publish diagnostic
+
+### Requirement: Pull digest references as a registry concern only
+
+The system MUST pull a digest reference into a local image handle and MUST NOT duplicate the Docker runtime pull owned by `DockerBackendProvider.run()`.
+
+#### Scenario: Pull returns a local handle
+
+- GIVEN an existing canonical digest reference
+- WHEN pull runs
+- THEN the system returns a local image handle
+
+#### Scenario: Pull does not trigger backend runtime execution
+
+- GIVEN the pull flow succeeds
+- WHEN the command finishes
+- THEN no backend `run/status/stop/logs/exec` action is triggered
+
+### Requirement: Check digest existence without transfer
+
+The system MUST provide an `exists` flow that checks whether a digest is present without transferring layers.
+
+#### Scenario: Existing digest reports present
+
+- GIVEN a valid digest that exists remotely
+- WHEN exists runs
+- THEN the system reports the digest as present
+
+#### Scenario: Missing digest reports absent
+
+- GIVEN a valid digest that does not exist remotely
+- WHEN exists runs
+- THEN the system reports the digest as absent without pulling layers
+
 ### Requirement: Resolve GHCR image references to immutable digests
 
-The system MUST provide a CLI flow that resolves a supported GHCR image reference into a canonical immutable digest reference.
+The system MUST resolve a supported image reference in the chosen adapter into a canonical immutable digest reference. GHCR SHALL be the first adapter, but later adapters MUST preserve the same contract.
+
+(Previously: resolution was GHCR-only identity lookup.)
 
 #### Scenario: Resolve a mutable tag
 
-- GIVEN an operator provides a valid GHCR tag reference
-- WHEN the operator runs the resolve command
+- GIVEN a valid supported tag reference
+- WHEN the resolve command runs
 - THEN the system returns the matching immutable digest reference
-- AND the command exits successfully
 
 #### Scenario: Reject an unsupported registry reference
 
-- GIVEN an operator provides a non-GHCR image reference
-- WHEN the operator runs the resolve command
+- GIVEN a reference outside the chosen adapter
+- WHEN the resolve command runs
 - THEN the system rejects the request with a clear unsupported-registry diagnostic
 
-### Requirement: Validate immutable GHCR digest references
+### Requirement: Surface fail-fast diagnostics
 
-The system MUST provide a CLI flow that validates whether a GHCR digest reference is well formed and remotely resolvable.
+The system MUST fail fast and SHALL emit readable diagnostics for publish, pull, resolve, and exists failures. Tests MUST distinguish malformed input, unsupported registry, not found, and auth failures.
 
-#### Scenario: Validate an existing digest reference
+(Previously: diagnostics covered only resolve/validate.)
 
-- GIVEN an operator provides a valid GHCR digest reference that exists
-- WHEN the operator runs the validate command
-- THEN the system reports the reference as valid
-- AND the command exits successfully
+#### Scenario: Registry authentication fails
 
-#### Scenario: Reject a malformed digest reference
-
-- GIVEN an operator provides a malformed digest reference
-- WHEN the operator runs the validate command
-- THEN the system fails fast with a single-cause malformed-reference diagnostic
-
-### Requirement: Surface fail-fast operator diagnostics
-
-The system MUST fail fast and SHALL emit operator-readable diagnostics for registry access failures, with GHCR authentication failure treated as a priority case.
-
-#### Scenario: GHCR authentication fails
-
-- GIVEN the provided GHCR credentials are missing, invalid, or unauthorized
-- WHEN the operator runs resolve or validate
+- GIVEN registry credentials are missing, invalid, or unauthorized
+- WHEN publish, pull, resolve, or exists runs
 - THEN the system exits on the auth failure without retry chaining
-- AND the diagnostic explicitly identifies the failure as GHCR authentication related
 
 #### Scenario: Image reference is not found
 
-- GIVEN an operator provides a well-formed GHCR reference that does not exist
-- WHEN the operator runs resolve or validate
-- THEN the system exits with a not-found diagnostic that distinguishes it from auth and format errors
+- GIVEN a well-formed reference that does not exist
+- WHEN publish, pull, resolve, or exists runs
+- THEN the system exits with a not-found or absent diagnostic distinct from auth and format errors
 
 ### Requirement: Preserve SP1-A scope boundaries
 
-The system MUST limit this capability slice to digest resolve and validate behavior and MUST NOT introduce image pull execution, backend integration, multi-registry behavior, or `project.lock` persistence.
+The system MUST extend the slice to publish, pull, resolve_digest, and exists, and MUST NOT introduce multi-registry fan-out, control-plane state, `project.lock` persistence, deprecated `PublishedLayer` cleanup, or duplicated Docker runtime pull behavior from `sp1-b`. Delivery SHOULD stay chained.
 
-#### Scenario: Operator uses the first registry CLI
+(Previously: the slice covered only resolve/validate and excluded pull behavior.)
 
-- GIVEN the digest resolve and validate commands are available
-- WHEN an operator uses either command
-- THEN the system performs only identity resolution or validation behavior
-- AND no runtime pull or backend side effect is triggered
+#### Scenario: Operator uses the platform registry CLI foundation
 
-#### Scenario: Successful resolve completes
+- GIVEN publish, pull, resolve, and exists commands are available
+- WHEN any command is used
+- THEN the system performs only registry-port behavior for the chosen adapter
 
-- GIVEN a resolve command succeeds
+#### Scenario: Successful registry command completes
+
+- GIVEN a registry command succeeds
 - WHEN the command finishes
 - THEN no `project.lock` persistence is created or modified
-- AND no additional registry implementation is required beyond GHCR in this slice
