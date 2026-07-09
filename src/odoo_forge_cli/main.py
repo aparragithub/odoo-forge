@@ -19,7 +19,10 @@ from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole, plan_backend
 from odoo_forge.backend.status import InstanceRef, instance_ref
 from odoo_forge.image_registry import RegistryError
-from odoo_forge.image_registry.reference import normalize_image_reference
+from odoo_forge.image_registry.reference import (
+    normalize_digest_image_reference,
+    normalize_publishable_image_reference,
+)
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
 from odoo_forge.manifest.errors import (
@@ -151,23 +154,51 @@ def _format_drift(entry: DriftEntry) -> str:
 def image_resolve(ref: str = typer.Option(..., "--ref", help="Image reference to resolve")) -> None:
     """Resolve a supported GHCR image reference to a canonical digest ref."""
     try:
-        normalized_ref = normalize_image_reference(ref, require_digest=False)
+        normalized_ref = normalize_publishable_image_reference(ref)
         provider = _make_image_registry_provider()
-        typer.echo(provider.resolve(normalized_ref))
+        typer.echo(provider.resolve_digest(normalized_ref))
     except RegistryError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
 
-@app.command(name="image-validate")
-def image_validate(
-    ref: str = typer.Option(..., "--ref", help="Digest image reference to validate"),
+@app.command(name="image-publish")
+def image_publish(
+    ref: str = typer.Option(..., "--ref", help="Image reference to publish"),
 ) -> None:
-    """Validate a supported GHCR digest reference."""
+    """Publish a built GHCR image and print its immutable digest ref."""
     try:
-        normalized_ref = normalize_image_reference(ref, require_digest=True)
+        normalized_ref = normalize_publishable_image_reference(ref)
         provider = _make_image_registry_provider()
-        typer.echo(f"valid: {provider.validate(normalized_ref)}")
+        typer.echo(provider.publish(normalized_ref))
+    except RegistryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="image-pull")
+def image_pull(
+    ref: str = typer.Option(..., "--ref", help="Digest image reference to prefetch"),
+) -> None:
+    """Prefetch a digest image into the local Docker daemon."""
+    try:
+        normalized_ref = normalize_digest_image_reference(ref)
+        provider = _make_image_registry_provider()
+        typer.echo(provider.pull(normalized_ref))
+    except RegistryError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="image-exists")
+def image_exists(
+    ref: str = typer.Option(..., "--ref", help="Digest image reference to check"),
+) -> None:
+    """Check whether a digest image exists in the registry."""
+    try:
+        normalized_ref = normalize_digest_image_reference(ref)
+        provider = _make_image_registry_provider()
+        typer.echo(str(provider.exists(normalized_ref)).lower())
     except RegistryError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -378,9 +409,9 @@ def run(
     # `workspace_provider.scan`/`materialize_state` call `project`/`validate`
     # use) and any `BackendError` (docker unavailable, image missing, PG/Odoo
     # readiness timeout, instance already exists) surface as a single clean
-    # message, never a raw traceback, and never a half-provisioned instance
-    # the caller doesn't know about — `DockerBackendProvider.run` itself
-    # rolls back everything it created before raising.
+    # `error: ...` line, never a raw traceback, and never a half-provisioned
+    # instance the caller doesn't know about — `DockerBackendProvider.run`
+    # itself rolls back everything it created before raising.
     try:
         workspace_provider = _make_workspace_provider()
         scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
