@@ -127,8 +127,7 @@ def test_publish_falls_back_to_inspect_when_push_output_lacks_digest(
     provider = GhcrImageRegistryProvider()
 
     assert provider.publish(ImageRef("ghcr.io/acme/app:latest")) == (
-        "ghcr.io/acme/app@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        "ghcr.io/acme/app@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     )
     assert calls == [
         ["docker", "push", "ghcr.io/acme/app:latest"],
@@ -171,9 +170,7 @@ def test_pull_maps_failure_to_typed_error(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     with pytest.raises(RegistryPullError) as exc_info:
-        GhcrImageRegistryProvider().pull(
-            ImageDigestRef("ghcr.io/acme/app@sha256:" + "e" * 64)
-        )
+        GhcrImageRegistryProvider().pull(ImageDigestRef("ghcr.io/acme/app@sha256:" + "e" * 64))
 
     assert "image reference not found in registry" in str(exc_info.value)
 
@@ -213,9 +210,14 @@ def test_exists_reports_absent_digest_without_pulling_layers(
 
     provider = GhcrImageRegistryProvider()
 
-    assert provider.exists(
-        ImageDigestRef("ghcr.io/acme/app@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
-    ) is False
+    assert (
+        provider.exists(
+            ImageDigestRef(
+                "ghcr.io/acme/app@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+            )
+        )
+        is False
+    )
     assert calls == [
         [
             "docker",
@@ -246,9 +248,14 @@ def test_exists_reports_present_digest(monkeypatch: pytest.MonkeyPatch) -> None:
 
     provider = GhcrImageRegistryProvider()
 
-    assert provider.exists(
-        ImageDigestRef("ghcr.io/acme/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    ) is True
+    assert (
+        provider.exists(
+            ImageDigestRef(
+                "ghcr.io/acme/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+        )
+        is True
+    )
     assert calls == [
         [
             "docker",
@@ -301,7 +308,9 @@ def test_resolve_digest_rejects_digest_reference_before_subprocess(
 
     with pytest.raises(MalformedImageReferenceError):
         GhcrImageRegistryProvider().resolve_digest(
-            ImageRef("ghcr.io/acme/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            ImageRef(
+                "ghcr.io/acme/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            )
         )
 
     assert calls == []
