@@ -25,13 +25,14 @@ before the server exists (§7).
 New `Protocol` port `ImageRegistryProvider`, mirroring the `SourceProvider` / `BackendProvider`
 shape (interface only in core, adapters in a sibling package, lazy annotations, `runtime_checkable`):
 
-- `publish(image_ref, source) -> ImageDigest` — push a built image and return its immutable digest.
-- `pull(digest) -> LocalImageRef` — fetch an image by digest into a target-reachable form.
-- `resolve_digest(image_ref, tag) -> ImageDigest` — resolve a mutable tag to a pinned digest.
-- `exists(digest) -> bool` — check presence without transferring layers.
+- `publish(ref: ImageRef) -> ImageDigestRef` — push an already-built local image and return its canonical immutable digest.
+- `pull(digest: ImageDigestRef) -> LocalImageRef` — fetch a digest into the local daemon and return a local handle.
+- `resolve_digest(ref: ImageRef) -> ImageDigestRef` — resolve a supported image reference to a canonical digest.
+- `exists(digest: ImageDigestRef) -> bool` — check presence without transferring layers.
 
-Method names and signatures are finalized in this sub-project's own design; the shape above
-mirrors the "verbs return references/handles, never data blobs" convention of the existing ports.
+These signatures are the implemented contract; the port does **not** keep legacy
+`resolve()` / `validate()` bridges. The shape follows the "verbs return
+references/handles, never data blobs" convention of the existing ports.
 
 **Candidate adapters (choose ONE at init, §Principle 3):** GHCR · GitLab Registry · AWS ECR ·
 DockerHub. GHCR is the natural first adapter since Phase 1 already publishes there, but the

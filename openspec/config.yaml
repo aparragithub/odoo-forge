@@ -1,0 +1,40 @@
+schema: spec-driven
+
+context: |
+  Project: odoo-forge
+  Stack: Python 3.11, Pydantic v2, Typer, PyYAML, Hatchling
+  Architecture: pure-core domain with CLI orchestrator and adapter packages for backend, git, workspace, and Docker
+  Testing: pytest, pytest-cov, import-linter, mypy, ruff
+  Style: strict typing, pure functions in core, import boundary enforcement, deterministic serialization
+
+rules:
+  proposal:
+    - Include rollback plan for risky changes
+  specs:
+    - Use Given/When/Then for scenarios
+    - Use RFC 2119 keywords (MUST, SHALL, SHOULD, MAY)
+  design:
+    - Include sequence diagrams for complex flows
+    - Document architecture decisions with rationale
+  tasks:
+    - Group by phase, use hierarchical numbering
+    - Keep tasks completable in one session
+  apply:
+    - Follow existing code patterns
+    tdd: true
+    test_command: "uv run pytest"
+  verify:
+    test_command: "uv run pytest -v"
+    build_command: "uv build"
+    coverage_threshold: 0
+  archive:
+    - Warn before merging destructive deltas
+
+testing:
+  strict_tdd: true
+  runner: pytest
+  command: "uv run pytest"
+  coverage: "uv run pytest --cov=odoo_forge --cov-report=term-missing"
+  import_boundary: "uv run lint-imports"
+  type_checker: "uv run mypy"
+  formatter_linter: "uv run ruff check"

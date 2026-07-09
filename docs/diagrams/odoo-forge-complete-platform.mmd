@@ -1,0 +1,83 @@
+flowchart LR
+    dev[Developer / Junior Dev]
+    ops[DevOps / Platform Team]
+    users[Control-plane Users]
+
+    subgraph cli[Forge CLI]
+        cliDev[up / db / unlock]
+        cliOps[layer publish / lifecycle]
+    end
+
+    subgraph control[Control Plane]
+        api[forge server API]
+        registry[(Canonical instance registry)]
+        rbac[RBAC / OIDC]
+        governance[Audit, guardrails, retention]
+        requests[PROD / QA / DEV requests]
+    end
+
+    subgraph core[Hexagonal Core]
+        manifest[project.yaml manifest]
+        lockfile[project.lock pins]
+        composition[Layer composition]
+        workspace[Workspace projection]
+        images[Image projection]
+        drift[Drift validation]
+    end
+
+    subgraph ports[Ports]
+        sourcePort[SourceProvider]
+        imagePort[ImageRegistryProvider]
+        dbPort[DatabaseProvider]
+        backendPort[BackendProvider]
+        identityPort[IdentityProvider]
+        pipelinePort[PipelineProvider]
+    end
+
+    subgraph adapters[Adapters]
+        git[GitHub / GitLab]
+        ghcr[GHCR / ECR / DockerHub]
+        dbs[Docker PG / RDS / VPS PG]
+        targets[Local Docker / EC2 / Fargate / K8s]
+        oidc[GitHub / GitLab / Google OIDC]
+        ci[GitHub Actions / GitLab CI]
+    end
+
+    subgraph artifacts[External Artifacts]
+        repos[Layer and client repositories]
+        imagesStore[Pre-built Docker images by digest]
+        snapshots[Anonymized and pre-prod DB snapshots]
+    end
+
+    dev --> cliDev --> manifest
+    ops --> cliOps --> api
+    users --> requests --> api
+    api --> registry
+    api --> rbac
+    api --> governance
+    api --> manifest
+    manifest --> composition --> lockfile
+    composition --> workspace
+    composition --> images
+    lockfile --> drift
+    core --> ports
+    sourcePort --> git --> repos
+    imagePort --> ghcr --> imagesStore
+    dbPort --> dbs --> snapshots
+    backendPort --> targets
+    identityPort --> oidc
+    pipelinePort --> ci
+    ci --> imagesStore
+    targets --> imagesStore
+    targets --> snapshots
+
+    classDef actor fill:#FFF3BF,stroke:#7C5C00,stroke-width:2px,color:#3B2F00
+    classDef core fill:#D0EBFF,stroke:#1864AB,stroke-width:2px,color:#102A43
+    classDef port fill:#D3F9D8,stroke:#2B8A3E,stroke-width:2px,color:#0B3D1B
+    classDef adapter fill:#E5DBFF,stroke:#5F3DC4,stroke-width:2px,color:#27145E
+    classDef data fill:#FFE3E3,stroke:#C92A2A,stroke-width:2px,color:#4A0D0D
+    class dev,ops,users actor
+    class manifest,lockfile,composition,workspace,images,drift,api,registry,rbac,governance,requests core
+    class sourcePort,imagePort,dbPort,backendPort,identityPort,pipelinePort port
+    class git,ghcr,dbs,targets,oidc,ci adapter
+    class repos,imagesStore,snapshots data
