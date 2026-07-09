@@ -1,0 +1,63 @@
+flowchart LR
+    developer[Developer]
+    cli[Typer CLI: forge]
+
+    subgraph core[Pure Core: odoo_forge]
+        manifest[Manifest schema]
+        composition[Onion composition]
+        locking[Lockfile resolution]
+        projection[Workspace projection]
+        backendPlan[Backend plan]
+        statusParse[Status parsing]
+        registryTypes[Image registry refs/errors]
+        drift[Drift validation]
+    end
+
+    subgraph ports[Ports]
+        sourcePort[SourceProvider]
+        workspacePort[WorkspaceProvider]
+        backendPort[BackendProvider]
+        imagePort[ImageRegistryProvider]
+    end
+
+    subgraph adapters[Implemented Adapters]
+        git[odoo_forge_git\nGitSourceProvider]
+        workspaceAdapter[odoo_forge_workspace\nGitWorkspaceProvider]
+        docker[odoo_forge_docker\nDockerBackendProvider]
+        registry[odoo_forge_registry\nGhcrImageRegistryProvider]
+    end
+
+    subgraph external[External Tools]
+        gitCli[git / repositories]
+        dockerCli[docker CLI / daemon]
+        ghcr[GHCR via docker/buildx]
+        fs[Materialized workspace]
+        lock[(project.lock)]
+    end
+
+    developer --> cli
+    cli --> manifest
+    cli --> locking
+    cli --> projection
+    cli --> backendPlan
+    cli --> registryTypes
+    manifest --> composition --> drift
+    locking --> sourcePort --> git --> gitCli
+    locking --> lock
+    projection --> workspacePort --> workspaceAdapter --> fs
+    backendPlan --> backendPort --> docker --> dockerCli
+    registryTypes --> imagePort --> registry --> ghcr
+    docker --> ghcr
+    docker --> fs
+    statusParse --> docker
+
+    classDef cli fill:#FFF3BF,stroke:#7C5C00,stroke-width:2px,color:#3B2F00
+    classDef core fill:#D0EBFF,stroke:#1864AB,stroke-width:2px,color:#102A43
+    classDef port fill:#D3F9D8,stroke:#2B8A3E,stroke-width:2px,color:#0B3D1B
+    classDef adapter fill:#E5DBFF,stroke:#5F3DC4,stroke-width:2px,color:#27145E
+    classDef external fill:#FFE3E3,stroke:#C92A2A,stroke-width:2px,color:#4A0D0D
+    class developer,cli cli
+    class manifest,composition,locking,projection,backendPlan,statusParse,registryTypes,drift core
+    class sourcePort,workspacePort,backendPort,imagePort port
+    class git,workspaceAdapter,docker,registry adapter
+    class gitCli,dockerCli,ghcr,fs,lock external
