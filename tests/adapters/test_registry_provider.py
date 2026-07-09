@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 
+from odoo_forge.image_registry import ImageDigestRef, ImageRef
 from odoo_forge.image_registry.errors import (
     MalformedImageReferenceError,
     RegistryAuthenticationError,
@@ -10,7 +11,7 @@ from odoo_forge.image_registry.errors import (
     RegistryPullError,
     RegistryUnavailableError,
 )
-from odoo_forge.image_registry.types import ImageDigestRef, ImageRef
+from odoo_forge.ports.image_registry_provider import ImageRegistryProvider
 from odoo_forge_registry.provider import GhcrImageRegistryProvider
 
 
@@ -21,100 +22,18 @@ class _FakeCompletedProcess:
         self.stderr = stderr
 
 
-def test_publish_fails_fast_with_transition_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fail_if_called(*args: object, **kwargs: object) -> None:
-        raise AssertionError("subprocess.run must not be called for publish()")
+def test_provider_satisfies_image_registry_protocol() -> None:
+    assert isinstance(GhcrImageRegistryProvider(), ImageRegistryProvider)
 
-    monkeypatch.setattr(subprocess, "run", _fail_if_called)
 
+def test_provider_does_not_expose_legacy_resolve_validate_bridge() -> None:
     provider = GhcrImageRegistryProvider()
 
-    with pytest.raises(RegistryPublishError) as exc_info:
-        provider.publish(ImageRef("ghcr.io/acme/app:latest"))
-
-    assert exc_info.value.ref == "ghcr.io/acme/app:latest"
-    assert exc_info.value.detail == (
-        "publish is not available in this transition adapter"
-    )
+    assert not hasattr(provider, "resolve")
+    assert not hasattr(provider, "validate")
 
 
-def test_pull_fails_fast_with_transition_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def _fail_if_called(*args: object, **kwargs: object) -> None:
-        raise AssertionError("subprocess.run must not be called for pull()")
-
-    monkeypatch.setattr(subprocess, "run", _fail_if_called)
-
-    provider = GhcrImageRegistryProvider()
-
-    with pytest.raises(RegistryPullError) as exc_info:
-        provider.pull(
-            ImageDigestRef("ghcr.io/acme/app@sha256:" + "a" * 64)
-        )
-
-    assert exc_info.value.ref == "ghcr.io/acme/app@sha256:" + "a" * 64
-    assert exc_info.value.detail == (
-        "pull is not available in this transition adapter"
-    )
-
-
-def test_resolve_digest_delegates_to_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = GhcrImageRegistryProvider()
-    calls: list[str] = []
-
-    def _fake_resolve(ref: str) -> str:
-        calls.append(ref)
-        return "ghcr.io/acme/app@sha256:" + "b" * 64
-
-    monkeypatch.setattr(provider, "resolve", _fake_resolve)
-
-    result = provider.resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
-
-    assert calls == ["ghcr.io/acme/app:latest"]
-    assert result == ImageDigestRef("ghcr.io/acme/app@sha256:" + "b" * 64)
-
-
-def test_exists_returns_true_when_validate_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = GhcrImageRegistryProvider()
-
-    monkeypatch.setattr(
-        provider,
-        "validate",
-        lambda ref: "ghcr.io/acme/app@sha256:" + "c" * 64,
-    )
-
-    assert provider.exists(ImageDigestRef("ghcr.io/acme/app@sha256:" + "c" * 64))
-
-
-def test_exists_returns_false_when_validate_reports_missing_digest(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    provider = GhcrImageRegistryProvider()
-
-    def _raise_not_found(ref: str) -> str:
-        raise RegistryImageNotFoundError(ref)
-
-    monkeypatch.setattr(provider, "validate", _raise_not_found)
-
-    assert not provider.exists(ImageDigestRef("ghcr.io/acme/app@sha256:" + "d" * 64))
-
-
-def test_exists_propagates_non_not_found_errors(monkeypatch: pytest.MonkeyPatch) -> None:
-    provider = GhcrImageRegistryProvider()
-
-    def _raise_unavailable(ref: str) -> str:
-        raise RegistryUnavailableError(ref, "docker unavailable")
-
-    monkeypatch.setattr(provider, "validate", _raise_unavailable)
-
-    with pytest.raises(RegistryUnavailableError):
-        provider.exists(ImageDigestRef("ghcr.io/acme/app@sha256:" + "e" * 64))
-
-
-def test_resolve_returns_canonical_digest_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_digest_returns_canonical_digest_ref(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         assert argv == [
             "docker",
@@ -134,12 +53,132 @@ def test_resolve_returns_canonical_digest_ref(monkeypatch: pytest.MonkeyPatch) -
 
     provider = GhcrImageRegistryProvider()
 
-    assert provider.resolve("ghcr.io/acme/app:latest") == (
+    assert provider.resolve_digest(ImageRef("ghcr.io/acme/app:latest")) == (
         "ghcr.io/acme/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     )
 
 
-def test_validate_returns_same_canonical_digest_ref(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_publish_pushes_then_returns_canonical_digest_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        if argv[:2] == ["docker", "push"]:
+            return _FakeCompletedProcess(
+                0,
+                stdout="pushing layers\n",
+                stderr=(
+                    "latest: digest: "
+                    "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd "
+                    "size: 1234\n"
+                    "finished\n"
+                ),
+            )
+        raise AssertionError(f"unexpected docker invocation: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GhcrImageRegistryProvider()
+
+    assert provider.publish(ImageRef("ghcr.io/acme/app:latest")) == (
+        "ghcr.io/acme/app@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    )
+    assert calls == [["docker", "push", "ghcr.io/acme/app:latest"]]
+
+
+def test_publish_maps_push_failure_to_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        return _FakeCompletedProcess(1, stderr="unauthorized: authentication required")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RegistryPublishError) as exc_info:
+        GhcrImageRegistryProvider().publish(ImageRef("ghcr.io/acme/app:latest"))
+
+    assert "ghcr authentication failed" in str(exc_info.value).lower()
+
+
+def test_publish_falls_back_to_inspect_when_push_output_lacks_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        if argv[:2] == ["docker", "push"]:
+            return _FakeCompletedProcess(0, stdout="pushed successfully\n")
+        if argv[:4] == ["docker", "buildx", "imagetools", "inspect"]:
+            return _FakeCompletedProcess(
+                0,
+                stdout=(
+                    '{"name":"ghcr.io/acme/app:latest","manifest":'
+                    '{"digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+                    'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"}}'
+                ),
+            )
+        raise AssertionError(f"unexpected docker invocation: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GhcrImageRegistryProvider()
+
+    assert provider.publish(ImageRef("ghcr.io/acme/app:latest")) == (
+        "ghcr.io/acme/app@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    )
+    assert calls == [
+        ["docker", "push", "ghcr.io/acme/app:latest"],
+        [
+            "docker",
+            "buildx",
+            "imagetools",
+            "inspect",
+            "ghcr.io/acme/app:latest",
+            "--format",
+            "{{json .}}",
+        ],
+    ]
+
+
+def test_pull_prefetches_digest_and_returns_local_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        if argv[:2] == ["docker", "pull"]:
+            return _FakeCompletedProcess(0, stdout="pulled")
+        raise AssertionError(f"unexpected docker invocation: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GhcrImageRegistryProvider()
+    ref = "ghcr.io/acme/app@sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+
+    assert provider.pull(ImageDigestRef(ref)) == ref
+    assert calls == [["docker", "pull", ref]]
+
+
+def test_pull_maps_failure_to_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        return _FakeCompletedProcess(1, stderr="manifest unknown")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RegistryPullError) as exc_info:
+        GhcrImageRegistryProvider().pull(
+            ImageDigestRef("ghcr.io/acme/app@sha256:" + "e" * 64)
+        )
+
+    assert "image reference not found in registry" in str(exc_info.value)
+
+
+def test_resolve_digest_returns_same_canonical_digest_ref(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(
             0,
@@ -152,43 +191,137 @@ def test_validate_returns_same_canonical_digest_ref(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     provider = GhcrImageRegistryProvider()
-    ref = "ghcr.io/acme/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    ref = "ghcr.io/acme/app:latest"
 
-    assert provider.validate(ref) == ref
+    assert provider.resolve_digest(ImageRef(ref)) == (
+        "ghcr.io/acme/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    )
 
 
-def test_validate_rejects_digest_mismatch(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exists_reports_absent_digest_without_pulling_layers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        return _FakeCompletedProcess(
+            1, stderr="ERROR: no such manifest: ghcr.io/acme/app@sha256:ffff"
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GhcrImageRegistryProvider()
+
+    assert provider.exists(
+        ImageDigestRef("ghcr.io/acme/app@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+    ) is False
+    assert calls == [
+        [
+            "docker",
+            "buildx",
+            "imagetools",
+            "inspect",
+            "ghcr.io/acme/app@sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "--format",
+            "{{json .}}",
+        ]
+    ]
+
+
+def test_exists_reports_present_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
         return _FakeCompletedProcess(
             0,
             stdout=(
                 '{"manifest":{"digest":'
-                '"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}}'
+                '"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}'
             ),
         )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     provider = GhcrImageRegistryProvider()
-    ref = "ghcr.io/acme/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-    with pytest.raises(RegistryImageNotFoundError):
-        provider.validate(ref)
+    assert provider.exists(
+        ImageDigestRef("ghcr.io/acme/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    ) is True
+    assert calls == [
+        [
+            "docker",
+            "buildx",
+            "imagetools",
+            "inspect",
+            "ghcr.io/acme/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--format",
+            "{{json .}}",
+        ]
+    ]
 
 
-def test_resolve_maps_auth_failure_to_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_exists_returns_false_when_inspected_digest_differs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        return _FakeCompletedProcess(
+            0,
+            stdout=(
+                '{"manifest":{"digest":'
+                '"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}'
+            ),
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GhcrImageRegistryProvider()
+
+    assert (
+        provider.exists(
+            ImageDigestRef(
+                "ghcr.io/acme/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+        )
+        is False
+    )
+
+
+def test_resolve_digest_rejects_digest_reference_before_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        return _FakeCompletedProcess(0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(MalformedImageReferenceError):
+        GhcrImageRegistryProvider().resolve_digest(
+            ImageRef("ghcr.io/acme/app@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        )
+
+    assert calls == []
+
+
+def test_resolve_digest_maps_auth_failure_to_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(1, stderr="unauthorized: authentication required")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     with pytest.raises(RegistryAuthenticationError) as exc:
-        GhcrImageRegistryProvider().resolve("ghcr.io/acme/app:latest")
+        GhcrImageRegistryProvider().resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
 
     assert "ghcr authentication failed" in str(exc.value).lower()
 
 
-def test_validate_maps_not_found_failure_to_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_resolve_digest_maps_not_found_failure_to_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(
             1,
@@ -198,12 +331,10 @@ def test_validate_maps_not_found_failure_to_typed_error(monkeypatch: pytest.Monk
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     with pytest.raises(RegistryImageNotFoundError):
-        GhcrImageRegistryProvider().validate(
-            "ghcr.io/acme/app@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-        )
+        GhcrImageRegistryProvider().resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
 
 
-def test_resolve_rejects_malformed_reference_before_subprocess(
+def test_resolve_digest_rejects_malformed_reference_before_subprocess(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[list[str]] = []
@@ -215,7 +346,7 @@ def test_resolve_rejects_malformed_reference_before_subprocess(
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     with pytest.raises(MalformedImageReferenceError):
-        GhcrImageRegistryProvider().resolve("ghcr.io/acme/app")
+        GhcrImageRegistryProvider().resolve_digest(ImageRef("ghcr.io/acme/app"))
 
     assert calls == []
 
@@ -230,4 +361,4 @@ def test_resolve_maps_timeout_to_unavailable(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
     with pytest.raises(RegistryUnavailableError):
-        GhcrImageRegistryProvider().resolve("ghcr.io/acme/app:latest")
+        GhcrImageRegistryProvider().resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
