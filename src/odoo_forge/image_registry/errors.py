@@ -21,6 +21,20 @@ class MalformedImageReferenceError(RegistryError):
         super().__init__(f"malformed image reference '{ref}': {detail}")
 
 
+class RegistryPublishError(RegistryError):
+    def __init__(self, ref: str, detail: str) -> None:
+        self.ref = ref
+        self.detail = detail
+        super().__init__(f"cannot publish '{ref}': {detail}")
+
+
+class RegistryPullError(RegistryError):
+    def __init__(self, ref: str, detail: str) -> None:
+        self.ref = ref
+        self.detail = detail
+        super().__init__(f"cannot prefetch '{ref}': {detail}")
+
+
 class RegistryAuthenticationError(RegistryError):
     def __init__(self, ref: str) -> None:
         self.ref = ref
@@ -44,6 +58,8 @@ __all__ = [
     "RegistryError",
     "UnsupportedRegistryError",
     "MalformedImageReferenceError",
+    "RegistryPublishError",
+    "RegistryPullError",
     "RegistryAuthenticationError",
     "RegistryImageNotFoundError",
     "RegistryUnavailableError",

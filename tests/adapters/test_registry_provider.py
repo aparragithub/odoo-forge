@@ -6,8 +6,11 @@ from odoo_forge.image_registry.errors import (
     MalformedImageReferenceError,
     RegistryAuthenticationError,
     RegistryImageNotFoundError,
+    RegistryPublishError,
+    RegistryPullError,
     RegistryUnavailableError,
 )
+from odoo_forge.image_registry.types import ImageDigestRef, ImageRef
 from odoo_forge_registry.provider import GhcrImageRegistryProvider
 
 
@@ -16,6 +19,93 @@ class _FakeCompletedProcess:
         self.returncode = returncode
         self.stdout = stdout
         self.stderr = stderr
+
+
+def test_publish_fails_fast_with_transition_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("subprocess.run must not be called for publish()")
+
+    monkeypatch.setattr(subprocess, "run", _fail_if_called)
+
+    provider = GhcrImageRegistryProvider()
+
+    with pytest.raises(RegistryPublishError) as exc_info:
+        provider.publish(ImageRef("ghcr.io/acme/app:latest"))
+
+    assert exc_info.value.ref == "ghcr.io/acme/app:latest"
+    assert exc_info.value.detail == ("publish is not available in this transition adapter")
+
+
+def test_pull_fails_fast_with_transition_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("subprocess.run must not be called for pull()")
+
+    monkeypatch.setattr(subprocess, "run", _fail_if_called)
+
+    provider = GhcrImageRegistryProvider()
+
+    with pytest.raises(RegistryPullError) as exc_info:
+        provider.pull(ImageDigestRef("ghcr.io/acme/app@sha256:" + "a" * 64))
+
+    assert exc_info.value.ref == "ghcr.io/acme/app@sha256:" + "a" * 64
+    assert exc_info.value.detail == ("pull is not available in this transition adapter")
+
+
+def test_resolve_digest_delegates_to_resolve(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = GhcrImageRegistryProvider()
+    calls: list[str] = []
+
+    def _fake_resolve(ref: str) -> str:
+        calls.append(ref)
+        return "ghcr.io/acme/app@sha256:" + "b" * 64
+
+    monkeypatch.setattr(provider, "resolve", _fake_resolve)
+
+    result = provider.resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
+
+    assert calls == ["ghcr.io/acme/app:latest"]
+    assert result == ImageDigestRef("ghcr.io/acme/app@sha256:" + "b" * 64)
+
+
+def test_exists_returns_true_when_validate_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = GhcrImageRegistryProvider()
+
+    monkeypatch.setattr(
+        provider,
+        "validate",
+        lambda ref: "ghcr.io/acme/app@sha256:" + "c" * 64,
+    )
+
+    assert provider.exists(ImageDigestRef("ghcr.io/acme/app@sha256:" + "c" * 64))
+
+
+def test_exists_returns_false_when_validate_reports_missing_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = GhcrImageRegistryProvider()
+
+    def _raise_not_found(ref: str) -> str:
+        raise RegistryImageNotFoundError(ref)
+
+    monkeypatch.setattr(provider, "validate", _raise_not_found)
+
+    assert not provider.exists(ImageDigestRef("ghcr.io/acme/app@sha256:" + "d" * 64))
+
+
+def test_exists_propagates_non_not_found_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    provider = GhcrImageRegistryProvider()
+
+    def _raise_unavailable(ref: str) -> str:
+        raise RegistryUnavailableError(ref, "docker unavailable")
+
+    monkeypatch.setattr(provider, "validate", _raise_unavailable)
+
+    with pytest.raises(RegistryUnavailableError):
+        provider.exists(ImageDigestRef("ghcr.io/acme/app@sha256:" + "e" * 64))
 
 
 def test_resolve_returns_canonical_digest_ref(monkeypatch: pytest.MonkeyPatch) -> None:

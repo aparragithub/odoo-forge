@@ -1,4 +1,8 @@
-"""Concrete `ImageRegistryProvider` adapter backed by `docker buildx imagetools inspect`."""
+"""Concrete transition adapter for the `ImageRegistryProvider` port.
+
+PR1 keeps the legacy resolve/validate flow backed by `docker buildx imagetools
+inspect`. Publish/pull are deliberate fail-fast stubs until the later slice.
+"""
 
 import json
 import os
@@ -8,9 +12,12 @@ from collections.abc import Mapping
 from odoo_forge.image_registry.errors import (
     RegistryAuthenticationError,
     RegistryImageNotFoundError,
+    RegistryPublishError,
+    RegistryPullError,
     RegistryUnavailableError,
 )
 from odoo_forge.image_registry.reference import normalize_image_reference
+from odoo_forge.image_registry.types import ImageDigestRef, ImageRef, LocalImageRef
 
 DEFAULT_TIMEOUT_SECONDS = 30.0
 _AUTH_MARKERS = (
@@ -34,13 +41,24 @@ def _registry_env() -> dict[str, str]:
 
 
 class GhcrImageRegistryProvider:
+    """Transition adapter: GHCR inspection is live; write operations are not."""
+
     def __init__(self, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self._timeout = timeout
+
+    def publish(self, ref: ImageRef) -> ImageDigestRef:
+        raise RegistryPublishError(str(ref), "publish is not available in this transition adapter")
+
+    def pull(self, digest: ImageDigestRef) -> LocalImageRef:
+        raise RegistryPullError(str(digest), "pull is not available in this transition adapter")
 
     def resolve(self, ref: str) -> str:
         normalized = normalize_image_reference(ref, require_digest=False)
         digest = self._inspect_digest(normalized)
         return _canonical_digest_ref(normalized, digest)
+
+    def resolve_digest(self, ref: ImageRef) -> ImageDigestRef:
+        return ImageDigestRef(self.resolve(str(ref)))
 
     def validate(self, ref: str) -> str:
         normalized = normalize_image_reference(ref, require_digest=True)
@@ -49,6 +67,13 @@ class GhcrImageRegistryProvider:
         if digest != requested_digest:
             raise RegistryImageNotFoundError(normalized)
         return _canonical_digest_ref(normalized, digest)
+
+    def exists(self, digest: ImageDigestRef) -> bool:
+        try:
+            self.validate(str(digest))
+        except RegistryImageNotFoundError:
+            return False
+        return True
 
     def _inspect_digest(self, ref: str) -> str:
         argv = [
