@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>odoo-forge — Plataforma (actores y flujos)</title>
+<style>
+  :root {
+    --bg: #f5f8fb; --panel: #ffffff; --panel-2: #eef3f8; --ink: #16222e;
+    --ink-soft: #47596b; --hair: #d6e0ea; --accent: #1e57d6; --accent-soft: #e5edff;
+    --cyan: #0a6f80;
+    --exists: #1a7a4f; --exists-bg: #e3f5ec; --new: #8a5a0a; --new-bg: #fbf1dc;
+    /* theme-independent solid chip tokens — dark enough for white text to pass AA on both grounds */
+    --badge-exists: #146c46; --badge-new: #7a4e08; --chip-cyan: #0a6575; --chip-accent: #1b4fc0;
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d151e; --panel: #16222e; --panel-2: #1c2b3a; --ink: #dbe7f2;
+      --ink-soft: #93a7ba; --hair: #2b3d4f; --accent: #5b93ff; --accent-soft: #1b2c47;
+      --cyan: #2bc0d4;
+      --exists: #5cd39a; --exists-bg: #123528; --new: #e6b24d; --new-bg: #3a2c11;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d151e; --panel: #16222e; --panel-2: #1c2b3a; --ink: #dbe7f2;
+    --ink-soft: #93a7ba; --hair: #2b3d4f; --accent: #5b93ff; --accent-soft: #1b2c47;
+    --cyan: #2bc0d4; --exists: #5cd39a; --exists-bg: #123528; --new: #e6b24d; --new-bg: #3a2c11;
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f8fb; --panel: #ffffff; --panel-2: #eef3f8; --ink: #16222e;
+    --ink-soft: #47596b; --hair: #d6e0ea; --accent: #1e57d6; --accent-soft: #e5edff;
+    --cyan: #0a6f80; --exists: #1a7a4f; --exists-bg: #e3f5ec; --new: #8a5a0a; --new-bg: #fbf1dc;
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 40px 24px 64px; }
+
+  header { margin-bottom: 24px; }
+  .eyebrow { font-family: var(--mono); font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+  h1 { font-size: clamp(26px, 4vw, 38px); line-height: 1.1; margin: 0 0 8px; text-wrap: balance; letter-spacing: -0.02em; }
+  .sub { color: var(--ink-soft); font-size: 16px; margin: 0; max-width: 64ch; }
+  code { font-family: var(--mono); font-size: 0.86em; background: rgba(128,128,128,.16); padding: 1px 5px; border-radius: 4px; }
+
+  .rule {
+    display: flex; align-items: center; gap: 12px; margin: 22px 0 10px;
+    background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 12px; padding: 14px 18px;
+  }
+  .rule .k { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--accent); white-space: nowrap; }
+  .rule .v { font-size: 14.5px; font-weight: 600; color: var(--ink); }
+  .principles { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; }
+  .principles span { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); background: var(--panel-2); border: 1px solid var(--hair); border-radius: 8px; padding: 4px 9px; }
+
+  h2.band-label { font-family: var(--mono); font-size: 11px; font-weight: 700; letter-spacing: .16em; text-transform: uppercase; color: var(--ink-soft); margin: 34px 0 12px; display: flex; align-items: center; gap: 10px; }
+  h2.band-label::after { content: ""; flex: 1; height: 1px; background: var(--hair); }
+
+  .lanes { display: grid; grid-template-columns: 1fr; gap: 14px; }
+  .lane { background: var(--panel); border: 1px solid var(--hair); border-radius: 14px; padding: 16px 18px; }
+  .lane-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+  .lane-head .who { font-size: 16px; font-weight: 700; letter-spacing: -0.01em; }
+  .lane-head .role { font-family: var(--mono); font-size: 11px; color: var(--ink-soft); }
+  .lane-num { font-family: var(--mono); font-weight: 700; font-size: 12px; color: #fff; background: var(--chip-cyan); width: 22px; height: 22px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; }
+
+  .steps { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+  .step { background: var(--panel-2); border: 1px solid var(--hair); border-radius: 9px; padding: 8px 11px; font-size: 12.5px; color: var(--ink); max-width: 210px; }
+  .step b { display: block; font-size: 11px; font-family: var(--mono); color: var(--accent); margin-bottom: 2px; letter-spacing: .02em; }
+  .sep { align-self: center; color: var(--accent); font-size: 18px; }
+  .gate { border-color: var(--exists); }
+  .gate b { color: var(--exists); }
+
+  .plane { background: linear-gradient(180deg, var(--accent-soft), var(--panel)); border: 1.5px solid var(--accent); border-radius: 16px; padding: 18px; margin-top: 4px; }
+  .plane-title { font-size: 15px; font-weight: 700; margin: 0 0 2px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .plane-desc { font-size: 13px; color: var(--ink-soft); margin: 0 0 16px; max-width: 70ch; }
+  .dot-api { font-family: var(--mono); font-size: 10.5px; font-weight: 700; background: var(--chip-accent); color: #fff; padding: 2px 8px; border-radius: 6px; }
+
+  .row { display: grid; gap: 12px; }
+  .cols-3 { grid-template-columns: repeat(3, 1fr); }
+  .cols-4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 760px) { .cols-3, .cols-4 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 480px) { .cols-3, .cols-4 { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 1px solid var(--hair); border-radius: 11px; padding: 13px 14px; position: relative; }
+  .card h3 { margin: 0 0 3px; font-size: 13.5px; letter-spacing: -0.01em; }
+  .card p { margin: 0; font-size: 12px; color: var(--ink-soft); }
+  .card .adapters { font-family: var(--mono); font-size: 10.5px; color: var(--ink-soft); margin-top: 6px; }
+  .badge { position: absolute; top: -9px; right: 11px; font-family: var(--mono); font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 6px; letter-spacing: .04em; color: #fff; }
+  .b-new { background: var(--badge-new); }
+  .b-exists { background: var(--badge-exists); }
+
+  .targets .card { border-color: var(--cyan); text-align: center; }
+  .targets .card h3 { color: var(--cyan); }
+
+  .callout { margin-top: 30px; background: var(--exists-bg); border: 1px solid var(--exists); border-left-width: 4px; border-radius: 10px; padding: 15px 18px; }
+  .callout h3 { margin: 0 0 6px; font-size: 14px; color: var(--exists); }
+  .callout p { margin: 0; font-size: 13.5px; color: var(--ink); }
+  .legend { display:flex; flex-wrap:wrap; gap:8px; margin-top:14px; }
+  .tag { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px; display:inline-flex; align-items:center; gap:6px; }
+  .tag::before { content:""; width:8px; height:8px; border-radius:50%; }
+  .t-exists { background: var(--exists-bg); color: var(--exists);} .t-exists::before{background:var(--exists);}
+  .t-new { background: var(--new-bg); color: var(--new);} .t-new::before{background:var(--new);}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <p class="eyebrow">odoo-forge · plataforma interna (borrador v3 · alineado con el roadmap)</p>
+    <h1>Actores, control plane y flujos</h1>
+    <p class="sub">Un PaaS interno para Odoo: un control plane central sirve a tres perfiles, orquesta build/deploy multi-target y administra el ciclo de vida de las BDs.</p>
+    <div class="legend">
+      <span class="tag t-exists">Existe / con base hoy</span>
+      <span class="tag t-new">Nuevo — a construir</span>
+    </div>
+  </header>
+
+  <div class="rule">
+    <span class="k">Regla dura</span>
+    <span class="v">Solo corre lo que vive en un repositorio. Nada se despliega fuera de git → CI.</span>
+  </div>
+  <div class="principles">
+    <span>Reusar infra vía puertos &amp; adaptadores</span>
+    <span>Un adaptador por puerto, elegido al init</span>
+    <span>Guardar punteros, no copias</span>
+    <span>Estado anti-drift (registro canónico único)</span>
+  </div>
+
+  <h2 class="band-label">Actores y sus recorridos</h2>
+  <div class="lanes">
+
+    <div class="lane">
+      <div class="lane-head"><span class="lane-num">1</span><span class="who">Desarrollador Jr</span><span class="role">onboarding — entorno rápido</span></div>
+      <div class="steps">
+        <div class="step"><b>pide</b>instancia por cliente al control plane</div>
+        <span class="sep">→</span>
+        <div class="step"><b>recibe</b>código + BD randomizada de ese cliente</div>
+        <span class="sep">→</span>
+        <div class="step"><b>desarrolla</b>local, editable</div>
+        <span class="sep">→</span>
+        <div class="step"><b>push</b>a repositorio</div>
+        <span class="sep">→</span>
+        <div class="step gate"><b>CI</b>si pasa ↓</div>
+        <span class="sep">→</span>
+        <div class="step"><b>server</b>buildea imágenes + CD a servidores</div>
+      </div>
+    </div>
+
+    <div class="lane">
+      <div class="lane-head"><span class="lane-num">2</span><span class="who">DevOps</span><span class="role">operación de despliegues</span></div>
+      <div class="steps">
+        <div class="step"><b>ve</b>control panel: instancias por server</div>
+        <span class="sep">→</span>
+        <div class="step"><b>decide</b>aplicar update al server correspondiente</div>
+        <span class="sep">→</span>
+        <div class="step gate"><b>CI/CD</b>contra copia de BD pre-productiva</div>
+        <span class="sep">→</span>
+        <div class="step"><b>si pasa</b>despliega en el server (EC2/VPS/Fargate/K8s)</div>
+      </div>
+    </div>
+
+    <div class="lane">
+      <div class="lane-head"><span class="lane-num">3</span><span class="who">Usuarios del control plane</span><span class="role">funcional · devops · customer · CTO — según permisología (RBAC)</span></div>
+      <div class="steps">
+        <div class="step"><b>solicita</b>instancia PROD nueva</div>
+        <span class="sep">·</span>
+        <div class="step"><b>solicita</b>instancia QA generada desde una PROD</div>
+        <span class="sep">·</span>
+        <div class="step"><b>solicita</b>instancia DEV randomizada para testing de flujos</div>
+      </div>
+    </div>
+
+  </div>
+
+  <h2 class="band-label">Puertos &amp; adaptadores — reusar infra, elegir 1 al init</h2>
+  <div class="row cols-3">
+    <div class="card"><span class="badge b-exists">git ✓</span><h3><code>SourceProvider</code></h3><p>Código de módulos/Odoo.</p><p class="adapters">GitHub · GitLab · repos externos</p></div>
+    <div class="card"><span class="badge b-new">SP-1</span><h3><code>ImageRegistryProvider</code></h3><p>Imágenes Docker por digest.</p><p class="adapters">GHCR · GitLab · ECR · DockerHub</p></div>
+    <div class="card"><span class="badge b-new">SP-2</span><h3><code>DatabaseProvider</code></h3><p>BDs (PG dockerizado ya hecho en 4b).</p><p class="adapters">PG dockerizado · RDS · VPS PG</p></div>
+    <div class="card"><span class="badge b-exists">4b ✓</span><h3><code>BackendProvider</code></h3><p>Puerto existe (docker local, 4b); adaptadores remotos = SP-3.</p><p class="adapters">Docker local · EC2/VPS · Fargate · K8s</p></div>
+    <div class="card"><span class="badge b-new">SP-5</span><h3><code>IdentityProvider</code></h3><p>Auth/RBAC (reusado, no se construye).</p><p class="adapters">GitHub · GitLab · Google (OIDC)</p></div>
+    <div class="card"><span class="badge b-new">SP-6</span><h3><code>PipelineProvider</code></h3><p>CI/CD (reusado, no se construye).</p><p class="adapters">GitHub Actions · GitLab CI</p></div>
+  </div>
+
+  <h2 class="band-label">Control plane — qué debe contener para servir eso</h2>
+  <div class="plane">
+    <p class="plane-title"><span>forge server</span><span class="dot-api">API + RBAC · recibe peticiones</span></p>
+    <p class="plane-desc">La autoridad central. Toma código de repos, fabrica, decide y entrega. Mantiene el registro canónico de instancias (estado) y reconcilia contra el backend (línea 227: preguntarle al backend, nunca un registro que derive).</p>
+    <div class="row cols-3">
+      <div class="card"><span class="badge b-new">SP-4</span><h3>Registro canónico de instancias</h3><p>Estado: qué corre, dónde, qué versión — reconciliado contra el backend.</p></div>
+      <div class="card"><span class="badge b-new">SP-5</span><h3>API + permisología (RBAC)</h3><p>Vía <code>IdentityProvider</code> (OIDC/SSO). Quién puede pedir qué.</p></div>
+      <div class="card"><span class="badge b-new">SP-6</span><h3>Integración CI/CD</h3><p>Dispara/lee <code>PipelineProvider</code>; push→CI→build→CD.</p></div>
+      <div class="card"><span class="badge b-new">SP-1</span><h3>Fábrica + registry de imágenes</h3><p>Build por capa, pinneado por digest. Supersede el <code>PublishedLayer</code> deprecado (§8).</p></div>
+      <div class="card"><span class="badge b-new">SP-3</span><h3>Orquestador de deploy multi-target</h3><p>Sobre <code>BackendProvider</code>; solo docker local (4b) existe hoy.</p></div>
+      <div class="card"><span class="badge b-new">SP-2</span><h3>Ciclo de vida de BDs</h3><p>Provisión, clonado, randomización, copias pre-prod.</p></div>
+      <div class="card"><span class="badge b-new">SP-7</span><h3>Entrega de código fuente</h3><p>Servida a devs. Base: <code>SourceProvider</code>+git (2b) + workspace projection (3).</p></div>
+      <div class="card"><span class="badge b-new">SP-10</span><h3>Gobernanza &amp; ciclo de vida</h3><p>Audit trail append-only · guardrails PROD · GC/retención · orquestación de backups.</p></div>
+    </div>
+  </div>
+
+  <h2 class="band-label">Targets de despliegue — cada uno es un BackendProvider</h2>
+  <div class="row cols-4 targets">
+    <div class="card"><span class="badge b-exists">4b ✓</span><h3>Docker local</h3><p>Hecho (Slice 4b).</p></div>
+    <div class="card"><span class="badge b-new">SP-3</span><h3>EC2 / VPS</h3><p>VM directa.</p></div>
+    <div class="card"><span class="badge b-new">SP-3</span><h3>Fargate</h3><p>Contenedor gestionado.</p></div>
+    <div class="card"><span class="badge b-new">SP-3</span><h3>Kubernetes</h3><p>Orquestado.</p></div>
+  </div>
+
+  <h2 class="band-label">Ciclo de vida de las BDs (por defecto anonimizado)</h2>
+  <div class="row cols-3">
+    <div class="card"><h3>PROD → QA (clon)</h3><p>QA desde una prod puntual — anonimizada salvo autorización auditada.</p></div>
+    <div class="card"><h3>PROD → DEV (randomizada)</h3><p>Datos anonimizados para devs / testing.</p></div>
+    <div class="card"><h3>Copia pre-productiva</h3><p>El CI/CD de DevOps corre contra esta (anonimizada) antes de desplegar.</p></div>
+  </div>
+
+  <div class="callout">
+    <h3>✓ Nota de diseño — estado en el server</h3>
+    <p>El server central con estado <b>NO</b> contradice el diseño fundacional. Lo anticipan la línea <b>187</b> ("canonical-ID instance registry — principle from day 1") y la <b>228</b> ("Control plane (Phase 4): PostgreSQL — real server-side state"). El "no database" de la línea <b>227</b> era solo para el CLI core. La línea <b>195</b> ("web SQLModel schema") es el patrón dual-DDL <b>abandonado</b> ("Consciously left behind") — el drift a NO repetir (cicatriz del <code>mer-fk-refactor</code>).</p>
+  </div>
+
+  <p class="sub" style="margin-top:26px;">Multi-fase. Descomposición completa (SP-1..SP-10) en el roadmap maestro: <code>docs/specs/2026-07-08-platform-roadmap.md</code>.</p>
+</div>
+</body>
+</html>
