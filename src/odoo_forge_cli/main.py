@@ -149,9 +149,7 @@ def _format_drift(entry: DriftEntry) -> str:
 
 
 @app.command(name="image-resolve")
-def image_resolve(
-    ref: str = typer.Option(..., "--ref", help="Image reference to resolve")
-) -> None:
+def image_resolve(ref: str = typer.Option(..., "--ref", help="Image reference to resolve")) -> None:
     """Resolve a supported GHCR image reference to a canonical digest ref."""
     try:
         normalized_ref = normalize_image_reference(ref, require_digest=False)
@@ -164,7 +162,7 @@ def image_resolve(
 
 @app.command(name="image-validate")
 def image_validate(
-    ref: str = typer.Option(..., "--ref", help="Digest image reference to validate")
+    ref: str = typer.Option(..., "--ref", help="Digest image reference to validate"),
 ) -> None:
     """Validate a supported GHCR digest reference."""
     try:

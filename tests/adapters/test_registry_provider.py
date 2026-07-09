@@ -96,10 +96,7 @@ def test_validate_maps_not_found_failure_to_typed_error(monkeypatch: pytest.Monk
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(
             1,
-            stderr=(
-                "ERROR: no such manifest: "
-                "ghcr.io/acme/app@sha256:cccc"
-            ),
+            stderr=("ERROR: no such manifest: ghcr.io/acme/app@sha256:cccc"),
         )
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
