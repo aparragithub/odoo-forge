@@ -1,6 +1,8 @@
 # SP-1 — ImageRegistryProvider
 
-**Layer:** Ports & adapters · **Status:** planned · **SDD change name (proposed):** `platform-image-registry-provider`
+**Layer:** Ports & adapters · **Status:** DONE (GHCR adapter shipped) · **SDD change:** delivered under
+the archived `openspec/changes/archive/2026-07-09-sp1` / `sp1-a` / `sp1-b` changes; the open
+`platform-image-registry-provider` change tracks the remaining doc-tightening work only.
 
 ## Purpose
 This sub-project introduces the `ImageRegistryProvider` port: the second external concern
@@ -55,10 +57,11 @@ control plane never stores image layers or tarballs — it is not a data lake (�
 - One concrete adapter package (e.g. `odoo_forge_registry`) chosen at init.
 - `publish` / `pull` / `resolve_digest` / `exists` against that adapter.
 - A **6th import-linter contract** forbidding `odoo_forge` from importing the new adapter package,
-  and adding the adapter to `root_packages`. There are **5 contracts today** in
+  and adding the adapter to `root_packages`. Before SP-1 there were **5 contracts** in
   `[tool.importlinter]`: 1 generic external-import ban + 1 CLI ban + 3 per-adapter-package bans
   (`odoo_forge_git`, `odoo_forge_workspace`, `odoo_forge_docker`); each new adapter package adds
-  one per-package ban, so SP-1 brings the total to 6.
+  one per-package ban, so SP-1 brought the total to **6** (the `odoo_forge_registry` ban now
+  exists in `pyproject.toml`).
 - CLI surface to publish/pull by digest (foundation-level, pre-server).
 
 ## Non-goals

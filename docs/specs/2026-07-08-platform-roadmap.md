@@ -61,7 +61,8 @@ where**.
 | Concern | Port | Adapters (choose ONE at init) | Status |
 | --- | --- | --- | --- |
 | Module / Odoo source code | `SourceProvider` | GitHub · GitLab · external repos | **git DONE** (Slice 2b) |
-| Docker images | `ImageRegistryProvider` *(new, SP-1)* | GHCR · GitLab Registry · AWS ECR · DockerHub | Phase 1 publishes to GHCR |
+| Workspace materialization | `WorkspaceProvider` | git-workspace | **git-workspace DONE** (Slice 3) |
+| Docker images | `ImageRegistryProvider` *(SP-1)* | GHCR · GitLab Registry · AWS ECR · DockerHub | **GHCR DONE** (SP-1) |
 | Databases | `DatabaseProvider` *(new, SP-2)* | Dockerized PG · AWS RDS · VPS Postgres | **dockerized PG DONE** (Slice 4b) |
 | Deploy target | `BackendProvider` | Docker local · EC2/VPS · Fargate · K8s | **docker local DONE** (Slice 4b) |
 | Identity / SSO | `IdentityProvider` *(new, SP-5)* | GitHub org · GitLab org · Google Workspace (OIDC) | reused IdP |
@@ -82,11 +83,11 @@ engine, not that it escapes the port abstraction.
 - **Backups** — destination + retention (S3 · local volume · VPS). Orchestration is owned by
   SP-10; the storage destination choice is part of its config.
 
-Every new adapter lives in its own sibling package. There are **5 import-linter contracts
-today** (1 generic external-import ban + 1 CLI ban + 3 per-adapter-package bans for
-`odoo_forge_git`, `odoo_forge_workspace`, `odoo_forge_docker`); each new adapter package adds
-one per-package ban (SP-1 adds the 6th total, and SP-2/SP-3/SP-5/SP-6 each add their own
-thereafter).
+Every new adapter lives in its own sibling package. There are **6 import-linter contracts
+today** (1 generic external-import ban + 1 CLI ban + 4 per-adapter-package bans for
+`odoo_forge_git`, `odoo_forge_workspace`, `odoo_forge_docker`, `odoo_forge_registry`); each new
+adapter package adds one per-package ban (SP-1's `odoo_forge_registry` ban already exists, and
+SP-2/SP-3/SP-5/SP-6 each add their own thereafter).
 
 ---
 
@@ -145,7 +146,7 @@ verify → archive). Detailed per-sub-project briefs live in `docs/specs/platfor
 | # | Sub-project | Adds | Depends on |
 | --- | --- | --- | --- |
 | **SP-7** | Dev onboarding flow | Request env by client → source delivery + randomized DB → develop. | SP-2, SourceProvider, SP-4 |
-| **SP-8** | Instance lifecycle requests | Request PROD / QA-from-prod / randomized-DEV. | SP-2/3/4/5 |
+| **SP-8** | Instance lifecycle requests | Request PROD / QA-from-prod / randomized-DEV. | SP-2/3/4/5/10 |
 | **SP-9** | Control panel (web UI) | The panel devops/functional/CTO operate. | SP-4 (+5) |
 
 ---
@@ -192,6 +193,13 @@ their own (each usable from the CLI before the server exists).
   to scope Principle 3 (foundation/CLI = one-at-init; control plane = per-instance adapter
   selection from a registered set), but NOT yet decided.
 
+### SDD change-trail note
+
+- **SP-1** was delivered under the archived `openspec/changes/archive/2026-07-09-sp1`,
+  `sp1-a`, and `sp1-b` changes. The still-open `platform-image-registry-provider` change
+  tracks remaining doc-tightening work only, not the port/adapter implementation itself,
+  which is DONE (§3).
+
 ### Deprecations
 
 - The **`PublishedLayer`** source arm (`src/odoo_forge/manifest/schema.py:33-39`,
@@ -209,5 +217,5 @@ their own (each usable from the CLI before the server exists).
 - Phase 2 slices: `docs/specs/2026-07-06-phase-2-slices-roadmap.md`.
 - Prior "Slice 4a" exploration (`PublishedLayer` source-resolution, now DEPRECATED — see §8
   Deprecations; unrelated to SP-1's container-image concern):
-  `openspec/changes/phase-2-slice-4a-registry-resolution/explore.md`.
+  `openspec/changes/archive/2026-07-09-phase-2-slice-4a-registry-resolution/explore.md`.
 - Engram: `odoo-forge/platform-vision` (#2361).
