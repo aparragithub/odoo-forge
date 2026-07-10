@@ -115,9 +115,7 @@ def test_image_publish_rejects_digest_refs_before_provider_call(
 
 
 def test_image_pull_prints_local_handle(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_provider = _FakeImageRegistryProvider(
-        pulled_ref="ghcr.io/acme/widget@sha256:" + "e" * 64
-    )
+    fake_provider = _FakeImageRegistryProvider(pulled_ref="ghcr.io/acme/widget@sha256:" + "e" * 64)
     monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(
@@ -255,6 +253,7 @@ def test_registry_commands_do_not_invoke_backend_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_provider = _FakeImageRegistryProvider()
+
     def _fail_backend_provider() -> object:
         raise AssertionError("backend provider must not be built")
 
