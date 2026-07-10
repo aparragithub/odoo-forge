@@ -129,6 +129,16 @@ class TestPlanBackend:
         assert plan.odoo.image == "odoo-forge-odoo:19.0"
         assert plan.postgres.image == "postgres:16"
 
+    def test_explicit_odoo_image_override_wins_over_template(self) -> None:
+        manifest = _manifest()
+        state = _state_with_all_roots()
+        odoo_image = "ghcr.io/odoo/odoo@sha256:" + "a" * 64
+
+        plan = plan_backend(manifest, state, odoo_image=odoo_image)
+
+        assert plan.odoo.image == odoo_image
+        assert plan.postgres.image == "postgres:16"
+
     def test_db_host_resolves_to_postgres_alias(self) -> None:
         manifest = _manifest()
         state = _state_with_all_roots()

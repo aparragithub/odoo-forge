@@ -6,6 +6,8 @@ from typer.testing import CliRunner
 
 from odoo_forge.backend.errors import (
     DockerUnavailableError,
+    ImageAuthorizationError,
+    ImageNotFoundError,
     InstanceExistsError,
     InstanceNotFoundError,
 )
@@ -140,6 +142,58 @@ def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.Mo
     assert expected_ref.postgres_container in result.output
 
 
+def test_run_with_odoo_image_ref_passes_canonical_digest_to_planner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    expected_ref = InstanceRef(
+        project="odoo-idp",
+        instance="default",
+        network="odoo-forge-odoo-idp-default",
+        postgres_container="odoo-forge-odoo-idp-default-db",
+        odoo_container="odoo-forge-odoo-idp-default-odoo",
+    )
+    fake_backend = _FakeBackendProvider(run_result=expected_ref)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+    odoo_image_ref = "ghcr.io/odoo/odoo@sha256:" + "b" * 64
+
+    result = runner.invoke(
+        app,
+        ["run", "--manifest", str(project_yaml), "--odoo-image-ref", odoo_image_ref],
+    )
+
+    assert result.exit_code == 0
+    assert len(fake_backend.run_calls) == 1
+    assert fake_backend.run_calls[0].odoo.image == odoo_image_ref
+    assert expected_ref.odoo_container in result.output
+
+
+def test_run_rejects_non_digest_odoo_image_ref_before_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider()
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(
+        app,
+        ["run", "--manifest", str(project_yaml), "--odoo-image-ref", "ghcr.io/odoo/odoo:19.0"],
+    )
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "Traceback" not in result.output
+    assert len(fake_backend.run_calls) == 0
+
+
 def test_run_docker_unavailable_single_line_exit1_no_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -158,6 +212,43 @@ def test_run_docker_unavailable_single_line_exit1_no_traceback(
     assert result.exit_code == 1
     assert result.output.count("error:") == 1
     assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize(
+    ("run_error", "expected_message"),
+    [
+        (
+            ImageNotFoundError("image not found: ghcr.io/odoo/odoo@sha256:" + "c" * 64),
+            "image not found: ghcr.io/odoo/odoo@sha256:" + "c" * 64,
+        ),
+        (
+            ImageAuthorizationError(
+                "registry authorization denied for ghcr.io/odoo/odoo@sha256:" + "d" * 64
+            ),
+            "registry authorization denied for ghcr.io/odoo/odoo@sha256:" + "d" * 64,
+        ),
+    ],
+)
+def test_run_pull_failures_exit_clean_single_line_and_keep_diagnostic(
+    run_error: Exception,
+    expected_message: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    fake_backend = _FakeBackendProvider(run_error=run_error)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(app, ["run", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output.strip() == f"error: {expected_message}"
+    assert "Traceback" not in result.output
+    assert len(fake_backend.run_calls) == 1
 
 
 def test_status_reports_not_running_without_raising_for_absent_instance(

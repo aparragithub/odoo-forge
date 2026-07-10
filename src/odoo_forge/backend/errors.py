@@ -31,6 +31,10 @@ class ImageNotFoundError(BackendError):
     """Raised when a required container image cannot be pulled/found."""
 
 
+class ImageAuthorizationError(BackendError):
+    """Raised when `docker pull` is denied by the registry or daemon."""
+
+
 class PostgresReadinessError(BackendError):
     """Raised when the provisioned Postgres container never becomes TCP-ready."""
 
@@ -51,6 +55,7 @@ __all__ = [
     "BackendError",
     "DockerUnavailableError",
     "ImageNotFoundError",
+    "ImageAuthorizationError",
     "PostgresReadinessError",
     "ContainerRunError",
     "InstanceNotFoundError",

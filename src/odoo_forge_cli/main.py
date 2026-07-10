@@ -21,6 +21,7 @@ from odoo_forge.backend.status import InstanceRef, instance_ref
 from odoo_forge.image_registry import RegistryError
 from odoo_forge.image_registry.reference import (
     normalize_digest_image_reference,
+    normalize_image_reference,
     normalize_publishable_image_reference,
 )
 from odoo_forge.manifest.composition import compose
@@ -388,6 +389,11 @@ def run(
     instance: str = typer.Option(
         "default", "--instance", help="Instance name, for running multiple copies side by side"
     ),
+    odoo_image_ref: str | None = typer.Option(
+        None,
+        "--odoo-image-ref",
+        help="Canonical digest-backed Odoo image reference for this run",
+    ),
 ) -> None:
     """Provision the local Docker backend (Postgres + Odoo) for a manifest."""
     try:
@@ -404,22 +410,37 @@ def run(
             typer.echo(f"error: {location}: {error['msg']}", err=True)
         raise typer.Exit(code=1) from exc
 
+    odoo_image: str | None = None
+    if odoo_image_ref is not None:
+        try:
+            odoo_image = normalize_image_reference(odoo_image_ref, require_digest=True)
+        except RegistryError as exc:
+            typer.echo(f"error: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+
     # Resilient boundary, mirroring `project`/`unlock`: both a `ManifestError`
     # (e.g. `ScanError` from a corrupted checkout, raised by the SAME
     # `workspace_provider.scan`/`materialize_state` call `project`/`validate`
-    # use) and any `BackendError` (docker unavailable, image missing, PG/Odoo
-    # readiness timeout, instance already exists) surface as a single clean
-    # `error: ...` line, never a raw traceback, and never a half-provisioned
-    # instance the caller doesn't know about — `DockerBackendProvider.run`
-    # itself rolls back everything it created before raising.
+    # use), any `RegistryError` from a malformed runtime digest override, and
+    # any `BackendError` (docker unavailable, image missing, registry
+    # authorization denied, PG/Odoo readiness timeout, instance already
+    # exists) surface as a single clean `error: ...` line, never a raw
+    # traceback, and never a half-provisioned instance the caller doesn't know
+    # about — `DockerBackendProvider.run` itself rolls back everything it
+    # created before raising.
     try:
         workspace_provider = _make_workspace_provider()
         scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
         materialized = materialize_state(scanned, MOUNT_ROOTS)
-        plan = plan_backend(parsed, materialized, instance=instance)
+        plan = plan_backend(
+            parsed,
+            materialized,
+            instance=instance,
+            odoo_image=odoo_image,
+        )
         backend_provider = _make_backend_provider()
         ref = backend_provider.run(plan)
-    except (ManifestError, BackendError) as exc:
+    except (ManifestError, BackendError, RegistryError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
