@@ -13,6 +13,13 @@ The server remains thin by design: it stores **pointers** (repo URLs, image dige
 refs) plus the instance registry, and delegates every external concern to a chosen adapter. It is
 not a data lake (§Principle 4).
 
+> **Scope note:** the "one adapter per port at init" statements below describe the
+> foundation/CLI composition root as it exists today. Whether the control plane itself binds
+> one adapter per port globally, or selects an adapter **per instance** from a registered set,
+> is an **open decision** (roadmap §8, "Principle 3 scope") — not yet settled. Read this brief's
+> success criteria as scoped to the current foundation/CLI composition root, not as a
+> resolution of that open decision.
+
 ## Actor(s) served
 Indirectly all three actors (§4) — it is the substrate every journey composes on top of. Directly,
 it serves **DevOps** by exposing instance state for the control panel (SP-9) and by being the API
@@ -70,8 +77,11 @@ Upstream: **SP-1, SP-2, SP-3** (§6 — "the control plane only pays off once it
 orchestrate", §7) plus the git `SourceProvider` foundation. Downstream: SP-5, SP-6, SP-7, SP-8, SP-9.
 
 ## Success criteria
-- One adapter per port is bound at init; a runtime attempt to mix adapters is impossible by
-  construction (composition-root-enforced).
+- One adapter per port is bound at init for the composition root as scoped today; a runtime
+  attempt to mix adapters within that scope is impossible by construction
+  (composition-root-enforced). This does **not** presuppose the outcome of the open
+  per-instance-adapter-selection decision (§8 "Principle 3 scope") — if that decision expands
+  Principle 3 to per-instance selection, this criterion is revisited accordingly.
 - The instance registry is the **single** canonical store — no duplicated DDL; FK discipline
   verified (anti-drift regression guard).
 - API round-trips: register an instance, query it, and read back the exact pointers stored.

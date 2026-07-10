@@ -174,7 +174,7 @@
   <h2 class="band-label">Puertos &amp; adaptadores — reusar infra, elegir 1 al init</h2>
   <div class="row cols-3">
     <div class="card"><span class="badge b-exists">git ✓</span><h3><code>SourceProvider</code></h3><p>Código de módulos/Odoo.</p><p class="adapters">GitHub · GitLab · repos externos</p></div>
-    <div class="card"><span class="badge b-new">SP-1</span><h3><code>ImageRegistryProvider</code></h3><p>Imágenes Docker por digest.</p><p class="adapters">GHCR · GitLab · ECR · DockerHub</p></div>
+    <div class="card"><span class="badge b-exists">SP-1 ✓</span><h3><code>ImageRegistryProvider</code></h3><p>Imágenes Docker por digest.</p><p class="adapters">GHCR · GitLab · ECR · DockerHub</p></div>
     <div class="card"><span class="badge b-new">SP-2</span><h3><code>DatabaseProvider</code></h3><p>BDs (PG dockerizado ya hecho en 4b).</p><p class="adapters">PG dockerizado · RDS · VPS PG</p></div>
     <div class="card"><span class="badge b-exists">4b ✓</span><h3><code>BackendProvider</code></h3><p>Puerto existe (docker local, 4b); adaptadores remotos = SP-3.</p><p class="adapters">Docker local · EC2/VPS · Fargate · K8s</p></div>
     <div class="card"><span class="badge b-new">SP-5</span><h3><code>IdentityProvider</code></h3><p>Auth/RBAC (reusado, no se construye).</p><p class="adapters">GitHub · GitLab · Google (OIDC)</p></div>
@@ -189,7 +189,7 @@
       <div class="card"><span class="badge b-new">SP-4</span><h3>Registro canónico de instancias</h3><p>Estado: qué corre, dónde, qué versión — reconciliado contra el backend.</p></div>
       <div class="card"><span class="badge b-new">SP-5</span><h3>API + permisología (RBAC)</h3><p>Vía <code>IdentityProvider</code> (OIDC/SSO). Quién puede pedir qué.</p></div>
       <div class="card"><span class="badge b-new">SP-6</span><h3>Integración CI/CD</h3><p>Dispara/lee <code>PipelineProvider</code>; push→CI→build→CD.</p></div>
-      <div class="card"><span class="badge b-new">SP-1</span><h3>Fábrica + registry de imágenes</h3><p>Build por capa, pinneado por digest. Supersede el <code>PublishedLayer</code> deprecado (§8).</p></div>
+      <div class="card"><span class="badge b-exists">SP-1 ✓</span><h3>Fábrica + registry de imágenes</h3><p>Build por capa, pinneado por digest. Supersede el <code>PublishedLayer</code> deprecado (§8).</p></div>
       <div class="card"><span class="badge b-new">SP-3</span><h3>Orquestador de deploy multi-target</h3><p>Sobre <code>BackendProvider</code>; solo docker local (4b) existe hoy.</p></div>
       <div class="card"><span class="badge b-new">SP-2</span><h3>Ciclo de vida de BDs</h3><p>Provisión, clonado, randomización, copias pre-prod.</p></div>
       <div class="card"><span class="badge b-new">SP-7</span><h3>Entrega de código fuente</h3><p>Servida a devs. Base: <code>SourceProvider</code>+git (2b) + workspace projection (3).</p></div>
