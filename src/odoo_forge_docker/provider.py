@@ -6,10 +6,10 @@ the only place in the codebase that shells out to `docker` (mirrors
 `odoo_forge_git.git_provider`).
 
 This module implements the full `run()` orchestration (PR-2a-ii): pure argv
-builders, the subprocess boundary, error classification, existence checks
-(PR-2a-i), plus readiness gates and created-only rollback (PR-2a-ii). PR-2b
-adds `status()`/`stop()`/`logs()`/`exec()`, completing all five
-`BackendProvider` port methods.
+builders, the subprocess boundary, explicit image pull ownership, error
+classification, existence checks (PR-2a-i), plus readiness gates and
+created-only rollback (PR-2a-ii). PR-2b adds `status()`/`stop()`/`logs()`/
+`exec()`, completing all five `BackendProvider` port methods.
 """
 
 import json
@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from odoo_forge.backend.errors import (
     ContainerRunError,
     DockerUnavailableError,
+    ImageAuthorizationError,
     ImageNotFoundError,
     InstanceExistsError,
     InstanceNotFoundError,
@@ -52,6 +53,18 @@ DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = 5.0
 
 _DAEMON_DOWN_MARKER = "Cannot connect to the Docker daemon"
 _IMAGE_NOT_FOUND_MARKER = "Unable to find image"
+_PULL_IMAGE_NOT_FOUND_MARKERS = (
+    "unable to find image",
+    "manifest unknown",
+    "not found",
+    "does not exist",
+)
+_PULL_AUTH_MARKERS = (
+    "pull access denied",
+    "unauthorized",
+    "authentication required",
+    "denied",
+)
 
 _ROLE_VOLUME_TARGET: dict[ContainerRole, str] = {
     "postgres": "/var/lib/postgresql/data",
@@ -108,6 +121,10 @@ def _run_container_argv(spec: ContainerSpec) -> list[str]:
     return argv
 
 
+def _pull_image_argv(spec: ContainerSpec) -> list[str]:
+    return ["docker", "pull", spec.image]
+
+
 def _health_status(inspect_stdout: str) -> str | None:
     try:
         data = json.loads(inspect_stdout)
@@ -155,6 +172,7 @@ class DockerBackendProvider:
 
         created: list[_CreatedResource] = []
         try:
+            self._pull_image(plan.odoo)
             self._ensure_network(plan.network, created)
             for volume in plan.volumes:
                 self._ensure_volume(volume, created)
@@ -257,6 +275,28 @@ class DockerBackendProvider:
     def _run_container(self, spec: ContainerSpec, created: list[_CreatedResource]) -> None:
         self._exec(_run_container_argv(spec))
         created.append(("container", spec.name))
+
+    def _pull_image(self, spec: ContainerSpec) -> None:
+        """Pull the planned image before container start and classify failures.
+
+        Pull stderr is normalized here so the CLI can keep a single
+        `error: ...` boundary while still preserving pull failure classes.
+        """
+        result = self._run_raw(_pull_image_argv(spec))
+        if result.returncode == 0:
+            return
+
+        stderr = " ".join((result.stderr or "").split())
+        lowered = stderr.lower()
+        if _DAEMON_DOWN_MARKER in stderr:
+            raise DockerUnavailableError(stderr)
+        if any(marker in lowered for marker in _PULL_AUTH_MARKERS):
+            raise ImageAuthorizationError(
+                stderr or f"authorization denied while pulling {spec.image!r}"
+            )
+        if any(marker in lowered for marker in _PULL_IMAGE_NOT_FOUND_MARKERS):
+            raise ImageNotFoundError(stderr or f"image not found: {spec.image!r}")
+        raise ContainerRunError(stderr or f"docker pull failed for {spec.image!r}")
 
     def _rollback(self, created: list[_CreatedResource]) -> None:
         """Tear down ONLY resources this invocation created, in reverse order.

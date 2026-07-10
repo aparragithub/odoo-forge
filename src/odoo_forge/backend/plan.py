@@ -120,7 +120,10 @@ def _labels(project: str, instance: str, role: str | None = None) -> dict[str, s
 
 
 def plan_backend(
-    manifest: Manifest, state: MaterializedState, instance: str = "default"
+    manifest: Manifest,
+    state: MaterializedState,
+    instance: str = "default",
+    odoo_image: str | None = None,
 ) -> BackendPlan:
     """Compute a `BackendPlan` from `manifest`/`state`. Pure, zero I/O.
 
@@ -136,6 +139,11 @@ def plan_backend(
     single source of truth for identity, so `run` and `status` (which both
     call `plan_backend` independently, with no persisted registry) always
     derive the exact same sanitized name for the same raw input.
+
+    `odoo_image` is an ephemeral runtime override used only by `forge run`.
+    When provided, it replaces the default Odoo image template for this plan
+    without changing any persisted manifest or registry state; the Docker
+    adapter still owns any later `docker pull` side effects.
     """
     del state  # unused this PR — see docstring; kept for signature stability
 
@@ -184,7 +192,11 @@ def plan_backend(
 
     odoo_spec = ContainerSpec(
         name=odoo_name,
-        image=_ODOO_IMAGE_TEMPLATE.format(odoo_version=manifest.odoo_version),
+        image=(
+            odoo_image
+            if odoo_image is not None
+            else _ODOO_IMAGE_TEMPLATE.format(odoo_version=manifest.odoo_version)
+        ),
         role="odoo",
         network=network_name,
         env={

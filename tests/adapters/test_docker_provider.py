@@ -8,6 +8,7 @@ import pytest
 from odoo_forge.backend.errors import (
     ContainerRunError,
     DockerUnavailableError,
+    ImageAuthorizationError,
     ImageNotFoundError,
     InstanceExistsError,
     InstanceNotFoundError,
@@ -115,6 +116,12 @@ def _make_plan() -> BackendPlan:
     )
 
 
+def _make_digest_plan() -> BackendPlan:
+    plan = _make_plan()
+    digest_ref = "ghcr.io/odoo/odoo@sha256:" + "b" * 64
+    return plan.model_copy(update={"odoo": plan.odoo.model_copy(update={"image": digest_ref})})
+
+
 def _healthy_inspect(_name: str) -> str:
     return json.dumps([{"State": {"Running": True, "Health": {"Status": "healthy"}}}])
 
@@ -146,6 +153,7 @@ class _Router:
         self.calls: list[list[str]] = []
         self.kwargs: list[dict[str, object]] = []
         self.not_found: set[str] = set()
+        self.pull_error_stderr: str | None = None
         self.pg_ready_after: int = 0
         self._pg_attempts = 0
         self.odoo_healthy_after: int = 0
@@ -182,6 +190,10 @@ class _Router:
         if argv[1:3] == ["network", "create"]:
             return _FakeCompletedProcess(0)
         if argv[1:3] == ["volume", "create"]:
+            return _FakeCompletedProcess(0)
+        if argv[1] == "pull":
+            if self.pull_error_stderr is not None:
+                return _FakeCompletedProcess(1, stderr=self.pull_error_stderr)
             return _FakeCompletedProcess(0)
         if argv[1] == "run":
             name = argv[argv.index("--name") + 1]
@@ -411,8 +423,10 @@ def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch
     assert ref.odoo_container == ODOO_NAME
 
     kinds = [tuple(call[:3]) for call in router.calls]
+    assert ("docker", "pull", _make_plan().odoo.image) in kinds
     assert ("docker", "inspect", DB_NAME) in kinds
     assert ("docker", "inspect", ODOO_NAME) in kinds
+    pull_idx = next(i for i, c in enumerate(router.calls) if c[1] == "pull")
     assert router.calls[kinds.index(("docker", "network", "create"))][:3] == [
         "docker",
         "network",
@@ -425,7 +439,7 @@ def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch
     pg_ready_idx = next(i for i, c in enumerate(router.calls) if c[1] == "exec")
     odoo_run_idx = next(i for i, c in enumerate(router.calls) if c[1] == "run" and ODOO_NAME in c)
 
-    assert network_idx < min(volume_idxs) < pg_run_idx < pg_ready_idx < odoo_run_idx
+    assert pull_idx < network_idx < min(volume_idxs) < pg_run_idx < pg_ready_idx < odoo_run_idx
 
     for kwargs in router.kwargs:
         env = kwargs.get("env")
@@ -481,6 +495,96 @@ def test_odoo_health_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ContainerRunError):
         provider.run(_make_plan())
+
+
+def test_run_pulls_exact_digest_image_ref_before_odoo_start(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+
+    provider = DockerBackendProvider(sleep=lambda _seconds: None)
+    provider.run(_make_digest_plan())
+
+    pull_call = next(c for c in router.calls if c[1] == "pull")
+    odoo_run_idx = next(i for i, c in enumerate(router.calls) if c[1] == "run" and ODOO_NAME in c)
+
+    assert pull_call[-1] == _make_digest_plan().odoo.image
+    assert router.calls.index(pull_call) < odoo_run_idx
+
+
+def test_non_run_paths_do_not_pull_images(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        if argv[1:3] == ["network", "inspect"]:
+            return _FakeCompletedProcess(0)
+        if argv[1:3] == ["volume", "inspect"]:
+            return _FakeCompletedProcess(0)
+        if argv[1] == "inspect":
+            if len(argv) == 4:
+                payload = [
+                    _inspect_entry("postgres", running=True, health=None),
+                    _inspect_entry("odoo", running=True, health="healthy"),
+                ]
+                return _FakeCompletedProcess(0, stdout=json.dumps(payload))
+            return _FakeCompletedProcess(0, stdout=json.dumps([{"State": {"Running": True}}]))
+        if argv[1] == "logs":
+            return _FakeCompletedProcess(0, stdout="odoo log lines\n")
+        if argv[1] == "exec":
+            return _FakeCompletedProcess(0, stdout="exec output", stderr="")
+        if argv[1] == "stop" or argv[1] == "rm" or argv[1:3] == ["network", "rm"]:
+            return _FakeCompletedProcess(0)
+        raise AssertionError(f"unexpected docker invocation: {argv}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = DockerBackendProvider(sleep=lambda _seconds: None)
+    ref = _make_ref()
+
+    provider.status(ref)
+    provider.stop(ref)
+    provider.logs(ref, "odoo")
+    provider.exec(ref, ["odoo-bin", "--version"])
+
+    assert not any(call[1] == "pull" for call in calls)
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_error"),
+    [
+        (
+            "Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+            DockerUnavailableError,
+        ),
+        ("manifest unknown", ImageNotFoundError),
+        (
+            "pull access denied for ghcr.io/odoo/odoo, repository does not exist "
+            "or may require 'docker login': denied: requested access "
+            "to the resource is denied",
+            ImageAuthorizationError,
+        ),
+    ],
+)
+def test_run_pull_failures_map_to_typed_backend_errors(
+    stderr: str,
+    expected_error: type[Exception],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        pull_error_stderr=stderr,
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+
+    provider = DockerBackendProvider(sleep=lambda _seconds: None)
+
+    with pytest.raises(expected_error):
+        provider.run(_make_plan())
+
+    assert any(call[1] == "pull" for call in router.calls)
+    assert not any(call[1] == "run" for call in router.calls)
 
 
 # -- created-only rollback -------------------------------------------------
