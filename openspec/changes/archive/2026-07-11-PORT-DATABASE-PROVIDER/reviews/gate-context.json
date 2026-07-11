@@ -1,0 +1,36 @@
+{
+  "schema": "gentle-ai.review-gate-request/v1",
+  "gate": "post-apply",
+  "target": {
+    "kind": "current-changes",
+    "intended_untracked": [
+      "openspec/changes/PORT-DATABASE-PROVIDER/apply-progress.md",
+      "openspec/changes/PORT-DATABASE-PROVIDER/design.md",
+      "openspec/changes/PORT-DATABASE-PROVIDER/exploration.md",
+      "openspec/changes/PORT-DATABASE-PROVIDER/proposal.md",
+      "openspec/changes/PORT-DATABASE-PROVIDER/specs/database-provider/spec.md",
+      "openspec/changes/PORT-DATABASE-PROVIDER/tasks.md",
+      "openspec/changes/PORT-DATABASE-PROVIDER/verify-report.md",
+      "src/odoo_forge/credentials/__init__.py",
+      "src/odoo_forge/credentials/types.py",
+      "src/odoo_forge/data_artifacts/__init__.py",
+      "src/odoo_forge/data_artifacts/types.py",
+      "src/odoo_forge/database/__init__.py",
+      "src/odoo_forge/database/errors.py",
+      "src/odoo_forge/database/readiness.py",
+      "src/odoo_forge/database/types.py",
+      "src/odoo_forge/ports/database_provider.py",
+      "tests/database/test_errors.py",
+      "tests/database/test_readiness.py",
+      "tests/database/test_types.py",
+      "tests/ports/test_database_provider.py"
+    ]
+  },
+  "store_revision": "sha256:e33992fc9046640e2099d695924ba35c15c79bf07b2ce89bffb5a422bf0bdfd6",
+  "genesis_revision": "sha256:5d75bd6f0acea6b98cc1a772e4382a32e0d4427e871d63292f1031fdc3ae3725",
+  "chain_identity": "sha256:b395671c7576866f12359dc2586c0ff1b023425115dc0e44943e044dcf24e09b",
+  "bundle_digest": "sha256:a249453528dc133e3436dc46e3ee70fa5fa88a5c74e86d271bc9b9c247ce8321",
+  "policy_artifact": "/home/aparra/Desarrollo/odoo-forge/openspec/changes/PORT-DATABASE-PROVIDER/reviews/policy.md",
+  "ledger_artifact": "/home/aparra/Desarrollo/odoo-forge/openspec/changes/PORT-DATABASE-PROVIDER/reviews/ledger.json",
+  "evidence_artifact": "/home/aparra/Desarrollo/odoo-forge/openspec/changes/PORT-DATABASE-PROVIDER/verify-report.md"
+}
