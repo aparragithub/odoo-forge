@@ -25,9 +25,7 @@ def evaluate_gate_readiness(evidence: GateReadinessEvidence) -> GateReadiness:
         "verification_receipt_id",
     )
     missing_identifiers = tuple(
-        identifier
-        for identifier in required_identifiers
-        if getattr(evidence, identifier) is None
+        identifier for identifier in required_identifiers if getattr(evidence, identifier) is None
     )
     return GateReadiness(
         is_ready=not missing_identifiers,
