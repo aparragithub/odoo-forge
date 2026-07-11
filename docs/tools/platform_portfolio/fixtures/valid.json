@@ -1,0 +1,48 @@
+{
+  "meta": {
+    "schema_version": "1.0.0",
+    "command_catalog": {"C37": "uv run pytest"},
+    "evidence_catalog": {"S0": "docs/example.md"},
+    "gap_catalog": {"G0": "no implementation yet"},
+    "historical_alias_map": {}
+  },
+  "items": [
+    {
+      "id": "SP-EXAMPLE",
+      "kind": "sp",
+      "title": "Example outcome",
+      "owner_role": "Architecture",
+      "status": "proposed",
+      "evidence_date": "2026-07-10",
+      "acceptance": [
+        {"id": "AC-EXAMPLE", "status": "proposed", "evidence": [], "gaps": ["G0"]}
+      ],
+      "decision_ids": [],
+      "predecessors": [],
+      "successors": []
+    }
+  ],
+  "decisions": [],
+  "transitions": [],
+  "transfers": [],
+  "edges": [],
+  "decompositions": [
+    {
+      "id": "CHG-EXAMPLE",
+      "owner": "Engineering",
+      "type": "sdd_change",
+      "inputs": [],
+      "outputs": ["src/example.py"],
+      "acceptance_ids": ["AC-EXAMPLE"],
+      "dependencies": ["SP-EXAMPLE"],
+      "immediate_parent": null,
+      "verification_commands": ["C37"],
+      "changed_line_forecast": {
+        "files": [{"path": "src/example.py", "additions": 1, "deletions": 0, "total": 1}],
+        "total": 1
+      },
+      "status": "planned",
+      "blocking_decision_ids": []
+    }
+  ]
+}
