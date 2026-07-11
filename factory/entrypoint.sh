@@ -100,7 +100,7 @@ run_odoo() {
             set_conf workers 0
         fi
         echo "NOTICE: Debug mode enabled on port ${ODOO_DEBUG_PORT}"
-        exec /opt/venv/bin/python3 -m debugpy --listen 0.0.0.0:${ODOO_DEBUG_PORT} \
+        exec /opt/venv/bin/python3 -m debugpy --listen 0.0.0.0:"${ODOO_DEBUG_PORT}" \
             /usr/local/bin/odoo "$@"
     else
         exec odoo "$@"
