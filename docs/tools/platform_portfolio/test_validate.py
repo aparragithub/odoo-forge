@@ -17,10 +17,7 @@ import validate
 HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
 FIXTURE = HERE / "fixtures" / "valid.json"
-LIVE_PLAN = (
-    REPO_ROOT / "openspec" / "changes" / "platform-subproject-redefinition"
-    / "portfolio-plan.json"
-)
+LIVE_PLAN = REPO_ROOT / "docs" / "specs" / "platform" / "portfolio.json"
 
 
 def _codes(violations):
