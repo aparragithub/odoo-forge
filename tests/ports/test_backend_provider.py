@@ -52,3 +52,11 @@ def test_non_conforming_class_does_not_satisfy_protocol() -> None:
             return "log text"
 
     assert not isinstance(_MissingExec(), BackendProvider)
+
+
+def test_backend_port_documents_opaque_credential_injection_boundary() -> None:
+    documentation = BackendProvider.run.__doc__
+
+    assert documentation is not None
+    assert "opaque injection descriptor" in documentation.lower()
+    assert "plaintext" in documentation.lower()

@@ -32,6 +32,8 @@ class DatabaseSpec(_ProviderValue):
 
 
 class DatabaseRef(_ProviderValue):
+    """Opaque identifier and ownership metadata for a provider database."""
+
     identifier: str
     ownership: ResourceOwnership
 
@@ -41,11 +43,15 @@ class OperationIdentity(_ProviderValue):
 
 
 class CreationReceipt(_ProviderValue):
+    """Opaque operation proof used to reconcile or clean up a database."""
+
     operation: OperationIdentity
     owned_resource_ids: tuple[str, ...]
 
 
 class DatabaseCreation(_ProviderValue):
+    """Opaque handoff joining a provider reference and its creation receipt."""
+
     ref: DatabaseRef
     receipt: CreationReceipt
 
@@ -64,9 +70,8 @@ class CleanupReport(_ProviderValue):
             if not isinstance(value, str):
                 raise ValueError("cleanup residual failures must be safe opaque identifiers")
             lowered = value.lower()
-            if (
-                _RESIDUAL_FAILURE_IDENTIFIER.fullmatch(value) is None
-                or any(term in lowered for term in _SENSITIVE_RESIDUAL_TERMS)
+            if _RESIDUAL_FAILURE_IDENTIFIER.fullmatch(value) is None or any(
+                term in lowered for term in _SENSITIVE_RESIDUAL_TERMS
             ):
                 raise ValueError("cleanup residual failures must be safe opaque identifiers")
         return values

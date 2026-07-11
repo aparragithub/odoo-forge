@@ -13,18 +13,14 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.manifest.projection import MOUNT_ROOTS
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.manifest.state import MaterializedState
 
 ContainerRole = Literal["odoo", "postgres"]
 
-# Deterministic local-dev credentials — this is a LOCAL backend; the values
-# match the entrypoint's own fallbacks (`entrypoint.sh:143-159`) so behavior
-# is identical whether or not they are set explicitly. A generated password
-# is a documented future option, not this slice (design "Env & credentials").
 _DB_USER = "odoo"
-_DB_PASSWORD = "odoo"
 _POSTGRES_PORT = "5432"
 
 _ODOO_IMAGE_TEMPLATE = "odoo-forge-odoo:{odoo_version}"
@@ -95,6 +91,7 @@ class ContainerSpec(BaseModel):
     role: ContainerRole
     network: str
     env: dict[str, str]
+    secret_env: dict[str, CredentialHandle] = {}
     mounts: list[Mount] = []
     labels: dict[str, str]
     volumes: list[VolumeSpec] = []
@@ -124,6 +121,7 @@ def plan_backend(
     state: MaterializedState,
     instance: str = "default",
     odoo_image: str | None = None,
+    credentials: BackendCredentialBindings | None = None,
 ) -> BackendPlan:
     """Compute a `BackendPlan` from `manifest`/`state`. Pure, zero I/O.
 
@@ -180,10 +178,12 @@ def plan_backend(
         role="postgres",
         network=network_name,
         env={
-            "POSTGRES_PASSWORD": _DB_PASSWORD,
             "POSTGRES_USER": _DB_USER,
             "POSTGRES_DB": db_name,
         },
+        secret_env=(
+            {"POSTGRES_PASSWORD": credentials.postgres_password} if credentials is not None else {}
+        ),
         mounts=[],
         labels=_labels(project, instance, role="postgres"),
         volumes=[pgdata_volume],
@@ -203,9 +203,9 @@ def plan_backend(
             "DB_HOST": postgres_name,
             "DB_PORT": _POSTGRES_PORT,
             "DB_USER": _DB_USER,
-            "DB_PASSWORD": _DB_PASSWORD,
             "POSTGRES_DB": db_name,
         },
+        secret_env={"DB_PASSWORD": credentials.odoo_db_password} if credentials is not None else {},
         mounts=mounts,
         labels=_labels(project, instance, role="odoo"),
         volumes=[filestore_volume],

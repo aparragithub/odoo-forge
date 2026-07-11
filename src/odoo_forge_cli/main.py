@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole, plan_backend
 from odoo_forge.backend.status import InstanceRef, instance_ref
+from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError
 from odoo_forge.image_registry.reference import (
     normalize_digest_image_reference,
@@ -45,6 +46,7 @@ from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
+from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
 from odoo_forge_registry import GhcrImageRegistryProvider
@@ -63,9 +65,13 @@ def _make_workspace_provider() -> WorkspaceProvider:
     return GitWorkspaceProvider()
 
 
-def _make_backend_provider() -> BackendProvider:
+def _make_backend_provider(
+    *, credentials_file: Path = Path("credentials.sops.yaml")
+) -> BackendProvider:
     """Composition root: the ONE place the concrete docker adapter is built."""
-    return DockerBackendProvider()
+    return DockerBackendProvider(
+        credential_injector=SopsEnvFileInjector(SopsCommandResolver(credentials_file))
+    )
 
 
 def _make_image_registry_provider() -> GhcrImageRegistryProvider:
@@ -437,8 +443,14 @@ def run(
             materialized,
             instance=instance,
             odoo_image=odoo_image,
+            credentials=BackendCredentialBindings(
+                postgres_password=CredentialHandle("local-backend/postgres-password"),
+                odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
+            ),
         )
-        backend_provider = _make_backend_provider()
+        backend_provider = _make_backend_provider(
+            credentials_file=manifest.resolve().parent / "credentials.sops.yaml"
+        )
         ref = backend_provider.run(plan)
     except (ManifestError, BackendError, RegistryError) as exc:
         typer.echo(f"error: {exc}", err=True)

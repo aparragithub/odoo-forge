@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 @runtime_checkable
 class BackendProvider(Protocol):
     def run(self, plan: BackendPlan) -> InstanceRef:
-        """Provision `plan` and return a handle to a ready, reachable instance."""
+        """Provision `plan` using opaque injection descriptors, never plaintext credentials."""
         ...
 
     def status(self, ref: InstanceRef) -> InstanceStatus:
