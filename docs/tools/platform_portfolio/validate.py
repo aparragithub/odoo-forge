@@ -28,9 +28,7 @@ import re
 import sys
 from collections import defaultdict
 
-DEFAULT_PLAN = (
-    "openspec/changes/platform-subproject-redefinition/portfolio-plan.json"
-)
+DEFAULT_PLAN = "docs/specs/platform/portfolio.json"
 ITEM_KINDS = {
     "sp", "prerequisite", "port", "adapter", "integration", "workflow", "sdd_change",
 }
