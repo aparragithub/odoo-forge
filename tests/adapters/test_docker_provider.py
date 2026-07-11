@@ -1,7 +1,9 @@
 import inspect
 import json
+import stat
 import subprocess
 import typing
+from pathlib import Path
 
 import pytest
 
@@ -23,7 +25,9 @@ from odoo_forge.backend.plan import (
     VolumeSpec,
 )
 from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus
+from odoo_forge.credentials.types import CredentialHandle
 from odoo_forge.ports.backend_provider import BackendProvider
+from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import (
     DockerBackendProvider,
     _docker_env,
@@ -204,6 +208,8 @@ class _Router:
             if self._pg_attempts > self.pg_ready_after:
                 return _FakeCompletedProcess(0)
             return _FakeCompletedProcess(2, stderr="no response")
+        if argv[1] == "logs":
+            return _FakeCompletedProcess(0, stdout="readiness diagnostics")
         if argv[1:3] == ["rm", "-f"] or (argv[1] == "rm" and "-f" in argv):
             return _FakeCompletedProcess(0)
         if argv[1:3] == ["volume", "rm"]:
@@ -252,8 +258,211 @@ def test_run_container_argv_includes_network_env_volumes_ports() -> None:
     assert argv[-1] == "postgres:16"
 
 
-def test_run_container_argv_ephemeral_ports_and_readonly_mount_suffix() -> None:
-    """Pins the real Odoo spec's dynamic host-port binding + `:ro` mount suffix."""
+def test_sops_env_file_injector_writes_mode_0600_and_cleans_up() -> None:
+    secret = "credential-value-not-for-argv"
+    spec = _make_postgres_spec().model_copy(
+        update={
+            "env": {
+                "POSTGRES_USER": "odoo",
+                "POSTGRES_DB": "proj",
+            },
+            "secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://postgres-password")},
+        }
+    )
+    injector = SopsEnvFileInjector(resolver=lambda _handle: secret)
+
+    with injector.env_file(spec) as env_file:
+        assert stat.S_IMODE(env_file.stat().st_mode) == 0o600
+        assert env_file.read_text() == f"POSTGRES_PASSWORD={secret}\n"
+
+    assert not env_file.exists()
+
+
+def test_sops_env_file_injector_cleans_up_when_docker_launch_fails() -> None:
+    spec = _make_postgres_spec().model_copy(
+        update={"secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://postgres-password")}}
+    )
+    injector = SopsEnvFileInjector(resolver=lambda _handle: "credential-value-not-for-argv")
+
+    with pytest.raises(RuntimeError), injector.env_file(spec) as env_file:
+        assert env_file.exists()
+        raise RuntimeError("docker launch failed")
+
+    assert not env_file.exists()
+
+
+def test_sops_secret_file_cleanup_preserves_the_write_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    directory = tmp_path / "credentials"
+    directory.mkdir()
+    monkeypatch.setattr(
+        "odoo_forge_docker.credential_injection.tempfile.mkdtemp", lambda **_: str(directory)
+    )
+
+    def fail_chmod(_path: Path, _mode: int) -> None:
+        raise OSError("chmod failed")
+
+    monkeypatch.setattr("odoo_forge_docker.credential_injection.os.chmod", fail_chmod)
+    spec = _make_postgres_spec().model_copy(
+        update={"secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://postgres-password")}}
+    )
+
+    with (
+        pytest.raises(OSError, match="chmod failed"),
+        SopsEnvFileInjector(resolver=lambda _handle: "credential-value").secret_files(spec),
+    ):
+        pass
+
+    assert not directory.exists()
+
+
+def test_sops_command_resolver_invokes_the_configured_document_without_a_shell(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    credentials_file = tmp_path / "project" / "credentials.sops.yaml"
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout="resolved-value\n", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    resolver = SopsCommandResolver(credentials_file)
+    value = resolver(CredentialHandle("local-backend/postgres-password"))
+
+    assert value == "resolved-value"
+    assert calls == [
+        (
+            [
+                "sops",
+                "--decrypt",
+                "--extract",
+                '["local-backend/postgres-password"]',
+                str(credentials_file),
+            ],
+            {"capture_output": True, "text": True, "check": False},
+        )
+    ]
+
+
+def test_run_container_argv_uses_env_file_without_secret_values() -> None:
+    secret = "credential-value-not-for-argv"
+    spec = _make_postgres_spec().model_copy(
+        update={"env": {"POSTGRES_USER": "odoo", "POSTGRES_DB": "proj"}}
+    )
+
+    argv = _run_container_argv(spec, Path("/tmp/credential.env"))
+
+    assert "--env-file" in argv
+    assert "/tmp/credential.env" in argv
+    assert f"POSTGRES_PASSWORD={secret}" not in argv
+    assert secret not in " ".join(argv)
+
+
+def test_provider_uses_secret_files_and_removes_secrets_from_subprocess_observables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "credential-value-not-for-argv"
+    plan = _make_plan().model_copy(
+        update={
+            "postgres": _make_plan().postgres.model_copy(
+                update={
+                    "env": {"POSTGRES_USER": "odoo", "POSTGRES_DB": "proj"},
+                    "secret_env": {
+                        "POSTGRES_PASSWORD": CredentialHandle("sops://postgres-password")
+                    },
+                }
+            ),
+            "odoo": _make_plan().odoo.model_copy(
+                update={
+                    "env": {
+                        "DB_HOST": DB_NAME,
+                        "DB_PORT": "5432",
+                        "DB_USER": "odoo",
+                        "POSTGRES_DB": "proj",
+                    },
+                    "secret_env": {"DB_PASSWORD": CredentialHandle("sops://odoo-db-password")},
+                }
+            ),
+        }
+    )
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+
+    DockerBackendProvider(
+        sleep=lambda _seconds: None,
+        credential_injector=SopsEnvFileInjector(resolver=lambda _handle: secret),
+    ).run(plan)
+
+    secret_file_paths = [
+        Path(token.split(",")[1].removeprefix("source="))
+        for call in router.calls
+        for token in call
+        if token.startswith("type=bind,source=") and ",target=/run/secrets/" in token
+    ]
+    assert len(secret_file_paths) == 2
+    assert all(not path.exists() for path in secret_file_paths)
+    assert all("--env-file" not in call for call in router.calls)
+    assert all(secret not in " ".join(call) for call in router.calls)
+    assert all(
+        secret not in values.values()
+        for kwargs in router.kwargs
+        if isinstance((values := kwargs.get("env")), dict)
+    )
+
+
+def test_provider_fails_closed_before_docker_when_sops_resolution_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _make_plan().model_copy(
+        update={
+            "postgres": _make_plan().postgres.model_copy(
+                update={"secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://missing")}}
+            )
+        }
+    )
+    router = _make_router()
+    monkeypatch.setattr(subprocess, "run", router)
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        DockerBackendProvider(sleep=lambda _seconds: None).run(plan)
+
+    assert "sops://missing" not in str(excinfo.value)
+    assert router.calls == []
+
+
+def test_provider_redacts_sops_resolver_diagnostics_before_docker_launch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "credential-value-not-for-diagnostics"
+    plan = _make_plan().model_copy(
+        update={
+            "postgres": _make_plan().postgres.model_copy(
+                update={"secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://broken")}}
+            )
+        }
+    )
+    router = _make_router()
+    monkeypatch.setattr(subprocess, "run", router)
+
+    def broken_resolver(_handle: CredentialHandle) -> str:
+        raise RuntimeError(secret)
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        DockerBackendProvider(
+            sleep=lambda _seconds: None,
+            credential_injector=SopsEnvFileInjector(resolver=broken_resolver),
+        ).run(plan)
+
+    assert str(excinfo.value) == "credential injection failed"
+    assert secret not in str(excinfo.value)
+    assert router.calls == []
+
+
+def test_run_container_argv_loopback_ports_and_readonly_mount_suffix() -> None:
+    """Pins loopback-only dynamic host ports and the read-only mount suffix."""
     spec = ContainerSpec(
         name="odoo-forge-proj-default-odoo",
         image="odoo-forge-odoo:19.0",
@@ -273,10 +482,42 @@ def test_run_container_argv_ephemeral_ports_and_readonly_mount_suffix() -> None:
 
     argv = _run_container_argv(spec)
 
-    assert "-p" in argv and "0:8069" in argv and "0:8072" in argv
+    assert "-p" in argv and "127.0.0.1:0:8069" in argv and "127.0.0.1:0:8072" in argv
     assert "/host/worktrees:/w" in argv
     assert "/host/worktrees:/w:ro" not in argv
     assert "/host/custom:/c:ro" in argv
+
+
+def test_run_container_argv_binds_published_ports_to_loopback() -> None:
+    argv = _run_container_argv(_make_plan().odoo)
+
+    assert "127.0.0.1:0:8069" in argv
+    assert "127.0.0.1:0:8072" in argv
+
+
+def test_run_container_argv_uses_secret_files_not_container_environment() -> None:
+    secret = "credential-value-not-in-docker-config"
+    spec = _make_postgres_spec().model_copy(
+        update={
+            "env": {"POSTGRES_USER": "odoo", "POSTGRES_DB": "proj"},
+            "secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://postgres-password")},
+        }
+    )
+
+    argv = _run_container_argv(
+        spec,
+        {"POSTGRES_PASSWORD": Path("/tmp/credential-file")},
+    )
+
+    assert "--env-file" not in argv
+    assert secret not in " ".join(argv)
+    assert "POSTGRES_PASSWORD=" not in argv
+    assert "POSTGRES_PASSWORD_FILE=/run/secrets/POSTGRES_PASSWORD" in argv
+    assert any(
+        token == "type=bind,source=/tmp/credential-file,"
+        "target=/run/secrets/POSTGRES_PASSWORD,readonly"
+        for token in argv
+    )
 
 
 def test_docker_env_pins_lang_and_lc_all_to_c() -> None:
@@ -655,6 +896,55 @@ def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.M
     assert [c[-1] for c in rm_calls] == [DB_NAME]
     assert {c[-1] for c in vol_rm_calls} == {PGDATA_VOL, FILESTORE_VOL}
     assert net_rm_calls[0][-1] == NETWORK
+
+
+def test_readiness_failure_captures_diagnostics_before_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        provider.run(_make_plan())
+
+    assert "readiness diagnostics" in str(excinfo.value)
+    log_idx = next(i for i, call in enumerate(router.calls) if call[1] == "logs")
+    rollback_idx = next(
+        i for i, call in enumerate(router.calls) if call[1] == "rm" and "-f" in call
+    )
+    assert log_idx < rollback_idx
+
+
+def test_rollback_failure_is_reported_with_its_residual_resource(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1] == "rm" and "-f" in argv and ODOO_NAME in argv:
+            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=1)
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
+
+    with pytest.raises(
+        ContainerRunError,
+        match="cleanup incomplete: container=odoo-forge-proj-default-odoo",
+    ):
+        provider.run(_make_plan())
 
 
 def test_reattach_then_fail_preserves_existing_volume(monkeypatch: pytest.MonkeyPatch) -> None:

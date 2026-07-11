@@ -9,6 +9,7 @@ from odoo_forge.backend.plan import (
     plan_backend,
     sanitize_name,
 )
+from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.manifest.schema import Client, Manifest
 from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, MaterializedState
 
@@ -86,12 +87,11 @@ class TestPlanBackend:
 
         plan = plan_backend(manifest, state)
 
-        assert set(plan.postgres.env) == {"POSTGRES_PASSWORD", "POSTGRES_USER", "POSTGRES_DB"}
-        assert set(plan.odoo.env) == {"DB_HOST", "DB_PORT", "DB_USER", "DB_PASSWORD", "POSTGRES_DB"}
+        assert set(plan.postgres.env) == {"POSTGRES_USER", "POSTGRES_DB"}
+        assert set(plan.odoo.env) == {"DB_HOST", "DB_PORT", "DB_USER", "POSTGRES_DB"}
         assert "DB_NAME" not in plan.postgres.env
         assert "DB_NAME" not in plan.odoo.env
         assert plan.odoo.env["DB_USER"] == plan.postgres.env["POSTGRES_USER"]
-        assert plan.odoo.env["DB_PASSWORD"] == plan.postgres.env["POSTGRES_PASSWORD"]
         assert plan.odoo.env["POSTGRES_DB"] == plan.postgres.env["POSTGRES_DB"]
 
     def test_mounts_five_roots(self) -> None:
@@ -171,9 +171,13 @@ class TestPlanBackend:
     def test_deterministic(self) -> None:
         manifest = _manifest()
         state = _state_with_all_roots()
+        credentials = BackendCredentialBindings(
+            postgres_password=CredentialHandle("local-backend/postgres-password"),
+            odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
+        )
 
-        first = plan_backend(manifest, state)
-        second = plan_backend(manifest, state)
+        first = plan_backend(manifest, state, credentials=credentials)
+        second = plan_backend(manifest, state, credentials=credentials)
 
         assert first == second
 
@@ -221,3 +225,23 @@ def test_backend_plan_shape_matches_design_interfaces() -> None:
     assert all(isinstance(volume, VolumeSpec) for volume in plan.volumes)
     assert isinstance(plan.postgres, ContainerSpec)
     assert isinstance(plan.odoo, ContainerSpec)
+
+
+def test_backend_plan_keeps_credential_handles_out_of_public_environment() -> None:
+    credentials = BackendCredentialBindings(
+        postgres_password=CredentialHandle("local-backend/postgres-password"),
+        odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
+    )
+
+    plan = plan_backend(_manifest(), _state_with_all_roots(), credentials=credentials)
+
+    assert plan.postgres.secret_env == {"POSTGRES_PASSWORD": credentials.postgres_password}
+    assert plan.odoo.secret_env == {"DB_PASSWORD": credentials.odoo_db_password}
+
+
+def test_backend_plan_never_places_passwords_in_public_environment() -> None:
+    manifest = _manifest()
+    plan = plan_backend(manifest, _state_with_all_roots())
+
+    assert "POSTGRES_PASSWORD" not in plan.postgres.env
+    assert "DB_PASSWORD" not in plan.odoo.env

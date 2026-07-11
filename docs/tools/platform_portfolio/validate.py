@@ -20,6 +20,7 @@ Exit codes:
     1  at least one BLOCKER violation
     2  usage / load error
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,7 +31,13 @@ from collections import defaultdict
 
 DEFAULT_PLAN = "docs/specs/platform/portfolio.json"
 ITEM_KINDS = {
-    "sp", "prerequisite", "port", "adapter", "integration", "workflow", "sdd_change",
+    "sp",
+    "prerequisite",
+    "port",
+    "adapter",
+    "integration",
+    "workflow",
+    "sdd_change",
 }
 SCOPE_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$")
 
@@ -47,10 +54,55 @@ class Violation:
         return f"[{self.severity:8}] {self.code:24} {self.detail}"
 
 
+class CredentialReadiness:
+    """Result of assessing the credential acceptance gate's recorded evidence."""
+
+    __slots__ = ("is_ready", "missing_requirements")
+
+    def __init__(self, missing_requirements: tuple[str, ...]) -> None:
+        self.missing_requirements = missing_requirements
+        self.is_ready = not missing_requirements
+
+
+def evaluate_credential_readiness(plan: dict) -> CredentialReadiness:
+    """Assess the SOPS decision and explicit approval required for readiness.
+
+    This evaluator does not transition portfolio state. It makes the approval
+    prerequisite executable so callers can prove that documentary pointers do
+    not advance `AC-CAP-CREDENTIALS-READY` by themselves.
+    """
+    required_evidence = {"S43", "S44", "S45", "S46"}
+    decisions = {decision["id"]: decision for decision in plan["decisions"]}
+    capability = next(item for item in plan["items"] if item["id"] == "CAP-CREDENTIALS")
+    acceptance = next(
+        item for item in capability["acceptance"] if item["id"] == "AC-CAP-CREDENTIALS-READY"
+    )
+    missing: list[str] = []
+
+    decision = decisions.get("DPROV-SECRETS")
+    if (
+        decision is None
+        or decision.get("status") != "decided"
+        or decision.get("chosen") != "SOPS"
+        or not decision.get("evidence")
+    ):
+        missing.append("DPROV-SECRETS approval")
+    if not required_evidence.issubset(acceptance.get("evidence", [])):
+        missing.append("credential readiness evidence")
+    if acceptance.get("gaps"):
+        missing.append("credential readiness gaps")
+    if acceptance.get("status") != "approved":
+        missing.append("AC-CAP-CREDENTIALS-READY approval")
+
+    return CredentialReadiness(tuple(missing))
+
+
 def validate_plan(d: dict) -> list[Violation]:
     """Return every structural violation in the plan document (empty == clean)."""
     v: list[Violation] = []
-    add = lambda s, c, det: v.append(Violation(s, c, det))
+
+    def add(severity: str, code: str, detail: str) -> None:
+        v.append(Violation(severity, code, detail))
 
     meta = d["meta"]
     items = {it["id"]: it for it in d["items"]}
@@ -67,8 +119,7 @@ def validate_plan(d: dict) -> list[Violation]:
             acceptance.add(a["id"] if isinstance(a, dict) else a)
 
     # unique ids per collection
-    for coll in ("items", "decisions", "transitions", "transfers", "edges",
-                 "decompositions"):
+    for coll in ("items", "decisions", "transitions", "transfers", "edges", "decompositions"):
         seen = set()
         for x in d.get(coll, []):
             i = x.get("id")
