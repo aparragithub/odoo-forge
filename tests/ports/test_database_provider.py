@@ -147,6 +147,18 @@ def test_conforming_provider_satisfies_the_runtime_protocol() -> None:
     assert provider.cleanup(_creation().receipt) == CleanupReport()
 
 
+def test_provider_credential_inputs_are_documented_as_opaque_handles() -> None:
+    provision_documentation = DatabaseProvider.provision.__doc__
+    restore_documentation = DatabaseProvider.restore.__doc__
+
+    assert provision_documentation is not None
+    assert "CredentialHandle" in provision_documentation
+    assert "plaintext" in provision_documentation.lower()
+    assert restore_documentation is not None
+    assert "CredentialHandle" in restore_documentation
+    assert "plaintext" in restore_documentation.lower()
+
+
 def test_provider_missing_a_lifecycle_operation_is_rejected() -> None:
     assert not isinstance(_MissingCleanupProvider(), DatabaseProvider)
 

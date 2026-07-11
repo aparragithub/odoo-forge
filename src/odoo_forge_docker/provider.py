@@ -16,7 +16,8 @@ import json
 import os
 import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from pathlib import Path
 
 from odoo_forge.backend.errors import (
     ContainerRunError,
@@ -41,6 +42,8 @@ from odoo_forge.backend.status import (
     instance_ref,
     parse_status,
 )
+from odoo_forge.credentials.errors import CredentialError
+from odoo_forge_docker.credential_injection import SopsEnvFileInjector
 
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
 DEFAULT_PG_READINESS_TIMEOUT_SECONDS = 30.0
@@ -102,10 +105,19 @@ def _volume_create_argv(spec: VolumeSpec) -> list[str]:
     return argv
 
 
-def _run_container_argv(spec: ContainerSpec) -> list[str]:
+def _run_container_argv(
+    spec: ContainerSpec, secret_files: Path | Mapping[str, Path] | None = None
+) -> list[str]:
     argv = ["docker", "run", "-d", "--name", spec.name, "--network", spec.network]
     for key, value in spec.labels.items():
         argv += ["--label", f"{key}={value}"]
+    if isinstance(secret_files, Path):
+        argv += ["--env-file", str(secret_files)]
+    elif secret_files is not None:
+        for key, path in secret_files.items():
+            target = f"/run/secrets/{key}"
+            argv += ["--mount", f"type=bind,source={path},target={target},readonly"]
+            argv += ["-e", f"{key}_FILE={target}"]
     for key, value in spec.env.items():
         argv += ["-e", f"{key}={value}"]
     target = _ROLE_VOLUME_TARGET[spec.role]
@@ -115,7 +127,7 @@ def _run_container_argv(spec: ContainerSpec) -> list[str]:
         suffix = ":ro" if mount.read_only else ""
         argv += ["-v", f"{mount.host_path}:{mount.container_path}{suffix}"]
     for container_port, host_port in spec.ports.items():
-        host = "0" if host_port is None else str(host_port)
+        host = "127.0.0.1:0" if host_port is None else f"127.0.0.1:{host_port}"
         argv += ["-p", f"{host}:{container_port}"]
     argv.append(spec.image)
     return argv
@@ -150,6 +162,7 @@ class DockerBackendProvider:
         health_wait_timeout: float = DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS,
         health_poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL_SECONDS,
         sleep: Callable[[float], None] = time.sleep,
+        credential_injector: SopsEnvFileInjector | None = None,
     ) -> None:
         self._docker_timeout = docker_timeout
         self._pg_readiness_timeout = pg_readiness_timeout
@@ -157,6 +170,7 @@ class DockerBackendProvider:
         self._health_wait_timeout = health_wait_timeout
         self._health_poll_interval = health_poll_interval
         self._sleep = sleep
+        self._credential_injector = credential_injector or SopsEnvFileInjector()
 
     def run(self, plan: BackendPlan) -> InstanceRef:
         # `docker inspect <name>` exits 0 for a container in ANY state
@@ -164,6 +178,12 @@ class DockerBackendProvider:
         # at all — so a single `_container_exists` check already covers both
         # "running" and "stopped" for the refuse-if-exists gate; no separate
         # running-vs-stopped branch is needed here.
+        try:
+            self._credential_injector.validate(plan.postgres)
+            self._credential_injector.validate(plan.odoo)
+        except CredentialError as exc:
+            raise ContainerRunError("credential injection failed") from exc
+
         if self._container_exists(plan.postgres.name) or self._container_exists(plan.odoo.name):
             raise InstanceExistsError(
                 f"instance already exists: {plan.network.name} "
@@ -182,9 +202,19 @@ class DockerBackendProvider:
 
             self._run_container(plan.odoo, created)
             self._wait_odoo_healthy(plan.odoo)
-        except Exception:
-            self._rollback(created)
+        except Exception as exc:
+            diagnostics = self._capture_diagnostics(created)
+            residuals = self._rollback(created)
+            detail = str(exc)
+            if diagnostics:
+                detail = f"{detail}; diagnostics: {diagnostics}"
+            if residuals:
+                detail = f"{detail}; cleanup incomplete: {', '.join(residuals)}"
+            if detail != str(exc):
+                raise exc.__class__(detail) from exc
             raise
+        finally:
+            self._credential_injector.clear()
 
         return instance_ref(plan)
 
@@ -273,7 +303,11 @@ class DockerBackendProvider:
         created.append(("volume", spec.name))
 
     def _run_container(self, spec: ContainerSpec, created: list[_CreatedResource]) -> None:
-        self._exec(_run_container_argv(spec))
+        if spec.secret_env:
+            with self._credential_injector.secret_files(spec) as secret_files:
+                self._exec(_run_container_argv(spec, secret_files))
+        else:
+            self._exec(_run_container_argv(spec))
         created.append(("container", spec.name))
 
     def _pull_image(self, spec: ContainerSpec) -> None:
@@ -298,7 +332,21 @@ class DockerBackendProvider:
             raise ImageNotFoundError(stderr or f"image not found: {spec.image!r}")
         raise ContainerRunError(stderr or f"docker pull failed for {spec.image!r}")
 
-    def _rollback(self, created: list[_CreatedResource]) -> None:
+    def _capture_diagnostics(self, created: list[_CreatedResource]) -> str:
+        """Capture redacted container logs while failed containers still exist."""
+        diagnostics: list[str] = []
+        for kind, name in created:
+            if kind != "container":
+                continue
+            try:
+                result = self._run_raw(["docker", "logs", name])
+            except Exception:
+                continue
+            if result.returncode == 0 and result.stdout:
+                diagnostics.append(self._credential_injector.redact(result.stdout.strip()))
+        return " | ".join(diagnostics)
+
+    def _rollback(self, created: list[_CreatedResource]) -> list[str]:
         """Tear down ONLY resources this invocation created, in reverse order.
 
         Best-effort ACROSS EVERY STEP, not just within a single call: each
@@ -310,16 +358,23 @@ class DockerBackendProvider:
         exception is always what `run()` re-raises to the caller, regardless
         of how much of the cleanup below actually succeeds.
         """
+        residuals: list[str] = []
         for kind, name in reversed(created):
             try:
                 if kind == "container":
-                    self._run_raw(["docker", "rm", "-f", "-v", name])
+                    argv = ["docker", "rm", "-f", "-v", name]
                 elif kind == "volume":
-                    self._run_raw(["docker", "volume", "rm", name])
+                    argv = ["docker", "volume", "rm", name]
                 elif kind == "network":
-                    self._run_raw(["docker", "network", "rm", name])
+                    argv = ["docker", "network", "rm", name]
+                else:
+                    continue
+                result = self._run_raw(argv)
+                if result.returncode != 0:
+                    residuals.append(f"{kind}={name}")
             except Exception:
-                continue
+                residuals.append(f"{kind}={name}")
+        return residuals
 
     # -- readiness gates (injectable clock) ----------------------------------
 

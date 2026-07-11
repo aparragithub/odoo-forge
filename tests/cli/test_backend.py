@@ -13,9 +13,13 @@ from odoo_forge.backend.errors import (
 )
 from odoo_forge.backend.plan import BackendPlan, ContainerRole
 from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus, RoleStatus
+from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.manifest.errors import ScanError
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
+from odoo_forge_cli.main import plan_backend as original_plan_backend  # type: ignore[attr-defined]
+from odoo_forge_docker.credential_injection import SopsCommandResolver
+from odoo_forge_docker.provider import DockerBackendProvider
 
 runner = CliRunner()
 
@@ -129,7 +133,7 @@ def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.Mo
         odoo_container="odoo-forge-odoo-idp-default-odoo",
     )
     fake_backend = _FakeBackendProvider(run_result=expected_ref)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -140,6 +144,81 @@ def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.Mo
     assert fake_backend.run_calls[0].network.name == "odoo-forge-odoo-idp-default"
     assert expected_ref.odoo_container in result.output
     assert expected_ref.postgres_container in result.output
+
+
+def test_run_binds_opaque_credentials_at_the_composition_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    expected_ref = InstanceRef(
+        project="odoo-idp",
+        instance="default",
+        network="odoo-forge-odoo-idp-default",
+        postgres_container="odoo-forge-odoo-idp-default-db",
+        odoo_container="odoo-forge-odoo-idp-default-odoo",
+    )
+    fake_backend = _FakeBackendProvider(run_result=expected_ref)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+
+    captured: dict[str, object] = {}
+
+    def _capture_plan_backend(*args: object, **kwargs: object) -> BackendPlan:
+        captured.update(kwargs)
+        return original_plan_backend(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(main, "plan_backend", _capture_plan_backend)
+
+    result = runner.invoke(app, ["run", "--manifest", str(_write_manifest(tmp_path))])
+
+    assert result.exit_code == 0
+    credentials = captured["credentials"]
+    assert credentials == BackendCredentialBindings(
+        postgres_password=CredentialHandle("local-backend/postgres-password"),
+        odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
+    )
+
+
+def test_default_backend_composition_configures_a_sops_resolver_for_the_manifest_directory(
+    tmp_path: Path,
+) -> None:
+    credentials_file = tmp_path / "project" / "credentials.sops.yaml"
+
+    provider = main._make_backend_provider(credentials_file=credentials_file)
+
+    assert isinstance(provider, DockerBackendProvider)
+    assert isinstance(provider._credential_injector._resolver, SopsCommandResolver)
+    assert provider._credential_injector._resolver._credentials_file == credentials_file
+
+
+def test_run_scopes_sops_resolution_to_the_selected_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    expected_ref = InstanceRef(
+        project="odoo-idp",
+        instance="default",
+        network="odoo-forge-odoo-idp-default",
+        postgres_container="odoo-forge-odoo-idp-default-db",
+        odoo_container="odoo-forge-odoo-idp-default-odoo",
+    )
+    captured: dict[str, Path] = {}
+
+    def make_backend_provider(**kwargs: Path) -> _FakeBackendProvider:
+        captured.update(kwargs)
+        return _FakeBackendProvider(run_result=expected_ref)
+
+    monkeypatch.setattr(main, "_make_backend_provider", make_backend_provider)
+    manifest_dir = tmp_path / "selected-project"
+    manifest_dir.mkdir()
+    manifest = _write_manifest(manifest_dir)
+
+    result = runner.invoke(app, ["run", "--manifest", str(manifest)])
+
+    assert result.exit_code == 0
+    assert captured["credentials_file"] == manifest.resolve().parent / "credentials.sops.yaml"
 
 
 def test_run_with_odoo_image_ref_passes_canonical_digest_to_planner(
@@ -156,7 +235,7 @@ def test_run_with_odoo_image_ref_passes_canonical_digest_to_planner(
         odoo_container="odoo-forge-odoo-idp-default-odoo",
     )
     fake_backend = _FakeBackendProvider(run_result=expected_ref)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
     odoo_image_ref = "ghcr.io/odoo/odoo@sha256:" + "b" * 64
@@ -179,7 +258,7 @@ def test_run_rejects_non_digest_odoo_image_ref_before_backend(
     monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider()
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -203,7 +282,7 @@ def test_run_docker_unavailable_single_line_exit1_no_traceback(
     fake_backend = _FakeBackendProvider(
         run_error=DockerUnavailableError("docker daemon is not reachable")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -239,7 +318,7 @@ def test_run_pull_failures_exit_clean_single_line_and_keep_diagnostic(
     monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(run_error=run_error)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -288,7 +367,7 @@ def test_scan_error_from_corrupted_checkout_exits_clean_one_error(
         scan_error=ScanError("cannot read materialized repo state at '/mnt/community/core'")
     )
     monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: _FakeBackendProvider())
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: _FakeBackendProvider())
 
     project_yaml = _write_manifest(tmp_path)
     args = [command, "--manifest", str(project_yaml)]
@@ -315,7 +394,7 @@ def test_run_instance_exists_exits_clean_one_error(
     fake_backend = _FakeBackendProvider(
         run_error=InstanceExistsError("instance 'default' already exists")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 

@@ -91,6 +91,7 @@ RUN ln -s /opt/odoo/odoo-bin /usr/local/bin/odoo
 
 COPY --chown=odoo:odoo factory/odoo.conf /etc/odoo/odoo.conf
 COPY --chown=odoo:odoo factory/entrypoint.sh /entrypoint.sh
+COPY --chown=odoo:odoo factory/lib/credentials.sh /lib/credentials.sh
 COPY --chown=odoo:odoo factory/wait-for-psql.py /usr/local/bin/wait-for-psql.py
 RUN chmod +x /entrypoint.sh /usr/local/bin/wait-for-psql.py
 

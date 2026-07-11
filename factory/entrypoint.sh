@@ -7,6 +7,10 @@ set -e
 
 ODOO_RC=${ODOO_RC:-/etc/odoo/odoo.conf}
 TEMP_ODOO_RC="/tmp/odoo.conf"
+TEMP_DB_PASSWORD_FILE=""
+
+# shellcheck source=lib/credentials.sh disable=SC1091
+source "$(dirname "$0")/lib/credentials.sh"
 
 if [ ! -f "$ODOO_RC" ]; then
     echo "ERROR: Odoo configuration file not found at $ODOO_RC" >&2
@@ -31,7 +35,7 @@ fi
 set_conf() {
     local key="$1"
     local value="$2"
-    if ! ODOO_CONF_KEY="$key" ODOO_CONF_VALUE="$value" /opt/venv/bin/python3 - "$TEMP_ODOO_RC" <<'PYEOF'
+    if ! ODOO_CONF_KEY="$key" ODOO_CONF_VALUE="$value" ODOO_CONF_UPSERT="${ODOO_CONF_UPSERT:-0}" /opt/venv/bin/python3 - "$TEMP_ODOO_RC" <<'PYEOF'
 import os
 import re
 import sys
@@ -40,6 +44,7 @@ import tempfile
 path = sys.argv[1]
 key = os.environ["ODOO_CONF_KEY"]
 value = os.environ["ODOO_CONF_VALUE"]
+upsert = os.environ.get("ODOO_CONF_UPSERT") == "1"
 
 if "\n" in value:
     print(f"ERROR: value for config key '{key}' contains a newline; refusing to write (would corrupt {path})", file=sys.stderr)
@@ -52,8 +57,17 @@ with open(path, "r") as f:
 
 new_content, count = pattern.subn(lambda m: f"{key} = {value}", content, count=1)
 if count == 0:
-    print(f"ERROR: config key '{key}' not found in {path}", file=sys.stderr)
-    sys.exit(1)
+    if not upsert:
+        print(f"ERROR: config key '{key}' not found in {path}", file=sys.stderr)
+        sys.exit(1)
+    # Key is intentionally absent from the template (e.g. db_password); insert
+    # it under the [options] section rather than failing.
+    section = re.search(r"^\[options\][^\n]*$", content, re.MULTILINE)
+    if section is None:
+        print(f"ERROR: [options] section not found in {path}; cannot insert '{key}'", file=sys.stderr)
+        sys.exit(1)
+    idx = section.end()
+    new_content = content[:idx] + f"\n{key} = {value}" + content[idx:]
 
 # Atomic write: write to a temp file in the same directory, then os.replace()
 # so a mid-write I/O failure can never leave a half-written config on disk.
@@ -71,6 +85,13 @@ PYEOF
         echo "ERROR: failed to set config key '${key}' in ${TEMP_ODOO_RC}" >&2
         exit 1
     fi
+}
+
+# Like set_conf, but inserts the key under [options] when it is absent from the
+# template instead of failing. Used for keys deliberately omitted from the
+# shipped config (e.g. db_password, injected at runtime and kept out of argv).
+upsert_conf() {
+    ODOO_CONF_UPSERT=1 set_conf "$@"
 }
 
 # ─── Build dynamic addons_path ──────────────────────────────
@@ -144,18 +165,33 @@ wait_for_db() {
     DB_HOST=${DB_HOST:-${POSTGRES_HOST:-db}}
     DB_PORT=${DB_PORT:-${POSTGRES_PORT:-5432}}
     DB_USER=${DB_USER:-${POSTGRES_USER:-odoo}}
-    DB_PASSWORD=${DB_PASSWORD:-${POSTGRES_PASSWORD:-odoo}}
+    DB_PASSWORD=$(read_secret_value DB_PASSWORD)
+    if [[ -z "$DB_PASSWORD" ]]; then
+        DB_PASSWORD=$(read_secret_value POSTGRES_PASSWORD)
+    fi
+    DB_PASSWORD=${DB_PASSWORD:-odoo}
+    DB_PASSWORD_FILE_PATH=${DB_PASSWORD_FILE:-${POSTGRES_PASSWORD_FILE:-}}
+    if [[ -z "$DB_PASSWORD_FILE_PATH" ]]; then
+        TEMP_DB_PASSWORD_FILE=$(mktemp)
+        chmod 600 "$TEMP_DB_PASSWORD_FILE"
+        printf '%s' "$DB_PASSWORD" >"$TEMP_DB_PASSWORD_FILE"
+        DB_PASSWORD_FILE_PATH="$TEMP_DB_PASSWORD_FILE"
+    fi
+    upsert_conf db_password "$DB_PASSWORD"
     DB_ARGS=()
     DB_ARGS+=( "--db_host" "${DB_HOST}" )
     DB_ARGS+=( "--db_port" "${DB_PORT}" )
     DB_ARGS+=( "--db_user" "${DB_USER}" )
-    DB_ARGS+=( "--db_password" "${DB_PASSWORD}" )
     DB_ARGS+=( "--database" "${POSTGRES_DB:-postgres}" )
 
     echo "Waiting for PostgreSQL at ${DB_HOST}..."
     /opt/venv/bin/python3 /usr/local/bin/wait-for-psql.py \
         --db_host "${DB_HOST}" --db_port "${DB_PORT}" --db_user "${DB_USER}" \
-        --db_password "${DB_PASSWORD}" --database "${POSTGRES_DB:-postgres}" --timeout=60
+        --db_password_file "${DB_PASSWORD_FILE_PATH}" --database "${POSTGRES_DB:-postgres}" --timeout=60
+    if [[ -n "$TEMP_DB_PASSWORD_FILE" ]]; then
+        rm -f "$TEMP_DB_PASSWORD_FILE"
+        TEMP_DB_PASSWORD_FILE=""
+    fi
 }
 
 case "$1" in

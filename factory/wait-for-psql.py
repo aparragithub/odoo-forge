@@ -2,11 +2,13 @@
 import argparse
 import sys
 import time
+from pathlib import Path
 
-import psycopg2
 
+def wait_for_psql(db_host, db_port, db_user, db_password_file, database, timeout):
+    import psycopg2
 
-def wait_for_psql(db_host, db_port, db_user, db_password, database, timeout):
+    db_password = Path(db_password_file).read_text(encoding="utf-8")
     start_time = time.time()
     while True:
         try:
@@ -39,10 +41,10 @@ if __name__ == "__main__":
     parser.add_argument("--db_host", default="db", help="PostgreSQL host")
     parser.add_argument("--db_port", default=5432, type=int, help="PostgreSQL port")
     parser.add_argument("--db_user", default="odoo", help="PostgreSQL user")
-    parser.add_argument("--db_password", default="odoo", help="PostgreSQL password")
+    parser.add_argument("--db_password_file", required=True, help="Path to the PostgreSQL password")
     parser.add_argument("--database", default="postgres", help="PostgreSQL database")
     parser.add_argument("--timeout", default=60, type=int, help="Total timeout in seconds")
     args = parser.parse_args()
     wait_for_psql(
-        args.db_host, args.db_port, args.db_user, args.db_password, args.database, args.timeout
+        args.db_host, args.db_port, args.db_user, args.db_password_file, args.database, args.timeout
     )

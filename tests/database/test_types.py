@@ -39,6 +39,17 @@ def test_database_creation_is_an_immutable_reference_and_receipt_handoff() -> No
         )
 
 
+@pytest.mark.parametrize(
+    "provider_value",
+    [DatabaseRef, CreationReceipt, DatabaseCreation],
+)
+def test_provider_handoffs_are_documented_as_opaque_values(provider_value: type[object]) -> None:
+    documentation = provider_value.__doc__
+
+    assert documentation is not None
+    assert "opaque" in documentation.lower()
+
+
 def test_provider_values_are_frozen() -> None:
     spec = DatabaseSpec(name="analytics")
     report = CleanupReport(residual_failures=("network-42",))
