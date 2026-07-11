@@ -1,7 +1,9 @@
 # SP-1 — ImageRegistryProvider
 
-**Layer:** Ports & adapters · **Status:** DONE (GHCR adapter shipped) · **SDD change:** delivered under
-the archived `openspec/changes/archive/2026-07-09-sp1` / `sp1-a` / `sp1-b` changes; the open
+**Layer:** Ports & adapters · **Status:** DONE — the image registry capability is delivered through
+the GHCR adapter. Delivery fabrication and promotion remain owned by
+`SP-DELIVERY-AUTOMATION`, not SP-1. **SDD change:** delivered under the archived
+`openspec/changes/archive/2026-07-09-sp1` / `sp1-a` / `sp1-b` changes; the open
 `platform-image-registry-provider` change tracks the remaining doc-tightening work only.
 
 ## Purpose
@@ -36,9 +38,9 @@ These signatures are the implemented contract; the port does **not** keep legacy
 `resolve()` / `validate()` bridges. The shape follows the "verbs return
 references/handles, never data blobs" convention of the existing ports.
 
-**Candidate adapters (choose ONE at init, §Principle 3):** GHCR · GitLab Registry · AWS ECR ·
-DockerHub. GHCR is the natural first adapter since Phase 1 already publishes there, but the
-default-at-init choice for the first Pilot deployment is an open decision (§8).
+**Delivered adapter (one provider at init, §Principle 3):** GHCR is the delivered adapter. The
+global one-provider-at-init decision (DP) is decided; GitLab Registry, AWS ECR, and DockerHub
+remain future adapter candidates.
 
 ## What it reuses (does NOT build)
 - The **Phase 1 image factory** and its digest-pinning discipline — this port wraps publication,
@@ -54,7 +56,7 @@ control plane never stores image layers or tarballs — it is not a data lake (�
 
 ## Scope
 - Define the `ImageRegistryProvider` port in `odoo_forge.ports`.
-- One concrete adapter package (e.g. `odoo_forge_registry`) chosen at init.
+- One concrete GHCR adapter package (`odoo_forge_registry`) selected at init.
 - `publish` / `pull` / `resolve_digest` / `exists` against that adapter.
 - A **6th import-linter contract** forbidding `odoo_forge` from importing the new adapter package,
   and adding the adapter to `root_packages`. Before SP-1 there were **5 contracts** in
@@ -87,6 +89,5 @@ Independent of SP-2/SP-3. Upstream of SP-4 and SP-6 (§6, §7).
   the registry client.
 
 ## Open decisions
-- Default-at-init adapter for the first Pilot deployment (§8: image registry).
 - Digest format / multi-arch manifest handling surfaced through `ImageDigest`.
 - Whether `pull` targets a local docker daemon or a remote backend directly (interaction with SP-3).
