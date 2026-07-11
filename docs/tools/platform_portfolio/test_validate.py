@@ -48,11 +48,11 @@ class TestValidator(unittest.TestCase):
         self.assertEqual(decisions["DPROV-SECRETS"]["status"], "decided")
         self.assertEqual(decisions["DPROV-SECRETS"]["chosen"], "SOPS")
         self.assertIn("S43", decisions["DPROV-SECRETS"]["evidence"])
-        self.assertEqual(acceptance["status"], "proposed")
-        self.assertEqual(acceptance["gaps"], ["G0"])
+        self.assertEqual(acceptance["status"], "approved")
+        self.assertEqual(acceptance["gaps"], [])
         self.assertEqual(acceptance["evidence"], ["S43", "S44", "S45", "S46"])
 
-    def test_credential_readiness_pointers_are_catalogued_and_keep_the_gate_blocked(self):
+    def test_credential_readiness_pointers_are_catalogued_and_the_gate_is_approved(self):
         plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
         capability = next(item for item in plan["items"] if item["id"] == "CAP-CREDENTIALS")
         acceptance = next(
@@ -68,7 +68,7 @@ class TestValidator(unittest.TestCase):
                 "tests/credentials/test_materialization.py",
             ],
         )
-        self.assertIn("G0", acceptance["gaps"])
+        self.assertEqual(acceptance["gaps"], [])
 
     def test_credential_readiness_blocks_a_missing_first_store_decision(self):
         plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
@@ -84,23 +84,26 @@ class TestValidator(unittest.TestCase):
     def test_credential_readiness_requires_explicit_approval_after_complete_evidence(self):
         plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
 
-        blocked = validate.evaluate_credential_readiness(plan)
+        approved = validate.evaluate_credential_readiness(plan)
 
-        self.assertFalse(blocked.is_ready)
-        self.assertIn("AC-CAP-CREDENTIALS-READY approval", blocked.missing_requirements)
+        self.assertTrue(approved.is_ready)
+        self.assertEqual(approved.missing_requirements, ())
 
-        complete = copy.deepcopy(plan)
-        capability = next(item for item in complete["items"] if item["id"] == "CAP-CREDENTIALS")
+        # Rolling the gate back to proposed/gapped must re-block readiness,
+        # proving the explicit approval — not the documentary evidence, which is
+        # unchanged here — is what advances AC-CAP-CREDENTIALS-READY.
+        reverted = copy.deepcopy(plan)
+        capability = next(item for item in reverted["items"] if item["id"] == "CAP-CREDENTIALS")
         acceptance = next(
             item for item in capability["acceptance"] if item["id"] == "AC-CAP-CREDENTIALS-READY"
         )
-        acceptance["status"] = "approved"
-        acceptance["gaps"] = []
+        acceptance["status"] = "proposed"
+        acceptance["gaps"] = ["G0"]
 
-        readiness = validate.evaluate_credential_readiness(complete)
+        readiness = validate.evaluate_credential_readiness(reverted)
 
-        self.assertTrue(readiness.is_ready)
-        self.assertEqual(readiness.missing_requirements, ())
+        self.assertFalse(readiness.is_ready)
+        self.assertIn("AC-CAP-CREDENTIALS-READY approval", readiness.missing_requirements)
 
     def test_detects_dangling_edge(self):
         broken = copy.deepcopy(self.valid)
