@@ -9,6 +9,21 @@ ODOO_RC=${ODOO_RC:-/etc/odoo/odoo.conf}
 TEMP_ODOO_RC="/tmp/odoo.conf"
 TEMP_DB_PASSWORD_FILE=""
 
+cleanup_temp_db_password_file() {
+    local status=$?
+    if [[ -n "$TEMP_DB_PASSWORD_FILE" ]]; then
+        rm -f -- "$TEMP_DB_PASSWORD_FILE" || true
+        TEMP_DB_PASSWORD_FILE=""
+    fi
+    return "$status"
+}
+
+trap cleanup_temp_db_password_file EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 131' QUIT
+trap 'exit 143' TERM
+
 # shellcheck source=lib/credentials.sh disable=SC1091
 source "$(dirname "$0")/lib/credentials.sh"
 
@@ -172,7 +187,7 @@ wait_for_db() {
     DB_PASSWORD=${DB_PASSWORD:-odoo}
     DB_PASSWORD_FILE_PATH=${DB_PASSWORD_FILE:-${POSTGRES_PASSWORD_FILE:-}}
     if [[ -z "$DB_PASSWORD_FILE_PATH" ]]; then
-        TEMP_DB_PASSWORD_FILE=$(mktemp)
+        TEMP_DB_PASSWORD_FILE=$(umask 077 && mktemp)
         chmod 600 "$TEMP_DB_PASSWORD_FILE"
         printf '%s' "$DB_PASSWORD" >"$TEMP_DB_PASSWORD_FILE"
         DB_PASSWORD_FILE_PATH="$TEMP_DB_PASSWORD_FILE"
@@ -188,10 +203,7 @@ wait_for_db() {
     /opt/venv/bin/python3 /usr/local/bin/wait-for-psql.py \
         --db_host "${DB_HOST}" --db_port "${DB_PORT}" --db_user "${DB_USER}" \
         --db_password_file "${DB_PASSWORD_FILE_PATH}" --database "${POSTGRES_DB:-postgres}" --timeout=60
-    if [[ -n "$TEMP_DB_PASSWORD_FILE" ]]; then
-        rm -f "$TEMP_DB_PASSWORD_FILE"
-        TEMP_DB_PASSWORD_FILE=""
-    fi
+    cleanup_temp_db_password_file
 }
 
 case "$1" in
