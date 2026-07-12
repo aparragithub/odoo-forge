@@ -47,6 +47,12 @@ class RegistryImageNotFoundError(RegistryError):
         super().__init__(f"image reference not found in registry: '{ref}'")
 
 
+class RegistryDigestMismatchError(RegistryError):
+    def __init__(self, ref: str) -> None:
+        self.ref = ref
+        super().__init__(f"registry digest mismatch for '{ref}'")
+
+
 class RegistryUnavailableError(RegistryError):
     def __init__(self, ref: str, detail: str) -> None:
         self.ref = ref
@@ -62,5 +68,6 @@ __all__ = [
     "RegistryPullError",
     "RegistryAuthenticationError",
     "RegistryImageNotFoundError",
+    "RegistryDigestMismatchError",
     "RegistryUnavailableError",
 ]
