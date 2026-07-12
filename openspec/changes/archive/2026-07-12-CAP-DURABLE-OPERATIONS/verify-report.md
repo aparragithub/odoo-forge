@@ -24,7 +24,7 @@ build_output_hash: sha256:d88de7630419f3bbaa1aaf404880fc06c0df199bd8645db930457d
 
 ### Review Evidence (verified independently)
 
-A bounded-review receipt exists at `.git/gentle-ai/review-transactions/v2/review-ea048455fa7e204d/review-receipt.json` (accessed via the shared worktree common-dir at `/home/aparra/Desarrollo/odoo-forge/.git/gentle-ai/review-transactions/v2/review-ea048455fa7e204d/`). Verified fields:
+A bounded-review receipt exists at `.git/gentle-ai/review-transactions/v2/review-ea048455fa7e204d/review-receipt.json` (accessed via the shared worktree common-dir at `/home/aparra/Desenvolvimento/odoo-forge/.git/gentle-ai/review-transactions/v2/review-ea048455fa7e204d/`). Verified fields:
 
 | Field | Value |
 |---|---|

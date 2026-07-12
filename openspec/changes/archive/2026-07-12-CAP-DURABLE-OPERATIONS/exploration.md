@@ -27,7 +27,7 @@ Those pieces are useful inputs, but they are NOT a capability contract. There is
 `CAP-DURABLE-OPERATIONS` must answer these questions before workflow implementation is safe:
 
 1. **Operation identity and idempotency**
-   - What stable key defines “the same operation”?
+   - What stable key defines "the same operation"?
    - How are same-input replay and conflicting-input retry distinguished?
 
 2. **Lifecycle and checkpoints**
