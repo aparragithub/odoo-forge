@@ -8,6 +8,7 @@ the only place in the codebase that shells out to `git`.
 import os
 import re
 import subprocess
+from urllib.parse import urlsplit, urlunsplit
 
 from odoo_forge.manifest.errors import (
     AuthenticationError,
@@ -17,6 +18,7 @@ from odoo_forge.manifest.errors import (
 )
 
 _BARE_SHA = re.compile(r"[0-9a-f]{40}", re.IGNORECASE)
+_SCP_REMOTE = re.compile(r"[^@/:]+@([^/:]+):(.+)")
 
 _AUTH_MARKERS = (
     "authentication failed",
@@ -45,6 +47,31 @@ def _non_interactive_env() -> dict[str, str]:
     return env
 
 
+def _safe_url(url: str) -> str:
+    """Project a remote without URI or scp-like userinfo for public errors."""
+    if "://" not in url:
+        scp_remote = _SCP_REMOTE.fullmatch(url)
+        if scp_remote is not None:
+            return f"{scp_remote.group(1)}:{scp_remote.group(2)}"
+        return "<redacted-remote>" if "@" in url else url
+
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError:
+        return "<redacted-remote>"
+
+    if hostname is None:
+        return "<redacted-remote>" if "@" in url else url
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None:
+        host = f"{host}:{port}"
+    if parts.username is None and parts.password is None:
+        return url
+    return urlunsplit((parts.scheme, host, parts.path, parts.query, parts.fragment))
+
+
 class GitSourceProvider:
     """Resolves `url`/`ref` pairs to full commit SHAs via `git ls-remote`."""
 
@@ -55,6 +82,8 @@ class GitSourceProvider:
         if _BARE_SHA.fullmatch(ref):
             return ref
 
+        public_url = _safe_url(url)
+        deferred_error: ResolutionError | None = None
         try:
             result = subprocess.run(
                 ["git", "ls-remote", url, ref],
@@ -64,23 +93,29 @@ class GitSourceProvider:
                 timeout=self._timeout,
                 env=_non_interactive_env(),
             )
-        except FileNotFoundError as exc:
-            raise ResolutionError(f"git executable not found: {exc}") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise NetworkError(
-                url,
+        except FileNotFoundError:
+            deferred_error = ResolutionError("git executable not found")
+        except subprocess.TimeoutExpired:
+            deferred_error = NetworkError(
+                public_url,
                 f"ref '{ref}': timed out after {self._timeout}s",
-            ) from exc
+            )
+
+        if deferred_error is not None:
+            raise deferred_error
 
         if result.returncode != 0:
             stderr = result.stderr.strip()
             if any(marker in stderr.lower() for marker in _AUTH_MARKERS):
-                raise AuthenticationError(url)
-            raise NetworkError(url, stderr)
+                raise AuthenticationError(public_url)
+            raise NetworkError(
+                public_url,
+                f"git ls-remote failed with exit code {result.returncode}",
+            )
 
         stdout = result.stdout.strip()
         if not stdout:
-            raise RefNotFoundError(url, ref)
+            raise RefNotFoundError(public_url, ref)
 
         return _select_sha(stdout, ref)
 
