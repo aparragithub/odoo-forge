@@ -29,7 +29,10 @@ class DatabaseProvider(Protocol):
         artifact: DataArtifactRef,
         credentials: CredentialHandle,
     ) -> DatabaseCreation:
-        """Restore using an opaque CredentialHandle; providers never receive plaintext."""
+        """Restore a single restore set through an opaque DataArtifactRef.
+
+        Providers receive an opaque CredentialHandle and never plaintext.
+        """
         ...
 
     def adopt(self, ref: DatabaseRef) -> DatabaseRef: ...
