@@ -1,0 +1,18 @@
+{
+  "schema": "gentle-ai.review-bundle-pointer/v1",
+  "status": "not-exported",
+  "reason": "No canonical bundle export was provided with the approved local review transaction; synced authoritative state/receipt and local lens outputs instead.",
+  "lineage_id": "review-0f050718f9d6bbbd",
+  "artifacts": [
+    "review-state.json",
+    "review-receipt.json",
+    "transaction.json",
+    "receipt.json",
+    "ledger.json",
+    "policy.md",
+    "risk.json",
+    "resilience.json",
+    "readability.json",
+    "reliability.json"
+  ]
+}
