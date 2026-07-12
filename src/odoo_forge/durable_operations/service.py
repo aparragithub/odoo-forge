@@ -24,6 +24,7 @@ class RecoveryAction(StrEnum):
     RESUME = "resume"
     RECONCILE = "reconcile"
     SURFACE_RESIDUAL = "surface_residual"
+    NO_RECOVERY_REQUIRED = "no_recovery_required"
 
 
 @dataclass(frozen=True)
@@ -66,6 +67,13 @@ _LIFECYCLE_ORDER = {
     LifecycleState.CLOSED: 6,
 }
 _TERMINAL_OUTCOMES = frozenset({LifecycleState.SUCCEEDED, LifecycleState.FAILED})
+_RESOLVED_STATES = _TERMINAL_OUTCOMES | {LifecycleState.CLOSED}
+# Every state at or beyond an authoritative terminal commit. None of them may be entered
+# without one, so a lifecycle can only cross into this set through commit_terminal.
+_POST_COMMIT_STATES = _TERMINAL_OUTCOMES | {
+    LifecycleState.CLEANUP_REQUIRED,
+    LifecycleState.CLOSED,
+}
 _UNKNOWN_OUTCOME_REASON = "mutation outcome is unknown without a durable checkpoint"
 
 
@@ -92,12 +100,21 @@ def advance_lifecycle(
     revision: OperationRevision,
     target: LifecycleState,
 ) -> tuple[LifecycleState, OperationRevision]:
-    """Advance a lifecycle state without allowing regression or terminal-outcome flips."""
+    """Advance a lifecycle state without allowing regression or terminal-outcome flips.
+
+    Terminal outcomes are never minted here: reaching ``SUCCEEDED`` or ``FAILED`` from a
+    non-terminal state is rejected, so authoritative terminal state can only be published
+    through ``build_terminal_commit`` and the store's atomic terminal commit.
+    """
     if _LIFECYCLE_ORDER[target] < _LIFECYCLE_ORDER[current]:
         raise InvalidLifecycleTransitionError(f"cannot regress from {current} to {target}")
     if current in _TERMINAL_OUTCOMES and target in _TERMINAL_OUTCOMES and target is not current:
         raise InvalidLifecycleTransitionError(
             f"cannot overwrite authoritative terminal outcome {current} with {target}"
+        )
+    if target in _POST_COMMIT_STATES and current not in _POST_COMMIT_STATES:
+        raise InvalidLifecycleTransitionError(
+            f"cannot reach {target} without an authoritative terminal commit"
         )
     return target, _next_revision(revision)
 
@@ -119,6 +136,13 @@ def plan_recovery(
     mutation_attempted: bool,
 ) -> RecoveryPlan:
     """Choose workflow recovery without interpreting provider-specific status."""
+    if state in _RESOLVED_STATES:
+        return RecoveryPlan(
+            action=RecoveryAction.NO_RECOVERY_REQUIRED,
+            revision=revision,
+            checkpoint=checkpoint,
+            reason="operation is already resolved",
+        )
     if state is LifecycleState.CLEANUP_REQUIRED:
         return RecoveryPlan(
             action=RecoveryAction.SURFACE_RESIDUAL,
