@@ -37,6 +37,9 @@ QA was cloned from). No instance data stored centrally (§Principle 4).
 - Request intake for three instance types: **PROD**, **QA-from-PROD**, **randomized-DEV**.
 - Map each type to the correct DB lifecycle op (SP-2) + backend placement (SP-3/4b).
 - Enforce role authorization (SP-5) at request time.
+- Consume `CAP-TENANCY` as the sole source for the customer/client `tenant_id`, optional
+  child project scope, operational classifications, isolation expectations, ownership
+  composition, and quota authority; this flow does not define tenancy or quota semantics.
 - Register the resulting instance and its pointers/lineage in SP-4.
 
 ## Non-goals
@@ -46,9 +49,10 @@ QA was cloned from). No instance data stored centrally (§Principle 4).
 - No web UI (SP-9) — this is the request/fulfillment flow; UI is layered separately.
 
 ## Dependencies
-Upstream: **SP-2** (DB lifecycle), **SP-3** (targets), **SP-4** (registry/API), **SP-5** (RBAC),
-**SP-10** (PROD gating/guardrails + append-only audit for PROD requests)
-(§6, §7). Ordered after SP-7 in the experience layer.
+Upstream: **CAP-TENANCY** (`AC-CAP-TENANCY-READY`) for tenant scope and quota inputs;
+**SP-2** (DB lifecycle), **SP-3** (targets), **SP-4** (registry/API), **SP-5** (RBAC), **SP-10**
+(PROD gating/guardrails + append-only audit for PROD requests) (§6, §7). Ordered after SP-7 in
+the experience layer.
 
 ## Success criteria
 - Each request type produces the correct outcome: PROD → provisioned DB + deployed instance;
@@ -65,4 +69,4 @@ Upstream: **SP-2** (DB lifecycle), **SP-3** (targets), **SP-4** (registry/API), 
 - Which roles may request which instance types (overlaps SP-5 permission granularity).
 - QA-from-PROD anonymization: QA is **anonymized by default** (overlaps SP-2 PII rules); serving
   real PROD data to QA requires explicit, audited authorization rather than being the default.
-- Quotas/limits per role or per client.
+- Which quota dimensions or outcomes this flow must consume from `CAP-TENANCY`; this flow does not own quota authority.
