@@ -13,6 +13,12 @@ from odoo_forge.durable_operations.types import (
     RedactedEvidence,
 )
 
+# Lifecycles a record may hold while its terminal commit carries residual cleanup entries.
+# Those entries are the immutable historical record of what was owed at commit time; the
+# lifecycle is the authority on whether the obligation is still open (CLEANUP_REQUIRED) or
+# has been resolved (CLOSED). CLOSED belongs here so closing never erases the terminal commit.
+_RESIDUAL_LIFECYCLES = frozenset({LifecycleState.CLEANUP_REQUIRED, LifecycleState.CLOSED})
+
 
 @dataclass(frozen=True)
 class DurableOperationRecord:
@@ -31,9 +37,10 @@ class DurableOperationRecord:
             return
 
         if self.terminal_commit.residual_cleanup:
-            if self.lifecycle is not LifecycleState.CLEANUP_REQUIRED:
+            if self.lifecycle not in _RESIDUAL_LIFECYCLES:
                 raise ValueError(
-                    "terminal commits with residual cleanup must surface cleanup_required lifecycle"
+                    "terminal commits with residual cleanup must surface "
+                    "cleanup_required lifecycle until the obligation is resolved as closed"
                 )
             return
 
@@ -91,6 +98,13 @@ class DurableOperationStore(Protocol):
     ) -> DurableOperationRecord:
         """Close a recorded cleanup obligation only when its revision still matches.
 
+        Closing resolves the obligation; it MUST NOT erase the authoritative terminal
+        commit. The returned record has ``lifecycle=CLOSED`` and RETAINS its
+        ``terminal_commit`` — outcome, redacted evidence, and the residual entries that
+        were recorded, so the operation stays auditable after cleanup.
+
+        Raise ``InvalidLifecycleTransitionError`` when the record carries no open residual
+        obligation; closing is not a no-op and MUST NOT report a resolution that never happened.
         Raise ``RevisionConflictError`` when ``expected_revision`` no longer matches the
         durable record.
         """
