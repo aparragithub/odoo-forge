@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ from odoo_forge.manifest.errors import CheckoutError
 from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
+from odoo_forge_workspace.provider import GitWorkspaceProvider
 
 runner = CliRunner()
 
@@ -179,6 +181,32 @@ def test_mid_plan_failure_names_repo_without_leaking_credentials(
     assert "custom-x" in result.output  # names the failing repo
     assert "secret-token" not in result.output  # never leaks the credential
     assert "Traceback" not in result.output
+
+
+def test_git_clone_stderr_credentials_do_not_reach_cli_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret_url = "https://oauth2:access-token@example.com/custom-x.git"
+    secret_stderr = f"fatal: unable to access '{secret_url}': authentication failed"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> object:
+        return subprocess.CompletedProcess(argv, 128, stdout="", stderr=secret_stderr)
+
+    class _FailingGitWorkspaceProvider(_FakeWorkspaceProvider):
+        def checkout(self, url: str, commit: str, dest: Path) -> None:
+            GitWorkspaceProvider()._run(["git", "clone", "--", url, str(dest)])
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(main, "_make_workspace_provider", _FailingGitWorkspaceProvider)
+    project_yaml, _lock_path = _write_manifest_and_lock(tmp_path)
+
+    result = runner.invoke(app, ["project", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output == "error: git clone failed with exit code 128\n"
+    assert "oauth2" not in result.output
+    assert "access-token" not in result.output
+    assert secret_url not in result.output
 
 
 def test_missing_lock_exits_clean_one_error(
