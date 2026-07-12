@@ -161,6 +161,7 @@ class DockerBackendProvider:
         pg_poll_interval: float = DEFAULT_PG_POLL_INTERVAL_SECONDS,
         health_wait_timeout: float = DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS,
         health_poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         credential_injector: SopsEnvFileInjector | None = None,
     ) -> None:
@@ -169,6 +170,7 @@ class DockerBackendProvider:
         self._pg_poll_interval = pg_poll_interval
         self._health_wait_timeout = health_wait_timeout
         self._health_poll_interval = health_poll_interval
+        self._monotonic = monotonic
         self._sleep = sleep
         self._credential_injector = credential_injector or SopsEnvFileInjector()
 
@@ -383,13 +385,12 @@ class DockerBackendProvider:
         db = spec.env["POSTGRES_DB"]
         argv = ["docker", "exec", spec.name, "pg_isready", "-h", "127.0.0.1", "-U", user, "-d", db]
 
-        attempts = max(1, int(self._pg_readiness_timeout / self._pg_poll_interval))
-        for attempt in range(attempts):
-            result = self._run_raw(argv)
-            if result.returncode == 0:
-                return
-            if attempt < attempts - 1:
-                self._sleep(self._pg_poll_interval)
+        if self._wait_until(
+            lambda timeout: self._run_raw(argv, timeout=timeout).returncode == 0,
+            self._pg_readiness_timeout,
+            self._pg_poll_interval,
+        ):
+            return
 
         raise PostgresReadinessError(
             f"postgres container {spec.name!r} did not become TCP-ready "
@@ -399,18 +400,33 @@ class DockerBackendProvider:
     def _wait_odoo_healthy(self, spec: ContainerSpec) -> None:
         argv = ["docker", "inspect", spec.name]
 
-        attempts = max(1, int(self._health_wait_timeout / self._health_poll_interval))
-        for attempt in range(attempts):
-            result = self._run_raw(argv)
-            if result.returncode == 0 and _health_status(result.stdout) == "healthy":
-                return
-            if attempt < attempts - 1:
-                self._sleep(self._health_poll_interval)
+        def healthy(timeout: float) -> bool:
+            result = self._run_raw(argv, timeout=timeout)
+            return result.returncode == 0 and _health_status(result.stdout) == "healthy"
+
+        if self._wait_until(healthy, self._health_wait_timeout, self._health_poll_interval):
+            return
 
         raise ContainerRunError(
             f"odoo container {spec.name!r} did not become healthy "
             f"within {self._health_wait_timeout}s"
         )
+
+    def _wait_until(
+        self, probe: Callable[[float], bool], timeout: float, poll_interval: float
+    ) -> bool:
+        """Poll within one monotonic deadline, including probe and sleep time."""
+        deadline = self._monotonic() + max(0.0, timeout)
+        while True:
+            remaining = deadline - self._monotonic()
+            if remaining <= 0.0:
+                return False
+            if probe(min(self._docker_timeout, remaining)):
+                return True
+            remaining = deadline - self._monotonic()
+            if remaining <= 0.0:
+                return False
+            self._sleep(min(poll_interval, remaining))
 
     # -- existence checks -----------------------------------------------------
 
@@ -433,7 +449,9 @@ class DockerBackendProvider:
 
     # -- subprocess boundary --------------------------------------------------
 
-    def _run_raw(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
+    def _run_raw(
+        self, argv: list[str], *, timeout: float | None = None
+    ) -> subprocess.CompletedProcess[str]:
         """Run `argv`, raising only for a missing binary or a timed-out call.
 
         Never raises on a nonzero exit code — callers interpret the return
@@ -445,7 +463,7 @@ class DockerBackendProvider:
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=self._docker_timeout,
+                timeout=self._docker_timeout if timeout is None else timeout,
                 env=_docker_env(),
             )
         except FileNotFoundError as exc:
@@ -458,7 +476,8 @@ class DockerBackendProvider:
             # `git_provider`/`workspace/provider`, which both map a subprocess
             # timeout to their own "unavailable"-shaped domain error).
             raise DockerUnavailableError(
-                f"docker command timed out after {self._docker_timeout}s: {argv!r}"
+                f"docker command timed out after "
+                f"{self._docker_timeout if timeout is None else timeout}s: {argv!r}"
             ) from exc
 
     def _exec(self, argv: list[str]) -> subprocess.CompletedProcess[str]:
