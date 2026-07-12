@@ -26,6 +26,7 @@ _AUTH_MARKERS = (
     "permission denied",
     "publickey",
 )
+_MISSING_REMOTE_REF = re.compile(r"^fatal: couldn't find remote ref(?: .*)?$", re.MULTILINE)
 
 DEFAULT_TIMEOUT_SECONDS = 30
 
@@ -108,6 +109,8 @@ class GitSourceProvider:
             stderr = result.stderr.strip()
             if any(marker in stderr.lower() for marker in _AUTH_MARKERS):
                 raise AuthenticationError(public_url)
+            if _MISSING_REMOTE_REF.search(stderr):
+                raise RefNotFoundError(public_url, ref)
             raise NetworkError(
                 public_url,
                 f"git ls-remote failed with exit code {result.returncode}",
