@@ -157,6 +157,12 @@ def _format_drift(entry: DriftEntry) -> str:
     return f"unrecognized drift entry: {entry.kind}"
 
 
+def _render_validation_errors(exc: ValidationError) -> None:
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error["loc"])
+        typer.echo(f"error: {location}: {error['msg']}", err=True)
+
+
 @app.command(name="image-resolve")
 def image_resolve(ref: str = typer.Option(..., "--ref", help="Image reference to resolve")) -> None:
     """Resolve a supported GHCR image reference to a canonical digest ref."""
@@ -227,9 +233,7 @@ def validate(
     try:
         parsed = Manifest.model_validate(data)
     except ValidationError as exc:
-        for error in exc.errors():
-            location = ".".join(str(part) for part in error["loc"])
-            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        _render_validation_errors(exc)
         raise typer.Exit(code=1) from exc
 
     # Compose and load/validate the lock BEFORE announcing success, so a corrupt
@@ -277,9 +281,7 @@ def lock(
     try:
         parsed = Manifest.model_validate(data)
     except ValidationError as exc:
-        for error in exc.errors():
-            location = ".".join(str(part) for part in error["loc"])
-            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        _render_validation_errors(exc)
         raise typer.Exit(code=1) from exc
 
     # Resilient boundary, mirroring `validate`: a `CompositionError`, any
@@ -321,9 +323,7 @@ def project(
     try:
         parsed = Manifest.model_validate(data)
     except ValidationError as exc:
-        for error in exc.errors():
-            location = ".".join(str(part) for part in error["loc"])
-            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        _render_validation_errors(exc)
         raise typer.Exit(code=1) from exc
 
     lock_path = lock if lock is not None else manifest.parent / "project.lock"
@@ -366,9 +366,7 @@ def unlock(
     try:
         parsed = Manifest.model_validate(data)
     except ValidationError as exc:
-        for error in exc.errors():
-            location = ".".join(str(part) for part in error["loc"])
-            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        _render_validation_errors(exc)
         raise typer.Exit(code=1) from exc
 
     # Resilient boundary, mirroring `project`: `ProjectionError` (unknown
@@ -411,9 +409,7 @@ def run(
     try:
         parsed = Manifest.model_validate(data)
     except ValidationError as exc:
-        for error in exc.errors():
-            location = ".".join(str(part) for part in error["loc"])
-            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        _render_validation_errors(exc)
         raise typer.Exit(code=1) from exc
 
     odoo_image: str | None = None
@@ -481,9 +477,7 @@ def status(
     try:
         parsed = Manifest.model_validate(data)
     except ValidationError as exc:
-        for error in exc.errors():
-            location = ".".join(str(part) for part in error["loc"])
-            typer.echo(f"error: {location}: {error['msg']}", err=True)
+        _render_validation_errors(exc)
         raise typer.Exit(code=1) from exc
 
     # No registry is persisted: identity is recomputed purely from the
@@ -543,7 +537,10 @@ def stop(
         ref = _derive_ref(manifest, instance)
         backend_provider = _make_backend_provider()
         backend_provider.stop(ref)
-    except (ManifestError, ValidationError, BackendError) as exc:
+    except ValidationError as exc:
+        _render_validation_errors(exc)
+        raise typer.Exit(code=1) from exc
+    except (ManifestError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -567,7 +564,10 @@ def logs(
         ref = _derive_ref(manifest, instance)
         backend_provider = _make_backend_provider()
         text = backend_provider.logs(ref, role)
-    except (ManifestError, ValidationError, BackendError) as exc:
+    except ValidationError as exc:
+        _render_validation_errors(exc)
+        raise typer.Exit(code=1) from exc
+    except (ManifestError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
@@ -600,7 +600,10 @@ def exec_(
         ref = _derive_ref(manifest, instance)
         backend_provider = _make_backend_provider()
         result = backend_provider.exec(ref, argv)
-    except (ManifestError, ValidationError, BackendError) as exc:
+    except ValidationError as exc:
+        _render_validation_errors(exc)
+        raise typer.Exit(code=1) from exc
+    except (ManifestError, BackendError) as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 

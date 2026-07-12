@@ -429,6 +429,42 @@ def test_malformed_manifest_exits_clean_one_error(command: str, tmp_path: Path) 
     assert "Traceback" not in result.output
 
 
+@pytest.mark.parametrize("command", ["stop", "logs", "exec"])
+def test_instance_command_manifest_validation_errors_are_field_oriented_and_safe(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    secret = "DO-NOT-RENDER-THIS-SECRET"
+    invalid_manifest = tmp_path / "project.yaml"
+    invalid_manifest.write_text(
+        _MANIFEST_TEXT.replace("odoo_version: '19.0'", "odoo_version: 19").replace(
+            "edition: community", f"edition: {secret}"
+        )
+    )
+    backend_provider_created = False
+
+    def make_backend_provider(**_kwargs: object) -> _FakeBackendProvider:
+        nonlocal backend_provider_created
+        backend_provider_created = True
+        return _FakeBackendProvider()
+
+    monkeypatch.setattr(main, "_make_backend_provider", make_backend_provider)
+    args = [command, "--manifest", str(invalid_manifest)]
+    if command == "exec":
+        args += ["--", "echo", "hi"]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 1
+    assert result.output.splitlines() == [
+        "error: odoo_version: Input should be a valid string",
+        "error: edition: Input should be 'community' or 'enterprise'",
+    ]
+    assert secret not in result.output
+    assert "validation errors for Manifest" not in result.output
+    assert "Traceback" not in result.output
+    assert backend_provider_created is False
+
+
 def test_stop_succeeds_calls_provider_with_derived_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
