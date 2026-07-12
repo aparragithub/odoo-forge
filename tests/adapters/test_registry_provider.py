@@ -521,3 +521,34 @@ def test_subprocess_exceptions_are_safe_and_contract_is_preserved(
 
     assert SAFE_REPOSITORY in str(exc_info.value)
     _assert_public_exception_is_safe(exc_info.value)
+
+
+@pytest.mark.parametrize("operation", ["resolve_digest", "publish", "pull"])
+def test_all_docker_operations_share_subprocess_and_canonical_digest_contract(
+    operation: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    digest = "sha256:" + "d" * 64
+    digest_ref = f"ghcr.io/acme/app@{digest}"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        assert kwargs["check"] is False
+        assert kwargs["timeout"] == 4.25
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert env["LANG"] == "C"
+        assert env["LC_ALL"] == "C"
+        if argv[:2] == ["docker", "push"]:
+            return _FakeCompletedProcess(0, stderr=f"latest: digest: {digest} size: 1")
+        if argv[:2] == ["docker", "pull"]:
+            return _FakeCompletedProcess(0)
+        return _FakeCompletedProcess(0, stdout=f'{{"manifest":{{"digest":"{digest}"}}}}')
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    provider = GhcrImageRegistryProvider(timeout=4.25)
+
+    if operation == "pull":
+        assert provider.pull(ImageDigestRef(digest_ref)) == digest_ref
+    else:
+        assert getattr(provider, operation)(ImageRef("ghcr.io/acme/app:latest")) == digest_ref
