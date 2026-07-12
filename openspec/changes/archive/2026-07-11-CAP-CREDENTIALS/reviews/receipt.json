@@ -1,0 +1,25 @@
+{
+  "schema": "gentle-ai.review-receipt/v1",
+  "lineage_id": "cap-credentials-r1",
+  "mode": "ordinary",
+  "generation": 1,
+  "base_tree": "025ad42ac9a05afe443b891b03714be39db7bf27",
+  "initial_review_tree": "025ad42ac9a05afe443b891b03714be39db7bf27",
+  "final_candidate_tree": "025ad42ac9a05afe443b891b03714be39db7bf27",
+  "paths_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "fix_delta_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "f1737bb7cd8f776484602552ad81246edcf99a7f175fd9aeb04c8a2cf31730cb",
+  "ledger_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+  "evidence_hash": "80da7ee035e933b1ee1670a2c3bc345a8a162c58aefd7bc0a7c7765b5f924546",
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "terminal_state": "approved"
+}
