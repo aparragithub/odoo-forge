@@ -16,3 +16,7 @@ openspec/changes/sp1/
 .coverage
 .coverage.*
 htmlcov/
+
+# Review tooling scratch files
+.tmp-review-*.json
+.tmp-cap-*.json
