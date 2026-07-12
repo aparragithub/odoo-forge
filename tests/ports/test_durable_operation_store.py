@@ -6,6 +6,7 @@ import pytest
 
 from odoo_forge.durable_operations import (
     DurableOperationIdentity,
+    InvalidLifecycleTransitionError,
     LifecycleState,
     OperationRevision,
     RedactedEvidence,
@@ -49,6 +50,7 @@ def _terminal_bundle(
 class _ConformingDurableOperationStore:
     def __init__(self, current_revision: OperationRevision | None = None) -> None:
         self._current_revision = current_revision
+        self._record: DurableOperationRecord | None = None
 
     def _guard_revision(self, operation_id: str, expected_revision: OperationRevision) -> None:
         """Reject a compare-and-swap whose expected revision lost to a concurrent writer."""
@@ -91,26 +93,43 @@ class _ConformingDurableOperationStore:
         self, operation_id: str, bundle: TerminalCommitBundle
     ) -> DurableOperationRecord:
         self._guard_revision(operation_id, bundle.expected_revision)
-        return DurableOperationRecord(
+        if self._record is not None and self._record.terminal_commit is not None:
+            raise InvalidLifecycleTransitionError(
+                f"operation '{operation_id}' already holds an authoritative terminal commit"
+            )
+        record = DurableOperationRecord(
             identity=_identity(),
             revision=OperationRevision(value=bundle.expected_revision.value + 1),
             lifecycle=(
-                LifecycleState.CLEANUP_REQUIRED
-                if bundle.residual_cleanup
-                else bundle.outcome
+                LifecycleState.CLEANUP_REQUIRED if bundle.residual_cleanup else bundle.outcome
             ),
             terminal_commit=bundle,
         )
+        self._record = record
+        return record
 
     def resolve_residual(
         self, operation_id: str, expected_revision: OperationRevision
     ) -> DurableOperationRecord:
         self._guard_revision(operation_id, expected_revision)
-        return DurableOperationRecord(
-            identity=_identity(),
+        committed = self._record
+        if committed is None or committed.terminal_commit is None:
+            raise InvalidLifecycleTransitionError(
+                f"operation '{operation_id}' has no authoritative terminal commit to close"
+            )
+        if committed.lifecycle is not LifecycleState.CLEANUP_REQUIRED:
+            raise InvalidLifecycleTransitionError(
+                f"operation '{operation_id}' has no open residual cleanup obligation"
+            )
+        resolved = DurableOperationRecord(
+            identity=committed.identity,
             revision=OperationRevision(value=expected_revision.value + 1),
             lifecycle=LifecycleState.CLOSED,
+            checkpoint=committed.checkpoint,
+            terminal_commit=committed.terminal_commit,
         )
+        self._record = resolved
+        return resolved
 
     def list_recoverable(self) -> tuple[DurableOperationRecord, ...]:
         return (
@@ -281,4 +300,89 @@ def test_recoverable_records_preserve_nonterminal_lifecycle(lifecycle: Lifecycle
     )
 
     assert record.lifecycle is lifecycle
+    assert record.terminal_commit is None
+
+
+def test_resolving_residual_cleanup_preserves_the_authoritative_terminal_outcome() -> None:
+    residual = RedactedEvidence(event="cleanup-failed", summary="volume cleanup deferred")
+    bundle = _terminal_bundle(residual_cleanup=(residual,))
+    store = _ConformingDurableOperationStore()
+
+    committed = store.commit_terminal("operation-42", bundle)
+    resolved = store.resolve_residual("operation-42", committed.revision)
+
+    assert resolved.lifecycle is LifecycleState.CLOSED
+    assert resolved.terminal_commit == bundle
+
+
+def test_resolving_residual_without_an_open_obligation_is_rejected() -> None:
+    store = _ConformingDurableOperationStore()
+
+    with pytest.raises(InvalidLifecycleTransitionError):
+        store.resolve_residual("operation-42", OperationRevision(value=0))
+
+
+def test_committing_a_second_terminal_outcome_is_rejected() -> None:
+    residual = RedactedEvidence(event="cleanup-failed", summary="volume cleanup deferred")
+    store = _ConformingDurableOperationStore()
+
+    committed = store.commit_terminal(
+        "operation-42", _terminal_bundle(residual_cleanup=(residual,))
+    )
+    resolved = store.resolve_residual("operation-42", committed.revision)
+
+    with pytest.raises(InvalidLifecycleTransitionError):
+        store.commit_terminal(
+            "operation-42",
+            _terminal_bundle(resolved.revision.value, outcome=LifecycleState.FAILED),
+        )
+
+
+def test_resolving_an_already_closed_obligation_is_rejected() -> None:
+    residual = RedactedEvidence(event="cleanup-failed", summary="volume cleanup deferred")
+    bundle = _terminal_bundle(residual_cleanup=(residual,))
+    store = _ConformingDurableOperationStore()
+
+    committed = store.commit_terminal("operation-42", bundle)
+    resolved = store.resolve_residual("operation-42", committed.revision)
+
+    with pytest.raises(InvalidLifecycleTransitionError):
+        store.resolve_residual("operation-42", resolved.revision)
+
+
+def test_record_retains_terminal_commit_when_residual_cleanup_is_closed() -> None:
+    residual = RedactedEvidence(event="cleanup-failed", summary="volume cleanup deferred")
+    bundle = _terminal_bundle(residual_cleanup=(residual,))
+
+    record = DurableOperationRecord(
+        identity=_identity(),
+        revision=OperationRevision(value=4),
+        lifecycle=LifecycleState.CLOSED,
+        terminal_commit=bundle,
+    )
+
+    assert record.lifecycle is LifecycleState.CLOSED
+    assert record.terminal_commit is not None
+    assert record.terminal_commit.outcome is LifecycleState.SUCCEEDED
+    assert record.terminal_commit.evidence == bundle.evidence
+
+
+def test_record_rejects_closed_lifecycle_without_residual_cleanup() -> None:
+    with pytest.raises(ValueError, match="terminal outcome lifecycle"):
+        DurableOperationRecord(
+            identity=_identity(),
+            revision=OperationRevision(value=4),
+            lifecycle=LifecycleState.CLOSED,
+            terminal_commit=_terminal_bundle(),
+        )
+
+
+def test_record_accepts_closed_lifecycle_without_terminal_commit() -> None:
+    record = DurableOperationRecord(
+        identity=_identity(),
+        revision=OperationRevision(value=4),
+        lifecycle=LifecycleState.CLOSED,
+    )
+
+    assert record.lifecycle is LifecycleState.CLOSED
     assert record.terminal_commit is None

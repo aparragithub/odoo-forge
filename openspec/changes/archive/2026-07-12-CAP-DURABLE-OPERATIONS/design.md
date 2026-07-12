@@ -110,6 +110,16 @@ Recovery rule: if the checkpoint proves only that a mutation was attempted, reco
 | `RecoveryPlan` | Pure-domain decision describing `resume`, `reconcile`, `compensate`, or `surface_residual`. |
 | `DurableOperationStore` | Port for `create_or_load`, `save_checkpoint`, `mark_reconciliation_required`, `commit_terminal`, `resolve_residual`, and `list_recoverable`. |
 
+> **Correction — CAP-DURABLE-OPERATIONS-RECORD-FIX (2026-07-12)**: the `RecoveryPlan` row above
+> lists `compensate` as a recovery action. That is drift. `compensate` was never a recovery action:
+> compensation is a workflow-invoked primitive (`ensure_compensation_target` / `CompensationScope`)
+> applied after `surface_residual`, and `plan_recovery` has no ownership input with which to decide
+> it. `RecoveryAction` shipped with three members — `resume`, `reconcile`, `surface_residual` — and
+> CAP-DURABLE-OPERATIONS-RECORD-FIX adds a fourth, `no_recovery_required`, so that an already
+> resolved operation is not told to resume or reconcile. See
+> `openspec/specs/durable-operations/spec.md` for the authoritative set. The original line is left
+> intact because the archive is an append-only audit trail.
+
 Provider alignment:
 - `OperationIdentity` remains the provider-facing correlation value.
 - `CreationReceipt` and `CleanupReport` remain provider-owned types and are carried opaquely inside durable checkpoints/evidence.

@@ -101,13 +101,28 @@ def test_lifecycle_keeps_terminal_outcomes_re_advanceable_towards_cleanup_and_cl
     assert cleanup_revision == OperationRevision(value=5)
 
 
+@pytest.mark.parametrize(
+    "current",
+    [
+        LifecycleState.ACCEPTED,
+        LifecycleState.IN_PROGRESS,
+        LifecycleState.RECONCILIATION_REQUIRED,
+        LifecycleState.TERMINAL_PENDING,
+    ],
+)
+@pytest.mark.parametrize("target", [LifecycleState.SUCCEEDED, LifecycleState.FAILED])
+def test_lifecycle_rejects_evidence_free_terminal_outcomes(
+    current: LifecycleState, target: LifecycleState
+) -> None:
+    with pytest.raises(InvalidLifecycleTransitionError):
+        advance_lifecycle(current, OperationRevision(value=1), target)
+
+
 def test_checkpoint_records_resume_safe_progress_for_recovery() -> None:
     checkpoint = save_checkpoint(
         revision=OperationRevision(value=2),
         phase="provider-mutation-complete",
-        evidence=RedactedEvidence(
-            event="checkpoint-recorded", summary="provider receipt captured"
-        ),
+        evidence=RedactedEvidence(event="checkpoint-recorded", summary="provider receipt captured"),
     )
 
     plan = plan_recovery(
@@ -174,9 +189,7 @@ def test_reconciliation_required_recovery_never_resumes_even_with_checkpoint() -
     checkpoint = save_checkpoint(
         revision=OperationRevision(value=4),
         phase="provider-mutation-complete",
-        evidence=RedactedEvidence(
-            event="checkpoint-recorded", summary="provider receipt captured"
-        ),
+        evidence=RedactedEvidence(event="checkpoint-recorded", summary="provider receipt captured"),
     )
 
     plan = plan_recovery(
@@ -190,6 +203,62 @@ def test_reconciliation_required_recovery_never_resumes_even_with_checkpoint() -
     assert plan.revision == OperationRevision(value=5)
     assert plan.checkpoint is checkpoint
     assert plan.reason == "mutation outcome requires reconciliation"
+
+
+@pytest.mark.parametrize(
+    "pre_commit_state",
+    [
+        LifecycleState.ACCEPTED,
+        LifecycleState.IN_PROGRESS,
+        LifecycleState.RECONCILIATION_REQUIRED,
+        LifecycleState.TERMINAL_PENDING,
+    ],
+)
+@pytest.mark.parametrize(
+    "post_commit_state",
+    [LifecycleState.CLEANUP_REQUIRED, LifecycleState.CLOSED],
+)
+def test_lifecycle_rejects_post_commit_states_without_a_terminal_commit(
+    pre_commit_state: LifecycleState, post_commit_state: LifecycleState
+) -> None:
+    with pytest.raises(InvalidLifecycleTransitionError, match="terminal commit"):
+        advance_lifecycle(pre_commit_state, OperationRevision(value=1), post_commit_state)
+
+
+@pytest.mark.parametrize(
+    "resolved_state",
+    [LifecycleState.SUCCEEDED, LifecycleState.FAILED, LifecycleState.CLOSED],
+)
+def test_resolved_operations_require_no_recovery(resolved_state: LifecycleState) -> None:
+    plan = plan_recovery(
+        resolved_state,
+        OperationRevision(value=6),
+        None,
+        mutation_attempted=True,
+    )
+
+    assert plan.action is RecoveryAction.NO_RECOVERY_REQUIRED
+    assert plan.revision == OperationRevision(value=6)
+    assert plan.reason == "operation is already resolved"
+
+
+def test_resolved_operations_require_no_recovery_even_with_a_checkpoint() -> None:
+    checkpoint = save_checkpoint(
+        revision=OperationRevision(value=6),
+        phase="provider-mutation-complete",
+        evidence=RedactedEvidence(event="checkpoint-recorded", summary="provider receipt captured"),
+    )
+
+    plan = plan_recovery(
+        LifecycleState.CLOSED,
+        OperationRevision(value=7),
+        checkpoint,
+        mutation_attempted=True,
+    )
+
+    assert plan.action is RecoveryAction.NO_RECOVERY_REQUIRED
+    assert plan.checkpoint is checkpoint
+    assert plan.reason == "operation is already resolved"
 
 
 def test_terminal_bundle_contains_outcome_evidence_and_residual_cleanup_together() -> None:
@@ -228,9 +297,7 @@ def test_terminal_bundle_rejects_partial_authoritative_publication() -> None:
 
 
 def test_compensation_targets_only_invocation_owned_resources() -> None:
-    scope = CompensationScope(
-        operation_id="operation-42", owned_resource_ids=("database-42",)
-    )
+    scope = CompensationScope(operation_id="operation-42", owned_resource_ids=("database-42",))
 
     assert ensure_compensation_target(scope, "database-42") == "database-42"
     with pytest.raises(UnsafeCompensationError):
