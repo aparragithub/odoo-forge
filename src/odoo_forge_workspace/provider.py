@@ -182,6 +182,7 @@ class GitWorkspaceProvider:
     def _run(
         self, argv: list[str], error_cls: type[WorkspaceError] = CheckoutError
     ) -> subprocess.CompletedProcess[str]:
+        timeout_error: WorkspaceError | None = None
         try:
             result = subprocess.run(
                 argv,
@@ -193,19 +194,22 @@ class GitWorkspaceProvider:
             )
         except FileNotFoundError as exc:
             raise error_cls(f"git executable not found: {exc}") from exc
-        except subprocess.TimeoutExpired as exc:
+        except subprocess.TimeoutExpired:
             # Never splat argv/url into the message — the clone URL may embed
             # `user:token@` credentials. A safe subcommand label is enough.
-            raise error_cls(
+            timeout_error = error_cls(
                 f"git {_git_subcommand(argv)} timed out after {self._timeout}s"
-            ) from exc
+            )
+        else:
+            if result.returncode != 0:
+                # Git stderr is untrusted and may repeat credential-bearing remotes.
+                raise error_cls(
+                    f"git {_git_subcommand(argv)} failed with exit code {result.returncode}"
+                )
 
-        if result.returncode != 0:
-            # Same rule as above: report only the subcommand label + stderr,
-            # never the raw argv (which carries the credentialed clone URL).
-            raise error_cls(f"git {_git_subcommand(argv)} failed: {result.stderr.strip()}")
+            return result
 
-        return result
+        raise timeout_error from None
 
 
 def _git_subcommand(argv: Sequence[str]) -> str:

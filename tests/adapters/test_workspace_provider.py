@@ -1,4 +1,5 @@
 import subprocess
+import traceback
 from pathlib import Path
 
 import pytest
@@ -150,14 +151,34 @@ def test_missing_git_binary_raises_checkout_error(
 SECRET_URL = "https://user:secret-token@host/repo.git"
 
 
-def test_clone_failure_does_not_leak_credential_url_in_error(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    "stderr, secrets",
+    [
+        (
+            "fatal: unable to access 'https://user:password@host/repo.git/'",
+            ("user", "password", "https://user:password@host/repo.git"),
+        ),
+        (
+            "remote: authentication failed for token ghp_0123456789abcdef",
+            ("ghp_0123456789abcdef",),
+        ),
+        (
+            "fatal: repository 'https://oauth2:access-token@example.com/repo.git' not found",
+            ("oauth2", "access-token", "https://oauth2:access-token@example.com/repo.git"),
+        ),
+    ],
+)
+def test_clone_failure_does_not_expose_untrusted_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    stderr: str,
+    secrets: tuple[str, ...],
 ) -> None:
     dest = tmp_path / "custom" / "acme" / "odoo"
 
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         if "clone" in argv:
-            return _FakeCompletedProcess(128, stderr="fatal: repository not found")
+            return _FakeCompletedProcess(128, stderr=stderr)
         return _FakeCompletedProcess(0, stdout="")
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
@@ -168,11 +189,12 @@ def test_clone_failure_does_not_leak_credential_url_in_error(
         provider.checkout(SECRET_URL, COMMIT, dest)
 
     message = str(excinfo.value)
-    assert "secret-token" not in message
+    assert message == "git clone failed with exit code 128"
+    assert all(secret not in message for secret in secrets)
     assert SECRET_URL not in message
 
 
-def test_clone_returncode_nonzero_raises_checkout_error(
+def test_clone_returncode_nonzero_has_bounded_useful_diagnostic(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     dest = tmp_path / "custom" / "acme" / "odoo"
@@ -186,8 +208,10 @@ def test_clone_returncode_nonzero_raises_checkout_error(
 
     provider = GitWorkspaceProvider()
 
-    with pytest.raises(CheckoutError):
+    with pytest.raises(CheckoutError) as excinfo:
         provider.checkout(URL, COMMIT, dest)
+
+    assert str(excinfo.value) == "git clone failed with exit code 1"
 
 
 def test_timeout_raises_checkout_error_without_leaking_url(
@@ -205,7 +229,14 @@ def test_timeout_raises_checkout_error_without_leaking_url(
     with pytest.raises(CheckoutError) as excinfo:
         provider.checkout(SECRET_URL, COMMIT, dest)
 
-    assert "secret-token" not in str(excinfo.value)
+    assert str(excinfo.value) == "git clone timed out after 60s"
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    rendered_traceback = "".join(
+        traceback.format_exception(excinfo.type, excinfo.value, excinfo.tb)
+    )
+    assert SECRET_URL not in rendered_traceback
+    assert "secret-token" not in rendered_traceback
 
 
 def test_clone_passes_url_as_positional_after_end_of_options(
