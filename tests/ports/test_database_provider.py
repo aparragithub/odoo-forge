@@ -229,6 +229,34 @@ def test_cleanup_reports_a_safe_residual_and_uses_a_typed_redacted_failure() -> 
     assert "secret-sentinel" not in str(error)
 
 
+def test_restore_documents_a_single_opaque_data_artifact_reference() -> None:
+    documentation = DatabaseProvider.restore.__doc__
+
+    assert documentation is not None
+    assert "opaque DataArtifactRef" in documentation
+    assert "single restore set" in documentation
+
+
+def test_restore_accepts_only_one_opaque_artifact_input() -> None:
+    signature = inspect.signature(DatabaseProvider.restore)
+    implementation_signature = inspect.signature(_ConformingDatabaseProvider.restore)
+    hints = typing.get_type_hints(
+        DatabaseProvider.restore,
+        localns={
+            "CredentialHandle": CredentialHandle,
+            "DataArtifactRef": DataArtifactRef,
+            "DatabaseCreation": DatabaseCreation,
+            "DatabaseSpec": DatabaseSpec,
+        },
+    )
+
+    assert list(signature.parameters) == ["self", "spec", "artifact", "credentials"]
+    assert list(implementation_signature.parameters) == list(signature.parameters)
+    assert hints["artifact"] is DataArtifactRef
+    assert "database_artifact" not in signature.parameters
+    assert "filestore_artifact" not in signature.parameters
+
+
 def test_lifecycle_method_signatures_match_the_contract() -> None:
     localns = {
         "CleanupReport": CleanupReport,
@@ -241,7 +269,7 @@ def test_lifecycle_method_signatures_match_the_contract() -> None:
         "OperationIdentity": OperationIdentity,
     }
 
-    for name in ("provision", "restore", "adopt", "reconcile", "delete", "cleanup"):
+    for name in ("provision", "adopt", "reconcile", "delete", "cleanup"):
         port_method = getattr(DatabaseProvider, name)
         implementation_method = getattr(_ConformingDatabaseProvider, name)
         port_signature = inspect.signature(port_method)
