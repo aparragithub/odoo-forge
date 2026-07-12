@@ -425,3 +425,44 @@ def test_unclassified_stderr_falls_back_to_network_error(
 
     assert exc_info.value.url == URL
     assert exc_info.value.detail == "git ls-remote failed with exit code 128"
+
+
+@pytest.mark.parametrize(
+    ("result", "error_type"),
+    [
+        (_FakeCompletedProcess(0, stdout=""), RefNotFoundError),
+        (_FakeCompletedProcess(128, stderr="fatal: Authentication failed"), AuthenticationError),
+        (_FakeCompletedProcess(128, stderr="fatal: Could not resolve host"), NetworkError),
+        (
+            _FakeCompletedProcess(128, stderr="fatal: couldn't find remote ref missing"),
+            RefNotFoundError,
+        ),
+        (
+            _FakeCompletedProcess(
+                128,
+                stderr="fatal: Authentication failed: couldn't find remote ref missing",
+            ),
+            AuthenticationError,
+        ),
+        (
+            _FakeCompletedProcess(
+                128,
+                stderr="fatal: network failure while couldn't find remote ref missing",
+            ),
+            NetworkError,
+        ),
+    ],
+)
+def test_ls_remote_classification_matrix_preserves_safe_public_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    result: _FakeCompletedProcess,
+    error_type: type[RefNotFoundError | AuthenticationError | NetworkError],
+) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: result)
+
+    with pytest.raises(error_type) as exc_info:
+        GitSourceProvider().resolve_ref(SECRET_URL, "missing")
+
+    _assert_safe_error(exc_info.value)
+    assert isinstance(exc_info.value, (RefNotFoundError, AuthenticationError, NetworkError))
+    assert exc_info.value.url == "https://example.com/private/repo.git"
