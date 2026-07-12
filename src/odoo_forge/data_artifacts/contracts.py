@@ -34,9 +34,7 @@ def _require_redacted_detail(value: str | None) -> str | None:
             value,
         )
     ):
-        raise ValueError(
-            "redacted detail must not contain secret-bearing or connection text"
-        )
+        raise ValueError("redacted detail must not contain secret-bearing or connection text")
     return value
 
 
