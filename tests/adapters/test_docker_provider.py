@@ -51,6 +51,17 @@ class _FakeCompletedProcess:
         self.stderr = stderr
 
 
+class _FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def _labels(role: str | None = None) -> dict[str, str]:
     labels = {
         "com.odoo-forge.project": "proj",
@@ -710,8 +721,12 @@ def test_pg_readiness_gate_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(subprocess, "run", router)
 
+    clock = _FakeClock()
     provider = DockerBackendProvider(
-        sleep=lambda _seconds: None, pg_readiness_timeout=3.0, pg_poll_interval=1.0
+        monotonic=clock,
+        sleep=clock.advance,
+        pg_readiness_timeout=3.0,
+        pg_poll_interval=1.0,
     )
 
     with pytest.raises(PostgresReadinessError):
@@ -730,12 +745,169 @@ def test_odoo_health_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(subprocess, "run", router)
 
+    clock = _FakeClock()
     provider = DockerBackendProvider(
-        sleep=lambda _seconds: None, health_wait_timeout=3.0, health_poll_interval=1.0
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=3.0,
+        health_poll_interval=1.0,
     )
 
     with pytest.raises(ContainerRunError):
         provider.run(_make_plan())
+
+
+@pytest.mark.parametrize(
+    ("gate", "budget", "poll_interval", "expected_timeouts", "expected_sleeps"),
+    [
+        ("postgres", 2.5, 1.0, [2.5, 0.6], [1.0]),
+        ("odoo", 2.5, 1.0, [2.5, 0.6], [1.0]),
+        ("postgres", 1.2, 1.0, [1.2], [0.3]),
+        ("odoo", 1.2, 1.0, [1.2], [0.3]),
+        ("postgres", 0.0, 1.0, [], []),
+        ("odoo", 0.1, 1.0, [0.1], []),
+    ],
+)
+def test_readiness_deadline_caps_probes_and_charges_invocations_and_sleeps(
+    monkeypatch: pytest.MonkeyPatch,
+    gate: str,
+    budget: float,
+    poll_interval: float,
+    expected_timeouts: list[float],
+    expected_sleeps: list[float],
+) -> None:
+    clock = _FakeClock()
+    timeouts: list[float] = []
+    sleeps: list[float] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, float)
+        timeouts.append(timeout)
+        clock.advance(min(0.9, timeout))
+        if gate == "odoo":
+            return _FakeCompletedProcess(
+                0, stdout=json.dumps([{"State": {"Health": {"Status": "starting"}}}])
+            )
+        return _FakeCompletedProcess(2)
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock.advance(seconds)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provider = DockerBackendProvider(
+        docker_timeout=30.0,
+        pg_readiness_timeout=budget,
+        pg_poll_interval=poll_interval,
+        health_wait_timeout=budget,
+        health_poll_interval=poll_interval,
+        monotonic=clock,
+        sleep=fake_sleep,
+    )
+
+    error = PostgresReadinessError if gate == "postgres" else ContainerRunError
+    with pytest.raises(error):
+        if gate == "postgres":
+            provider._wait_pg_ready(_make_plan().postgres)
+        else:
+            provider._wait_odoo_healthy(_make_plan().odoo)
+
+    assert timeouts == pytest.approx(expected_timeouts)
+    assert sleeps == pytest.approx(expected_sleeps)
+    assert clock.now <= budget + 0.9
+
+
+@pytest.mark.parametrize(
+    ("gate", "error"),
+    [("postgres", PostgresReadinessError), ("odoo", ContainerRunError)],
+)
+def test_exhausted_readiness_deadline_does_not_start_zero_timeout_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    gate: str,
+    error: type[Exception],
+) -> None:
+    calls = 0
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        nonlocal calls
+        calls += 1
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, float)
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provider = DockerBackendProvider(
+        pg_readiness_timeout=0.0,
+        health_wait_timeout=0.0,
+        monotonic=lambda: 10.0,
+    )
+
+    with pytest.raises(error):
+        if gate == "postgres":
+            provider._wait_pg_ready(_make_plan().postgres)
+        else:
+            provider._wait_odoo_healthy(_make_plan().odoo)
+
+    assert calls == 0
+
+
+@pytest.mark.parametrize("gate", ["postgres", "odoo"])
+def test_readiness_probe_timeout_before_deadline_remains_docker_unavailable(
+    monkeypatch: pytest.MonkeyPatch, gate: str
+) -> None:
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, float) and timeout > 0.0
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provider = DockerBackendProvider(
+        pg_readiness_timeout=1.0,
+        health_wait_timeout=1.0,
+        monotonic=lambda: 10.0,
+    )
+
+    with pytest.raises(DockerUnavailableError):
+        if gate == "postgres":
+            provider._wait_pg_ready(_make_plan().postgres)
+        else:
+            provider._wait_odoo_healthy(_make_plan().odoo)
+
+
+@pytest.mark.parametrize("gate", ["postgres", "odoo"])
+def test_readiness_accepts_success_from_final_budgeted_probe(
+    monkeypatch: pytest.MonkeyPatch, gate: str
+) -> None:
+    clock = _FakeClock()
+    timeouts: list[float] = []
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        timeout = kwargs["timeout"]
+        assert isinstance(timeout, float)
+        timeouts.append(timeout)
+        clock.advance(min(0.5, timeout))
+        if len(timeouts) == 2:
+            stdout = _healthy_inspect(ODOO_NAME) if gate == "odoo" else ""
+            return _FakeCompletedProcess(0, stdout=stdout)
+        return _FakeCompletedProcess(2)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provider = DockerBackendProvider(
+        pg_readiness_timeout=1.25,
+        pg_poll_interval=0.5,
+        health_wait_timeout=1.25,
+        health_poll_interval=0.5,
+        monotonic=clock,
+        sleep=clock.advance,
+    )
+
+    if gate == "postgres":
+        provider._wait_pg_ready(_make_plan().postgres)
+    else:
+        provider._wait_odoo_healthy(_make_plan().odoo)
+
+    assert timeouts == pytest.approx([1.25, 0.25])
 
 
 def test_run_pulls_exact_digest_image_ref_before_odoo_start(
@@ -840,8 +1012,12 @@ def test_partial_failure_rollback_removes_only_created_resources(
     )
     monkeypatch.setattr(subprocess, "run", router)
 
+    clock = _FakeClock()
     provider = DockerBackendProvider(
-        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
     )
 
     with pytest.raises(ContainerRunError):
@@ -879,8 +1055,12 @@ def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.M
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
+    clock = _FakeClock()
     provider = DockerBackendProvider(
-        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
     )
 
     with pytest.raises(ContainerRunError):
@@ -907,8 +1087,12 @@ def test_readiness_failure_captures_diagnostics_before_rollback(
     )
     monkeypatch.setattr(subprocess, "run", router)
 
+    clock = _FakeClock()
     provider = DockerBackendProvider(
-        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
     )
 
     with pytest.raises(ContainerRunError) as excinfo:
@@ -936,8 +1120,12 @@ def test_rollback_failure_is_reported_with_its_residual_resource(
         return router(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
+    clock = _FakeClock()
     provider = DockerBackendProvider(
-        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
     )
 
     with pytest.raises(
@@ -954,8 +1142,12 @@ def test_reattach_then_fail_preserves_existing_volume(monkeypatch: pytest.Monkey
     )
     monkeypatch.setattr(subprocess, "run", router)
 
+    clock = _FakeClock()
     provider = DockerBackendProvider(
-        sleep=lambda _seconds: None, health_wait_timeout=1.0, health_poll_interval=1.0
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
     )
 
     with pytest.raises(ContainerRunError):
