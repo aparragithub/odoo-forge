@@ -1,0 +1,14 @@
+{
+  "schema": "gentle-ai.review-gate-request/v1",
+  "lineage_id": "cap-project-catalog-v4",
+  "generation": 1,
+  "genesis_revision": "sha256:d56d96ac92a84d5dfe1d9934be46ede1928e9337bf2f79ab831f3d9e9b4bbd3c",
+  "head_revision": "sha256:5dad6faa24facd632ed1711f9a94e65568c1b35dd3119578c21627978ee37438",
+  "chain_identity": "sha256:b492d691b0c3102a494458d519dc64c559b1c75100e2347ea265c4b98f7e5028",
+  "bundle_digest": "sha256:1a66e8ddaa03fe403f9c7a084a01634b38a8b9b8aa633fb636687339bcc4129a",
+  "policy_hash": "sha256:f66adfcc564fa6ad4b35020eaed725b7142e50ee28848c4635bc8d904562c6ff",
+  "ledger_hash": "sha256:0054872dcecb15ec967fc435fb1238a8cc5bc17a710016e3e1eec3199dfab326",
+  "evidence_hash": "sha256:0cf3ebf7b16e40167ddfd9e2b32cf232d413aeb5bd7c8cd5d223640116a5c309",
+  "initial_snapshot_identity": "sha256:e555679c60cd8f5d301b6cfd302f8a53726f903346c36f7738173ad960c87c01",
+  "final_snapshot_identity": "sha256:e555679c60cd8f5d301b6cfd302f8a53726f903346c36f7738173ad960c87c01"
+}

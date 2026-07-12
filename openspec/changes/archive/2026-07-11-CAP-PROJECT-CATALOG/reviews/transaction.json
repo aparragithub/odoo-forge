@@ -1,0 +1,105 @@
+{
+  "schema": "gentle-ai.review-transaction/v1",
+  "lineage_id": "cap-project-catalog-v4",
+  "mode": "ordinary_4r",
+  "generation": 1,
+  "state": "approved",
+  "snapshot": {
+    "kind": "current-changes",
+    "base_tree": "025ad42ac9a05afe443b891b03714be39db7bf27",
+    "candidate_tree": "79a2153aed3b65a9e9b4cf304a0a8f061e761496",
+    "paths_digest": "sha256:ef0818aeb944f0990c141c4a0e1a2cdfdc59218cef7a3aaac2ba367c29219c4f",
+    "intended_untracked": [],
+    "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+    "paths": [
+      "docs/specs/platform/portfolio.json",
+      "openspec/changes/CAP-PROJECT-CATALOG/apply-progress.md",
+      "openspec/changes/CAP-PROJECT-CATALOG/design.md",
+      "openspec/changes/CAP-PROJECT-CATALOG/exploration.md",
+      "openspec/changes/CAP-PROJECT-CATALOG/proposal.md",
+      "openspec/changes/CAP-PROJECT-CATALOG/reviews/policy.md",
+      "openspec/changes/CAP-PROJECT-CATALOG/specs/project-catalog-resolution/spec.md",
+      "openspec/changes/CAP-PROJECT-CATALOG/tasks.md",
+      "openspec/changes/CAP-PROJECT-CATALOG/verify-report.md",
+      "src/odoo_forge/project_catalog/__init__.py",
+      "src/odoo_forge/project_catalog/interfaces.py",
+      "src/odoo_forge/project_catalog/models.py",
+      "src/odoo_forge/project_catalog/resolver.py",
+      "src/odoo_forge/project_catalog/validation.py",
+      "tests/project_catalog/test_resolver.py"
+    ],
+    "identity": "sha256:e555679c60cd8f5d301b6cfd302f8a53726f903346c36f7738173ad960c87c01"
+  },
+  "genesis_paths": [
+    "docs/specs/platform/portfolio.json",
+    "openspec/changes/CAP-PROJECT-CATALOG/apply-progress.md",
+    "openspec/changes/CAP-PROJECT-CATALOG/design.md",
+    "openspec/changes/CAP-PROJECT-CATALOG/exploration.md",
+    "openspec/changes/CAP-PROJECT-CATALOG/proposal.md",
+    "openspec/changes/CAP-PROJECT-CATALOG/reviews/policy.md",
+    "openspec/changes/CAP-PROJECT-CATALOG/specs/project-catalog-resolution/spec.md",
+    "openspec/changes/CAP-PROJECT-CATALOG/tasks.md",
+    "openspec/changes/CAP-PROJECT-CATALOG/verify-report.md",
+    "src/odoo_forge/project_catalog/__init__.py",
+    "src/odoo_forge/project_catalog/interfaces.py",
+    "src/odoo_forge/project_catalog/models.py",
+    "src/odoo_forge/project_catalog/resolver.py",
+    "src/odoo_forge/project_catalog/validation.py",
+    "tests/project_catalog/test_resolver.py"
+  ],
+  "base_tree": "025ad42ac9a05afe443b891b03714be39db7bf27",
+  "paths_digest": "sha256:ef0818aeb944f0990c141c4a0e1a2cdfdc59218cef7a3aaac2ba367c29219c4f",
+  "initial_review_tree": "79a2153aed3b65a9e9b4cf304a0a8f061e761496",
+  "final_candidate_tree": "79a2153aed3b65a9e9b4cf304a0a8f061e761496",
+  "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "policy_hash": "sha256:f66adfcc564fa6ad4b35020eaed725b7142e50ee28848c4635bc8d904562c6ff",
+  "ledger_hash": "sha256:0054872dcecb15ec967fc435fb1238a8cc5bc17a710016e3e1eec3199dfab326",
+  "ledger_findings_hash": "sha256:a0df29f3e7eb9688dedd4c101de06aa7ecad9321d2888afb01141a47c81eac79",
+  "evidence_hash": "sha256:0cf3ebf7b16e40167ddfd9e2b32cf232d413aeb5bd7c8cd5d223640116a5c309",
+  "judge_proofs": [],
+  "counters": {
+    "full_reviews": 1,
+    "refuter_batches": 0,
+    "fix_batches": 0,
+    "scoped_fix_validations": 0,
+    "final_verifications": 1,
+    "fix_rounds": 0,
+    "scoped_rejudgments": 0,
+    "judge_executions": 0
+  },
+  "findings": [
+    {
+      "id": "READABILITY-001",
+      "lens": "readability",
+      "location": "src/odoo_forge/project_catalog/resolver.py:34",
+      "severity": "WARNING",
+      "claim": "_matched_by relies on the implicit field-declaration order of ProjectCatalogRequest to build the '+'-joined matched_by string. The coupling is not expressed by name, comment, or type, so reordering the model fields silently changes the public matched_by contract that the tests assert.",
+      "proof_refs": [
+        "src/odoo_forge/project_catalog/resolver.py:34",
+        "src/odoo_forge/project_catalog/models.py:8",
+        "tests/project_catalog/test_resolver.py:50"
+      ]
+    },
+    {
+      "id": "READABILITY-002",
+      "lens": "readability",
+      "location": "src/odoo_forge/project_catalog/resolver.py:78",
+      "severity": "WARNING",
+      "claim": "_assemble enforces its not-None invariant for manifest_ref, source_context, and the default fields with bare assert statements. The invariant is actually established by a separate invalid_required_fields call in resolve(), so _assemble's safety depends on an undocumented cross-function contract, and assert is stripped under python -O.",
+      "proof_refs": [
+        "src/odoo_forge/project_catalog/resolver.py:78",
+        "src/odoo_forge/project_catalog/resolver.py:67",
+        "src/odoo_forge/project_catalog/validation.py:6"
+      ]
+    }
+  ],
+  "classifications": {},
+  "outcomes": {
+    "READABILITY-001": "info",
+    "READABILITY-002": "info"
+  },
+  "fix_finding_ids": [],
+  "pending_refuter_ids": [],
+  "fix_caused_findings": [],
+  "follow_ups": []
+}

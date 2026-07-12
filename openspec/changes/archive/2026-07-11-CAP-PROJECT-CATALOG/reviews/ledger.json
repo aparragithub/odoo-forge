@@ -1,0 +1,33 @@
+{
+  "schema": "gentle-ai.review-ledger/v1",
+  "findings": [
+    {
+      "id": "READABILITY-001",
+      "lens": "readability",
+      "location": "src/odoo_forge/project_catalog/resolver.py:34",
+      "severity": "WARNING",
+      "claim": "_matched_by relies on the implicit field-declaration order of ProjectCatalogRequest to build the '+'-joined matched_by string. The coupling is not expressed by name, comment, or type, so reordering the model fields silently changes the public matched_by contract that the tests assert.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/odoo_forge/project_catalog/resolver.py:34",
+        "src/odoo_forge/project_catalog/models.py:8",
+        "tests/project_catalog/test_resolver.py:50"
+      ],
+      "status": "info"
+    },
+    {
+      "id": "READABILITY-002",
+      "lens": "readability",
+      "location": "src/odoo_forge/project_catalog/resolver.py:78",
+      "severity": "WARNING",
+      "claim": "_assemble enforces its not-None invariant for manifest_ref, source_context, and the default fields with bare assert statements. The invariant is actually established by a separate invalid_required_fields call in resolve(), so _assemble's safety depends on an undocumented cross-function contract, and assert is stripped under python -O.",
+      "evidence_class": "deterministic",
+      "proof_refs": [
+        "src/odoo_forge/project_catalog/resolver.py:78",
+        "src/odoo_forge/project_catalog/resolver.py:67",
+        "src/odoo_forge/project_catalog/validation.py:6"
+      ],
+      "status": "info"
+    }
+  ]
+}
