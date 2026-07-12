@@ -1,0 +1,25 @@
+{
+  "schema": "gentle-ai.review-receipt/v2",
+  "lineage_id": "review-ea048455fa7e204d",
+  "generation": 1,
+  "base_tree": "e79b68a3f42269361b27499e8ce210aa85b13475",
+  "initial_review_tree": "5ad73a60d7d64d45887b2f1ac662ec9c7c3c35c6",
+  "final_candidate_tree": "9956034c7a86729497926c3b99da604197cae7c4",
+  "paths_digest": "sha256:dadefffb5863da71fbf7c50113ac44124c2ea5cfe562a88bbbcc27e603a9876d",
+  "fix_delta_hash": "sha256:e3884bc6d2f1dd4983d482f5aa5ba9b86d5713e84f9eea5fef3c9897837cc9dd",
+  "policy_hash": "sha256:34fb63d7f29f8613cd4431382b1057398a4816f8a4c20fc34677fffc80a184f6",
+  "evidence_hash": "sha256:0e77407d184f180a74c3ab88ce7d72f401b27b1dec0c716effeaf7e820b69b4e",
+  "risk_level": "high",
+  "selected_lenses": [
+    "review-risk",
+    "review-resilience",
+    "review-readability",
+    "review-reliability"
+  ],
+  "resolved_finding_ids": [
+    "R1-001",
+    "R3-001",
+    "R4-001"
+  ],
+  "terminal_state": "approved"
+}
