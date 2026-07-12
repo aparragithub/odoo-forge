@@ -61,8 +61,10 @@ source, no image layers, no DB contents (§Principle 4).
   backend introspection** — founding line 227: "ask the backend — never a parallel registry file
   that can drift". Define a periodic and on-read reconciliation so an instance killed out-of-band does
   not leave the registry asserting it still runs.
-- **Tenancy / isolation model.** Define the per-tenant isolation model (network / namespace /
-  DB-credential scoping) that the backend adapters (SP-3) enforce at the data plane.
+- **Tenancy contract consumption.** Consume `CAP-TENANCY` as the sole source for the
+  customer/client `tenant_id`, child-only project scope, operational classifications, minimum
+  isolation expectations, ownership composition, and quota authority. The control plane may
+  orchestrate and record these inputs, but it does not define tenancy, isolation, or quotas.
 - **Secret-manager references.** Resolve secret-manager **refs** at composition and pass **refs
   only** (never plaintext) into the backend plan/env; the adapter resolves them target-side.
 
@@ -73,8 +75,10 @@ source, no image layers, no DB contents (§Principle 4).
 - No new external-concern port.
 
 ## Dependencies
-Upstream: **SP-1, SP-2, SP-3** (§6 — "the control plane only pays off once it has ports to
-orchestrate", §7) plus the git `SourceProvider` foundation. Downstream: SP-5, SP-6, SP-7, SP-8, SP-9.
+Upstream: **CAP-TENANCY** (`AC-CAP-TENANCY-READY`) for tenant identity, project
+subordination, isolation, ownership, and quota inputs; **SP-1, SP-2, SP-3** (§6 — "the control
+plane only pays off once it has ports to orchestrate", §7); plus the git `SourceProvider`
+foundation. Downstream: SP-5, SP-6, SP-7, SP-8, SP-9.
 
 ## Success criteria
 - One adapter per port is bound at init for the composition root as scoped today; a runtime

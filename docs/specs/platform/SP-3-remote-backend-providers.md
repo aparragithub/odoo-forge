@@ -44,9 +44,11 @@ instance runs where — never runtime data or logs at rest. Logs are fetched on 
 - New adapter package(s) implementing `BackendProvider` for the chosen target(s).
 - Import-linter forbidden contract + `root_packages` entry per new adapter package.
 - Mapping `BackendPlan` (from Slice 4b) onto each target's provisioning primitives.
-- **Per-tenant data-plane isolation** — each backend adapter enforces network / namespace /
-  DB-credential scoping so instances of different tenants cannot reach one another. The tenancy
-  model is defined by SP-4; each adapter enforces it in its target-native way.
+- **Tenant-scoped data-plane isolation** — consume `CAP-TENANCY` as the sole source for the
+  customer/client `tenant_id`, optional child project scope, operational classification,
+  ownership composition, quota authority, and minimum isolation boundary. Each adapter enforces
+  that already-defined boundary through target-native network / namespace / DB-credential scoping
+  so instances of different tenants cannot reach one another; it does not define tenancy or quotas.
 - **Secret injection** — wire secret-manager **refs** into the instance plan/env at deploy time
   (resolved from the target-native secret manager), never hardcoded plaintext env as in Slice 4b.
 - CLI surface parity: `forge run/status/stop/logs/exec` work against the remote target.
@@ -58,8 +60,9 @@ instance runs where — never runtime data or logs at rest. Logs are fetched on 
 - No multi-target fan-out at runtime (one adapter per init, §Principle 3).
 
 ## Dependencies
-Foundation only — **Slice 4b (`BackendProvider` port + docker adapter + `BackendPlan`)**.
-Independent of SP-1/SP-2. Upstream of SP-4, SP-6, SP-8 (§6, §7).
+Requires **CAP-TENANCY** (`AC-CAP-TENANCY-READY`) as the normative tenant, isolation,
+ownership, and quota contract, plus **Slice 4b (`BackendProvider` port + docker adapter +
+`BackendPlan`)**. Independent of SP-1/SP-2. Upstream of SP-4, SP-6, SP-8 (§6, §7).
 
 ## Success criteria
 - Each new adapter passes the `BackendProvider` conformance test (`isinstance` + `inspect.signature`).

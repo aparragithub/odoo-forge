@@ -1,0 +1,142 @@
+{
+  "schema": "gentle-ai.review-state-record/v2",
+  "revision": "sha256:bf988f6b1c296ad1a18d6a44d0558ad8eeda7d494495b949befa6925ceab6443",
+  "state": {
+    "schema": "gentle-ai.review-state/v2",
+    "lineage_id": "review-0f050718f9d6bbbd",
+    "generation": 1,
+    "state": "approved",
+    "initial_snapshot": {
+      "kind": "current-changes",
+      "base_tree": "e79b68a3f42269361b27499e8ce210aa85b13475",
+      "candidate_tree": "f569a6a625f6b0f803bc7eaaaf8dddd94cbd0974",
+      "paths_digest": "sha256:15d11e24d83c0319a2563d8b858b6f3484101a66a662fb5adfac73d14a0979aa",
+      "intended_untracked": [
+        "openspec/changes/CAP-TENANCY/apply-progress.md",
+        "openspec/changes/CAP-TENANCY/design.md",
+        "openspec/changes/CAP-TENANCY/exploration.md",
+        "openspec/changes/CAP-TENANCY/proposal.md",
+        "openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md",
+        "openspec/changes/CAP-TENANCY/tasks.md"
+      ],
+      "intended_untracked_proof": "sha256:339642668f6a73b2e18d2e9374d6bf6d0c7bfee763df1189dc11153089a4ef1c",
+      "paths": [
+        "docs/specs/platform/SP-3-remote-backend-providers.md",
+        "docs/specs/platform/SP-4-control-plane-core.md",
+        "docs/specs/platform/SP-8-instance-lifecycle-requests.md",
+        "docs/specs/platform/portfolio.json",
+        "openspec/changes/CAP-TENANCY/apply-progress.md",
+        "openspec/changes/CAP-TENANCY/design.md",
+        "openspec/changes/CAP-TENANCY/exploration.md",
+        "openspec/changes/CAP-TENANCY/proposal.md",
+        "openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md",
+        "openspec/changes/CAP-TENANCY/tasks.md"
+      ],
+      "identity": "sha256:0f050718f9d6bbbdd9a833c48391baa39a2b49614c6f473f46d13e2dd8e40e20"
+    },
+    "current_snapshot": {
+      "kind": "current-changes",
+      "base_tree": "e79b68a3f42269361b27499e8ce210aa85b13475",
+      "candidate_tree": "f569a6a625f6b0f803bc7eaaaf8dddd94cbd0974",
+      "paths_digest": "sha256:15d11e24d83c0319a2563d8b858b6f3484101a66a662fb5adfac73d14a0979aa",
+      "intended_untracked": [
+        "openspec/changes/CAP-TENANCY/apply-progress.md",
+        "openspec/changes/CAP-TENANCY/design.md",
+        "openspec/changes/CAP-TENANCY/exploration.md",
+        "openspec/changes/CAP-TENANCY/proposal.md",
+        "openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md",
+        "openspec/changes/CAP-TENANCY/tasks.md"
+      ],
+      "intended_untracked_proof": "sha256:339642668f6a73b2e18d2e9374d6bf6d0c7bfee763df1189dc11153089a4ef1c",
+      "paths": [
+        "docs/specs/platform/SP-3-remote-backend-providers.md",
+        "docs/specs/platform/SP-4-control-plane-core.md",
+        "docs/specs/platform/SP-8-instance-lifecycle-requests.md",
+        "docs/specs/platform/portfolio.json",
+        "openspec/changes/CAP-TENANCY/apply-progress.md",
+        "openspec/changes/CAP-TENANCY/design.md",
+        "openspec/changes/CAP-TENANCY/exploration.md",
+        "openspec/changes/CAP-TENANCY/proposal.md",
+        "openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md",
+        "openspec/changes/CAP-TENANCY/tasks.md"
+      ],
+      "identity": "sha256:0f050718f9d6bbbdd9a833c48391baa39a2b49614c6f473f46d13e2dd8e40e20"
+    },
+    "genesis_paths": [
+      "docs/specs/platform/SP-3-remote-backend-providers.md",
+      "docs/specs/platform/SP-4-control-plane-core.md",
+      "docs/specs/platform/SP-8-instance-lifecycle-requests.md",
+      "docs/specs/platform/portfolio.json",
+      "openspec/changes/CAP-TENANCY/apply-progress.md",
+      "openspec/changes/CAP-TENANCY/design.md",
+      "openspec/changes/CAP-TENANCY/exploration.md",
+      "openspec/changes/CAP-TENANCY/proposal.md",
+      "openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md",
+      "openspec/changes/CAP-TENANCY/tasks.md"
+    ],
+    "policy_hash": "sha256:34fb63d7f29f8613cd4431382b1057398a4816f8a4c20fc34677fffc80a184f6",
+    "risk_level": "high",
+    "selected_lenses": [
+      "review-risk",
+      "review-resilience",
+      "review-readability",
+      "review-reliability"
+    ],
+    "original_changed_lines": 669,
+    "correction_budget": 200,
+    "lens_results": [
+      {
+        "lens": "review-risk",
+        "findings": [],
+        "evidence": [
+          "changed-hunk:docs/specs/platform/SP-3-remote-backend-providers.md:48 documents tenant isolation and reference-only secret handling without executable changes or committed credentials.",
+          "changed-hunk:docs/specs/platform/SP-4-control-plane-core.md:57 keeps tenancy consumption contract-only and leaves authorization to the dedicated backend capability.",
+          "changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:37 retains backend request-time authorization and makes CAP-TENANCY the quota and tenant-scope authority.",
+          "candidate-created-path:openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md defines provider-neutral isolation requirements and blocks downstream tenancy redefinition; no runtime implementation or unsafe sink is introduced.",
+          "candidate-created-path:openspec/changes/CAP-TENANCY/design.md explicitly excludes auth, persistence, APIs, and runtime behavior from this documentary change.",
+          "changed-hunk:docs/specs/platform/portfolio.json:1 remains valid JSON and records AC-CAP-TENANCY-READY as a proposed hard prerequisite for the three downstream consumers.",
+          "No hardcoded secret, token, API-key, private-key, or database-URL pattern was found in the reviewed candidate paths."
+        ],
+        "result_hash": "sha256:bf5ff1515ec85d5b4e18c5ef2d08672154f223c61e642159186c1d03ed5e4b40"
+      },
+      {
+        "lens": "review-resilience",
+        "findings": [],
+        "evidence": [
+          "Reviewed candidate scope is documentation/OpenSpec only with no executable code, config, or runtime path changes: modified docs at changed-hunk:docs/specs/platform/SP-3-remote-backend-providers.md:39, changed-hunk:docs/specs/platform/SP-4-control-plane-core.md:56, changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:32, plus candidate-created-path:openspec/changes/CAP-TENANCY/proposal.md, candidate-created-path:openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md, candidate-created-path:openspec/changes/CAP-TENANCY/design.md, candidate-created-path:openspec/changes/CAP-TENANCY/tasks.md, candidate-created-path:openspec/changes/CAP-TENANCY/apply-progress.md.",
+          "The changed content narrows operational responsibility instead of adding failure-prone behavior: SP-3/SP-4/SP-8 now explicitly consume CAP-TENANCY as prerequisite contract input and do not claim local tenancy/quota ownership at changed-hunk:docs/specs/platform/SP-3-remote-backend-providers.md:39, changed-hunk:docs/specs/platform/SP-4-control-plane-core.md:56, and changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:32.",
+          "Recovery/readiness evidence is present for this documentary change: proposal includes an explicit rollback path in candidate-created-path:openspec/changes/CAP-TENANCY/proposal.md, tasks/apply-progress record doc-only verification and no runtime rollout in candidate-created-path:openspec/changes/CAP-TENANCY/tasks.md and candidate-created-path:openspec/changes/CAP-TENANCY/apply-progress.md. No candidate-caused severe resilience failure was evidenced."
+        ],
+        "result_hash": "sha256:886e5a1a50b4b99e287bef9dffaa95e47e8bfa60b2bca1986debd4922544210d"
+      },
+      {
+        "lens": "review-readability",
+        "findings": [],
+        "evidence": [
+          "Docs-only candidate: git status shows 4 modified platform docs and 5 candidate-created OpenSpec artifacts, with no executable code or config paths in scope (changed-hunk:docs/specs/platform/SP-3-remote-backend-providers.md:44, changed-hunk:docs/specs/platform/SP-4-control-plane-core.md:61, changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:37, changed-hunk:docs/specs/platform/portfolio.json:1, candidate-created-path:openspec/changes/CAP-TENANCY/proposal.md, candidate-created-path:openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md, candidate-created-path:openspec/changes/CAP-TENANCY/design.md, candidate-created-path:openspec/changes/CAP-TENANCY/tasks.md, candidate-created-path:openspec/changes/CAP-TENANCY/apply-progress.md).",
+          "Readability review found no candidate-caused severe clarity issues: the new CAP-TENANCY proposal/spec/design consistently define the same tenant model and the downstream SP-3/SP-4/SP-8 edits reduce ambiguity by making those docs consumers of CAP-TENANCY rather than separate authorities (candidate-created-path:openspec/changes/CAP-TENANCY/proposal.md, candidate-created-path:openspec/changes/CAP-TENANCY/specs/tenancy-contract/spec.md, candidate-created-path:openspec/changes/CAP-TENANCY/design.md, changed-hunk:docs/specs/platform/SP-3-remote-backend-providers.md:44, changed-hunk:docs/specs/platform/SP-4-control-plane-core.md:61, changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:37)."
+        ],
+        "result_hash": "sha256:9dab327e0065b2ea52ffc88c87f04856a8bb58dc64d066b6d0eb1ce762079e53"
+      },
+      {
+        "lens": "review-reliability",
+        "findings": [],
+        "evidence": [
+          "`git diff --name-only` for the candidate includes only four documentation files under `docs/specs/platform/`: `SP-3-remote-backend-providers.md`, `SP-4-control-plane-core.md`, `SP-8-instance-lifecycle-requests.md`, and `portfolio.json`; none of the listed OpenSpec files are changed in the current working tree.",
+          "`git diff --numstat` shows doc-only churn (8/5, 8/4, 8/4, 1/1) with no executable code, test, or CI config changes, so this candidate does not introduce behavior that would require new executable contract tests.",
+          "Changed hunks are documentary contract-alignment only: `changed-hunk:docs/specs/platform/SP-3-remote-backend-providers.md:47` makes SP-3 consume `CAP-TENANCY`; `changed-hunk:docs/specs/platform/SP-4-control-plane-core.md:64` and `changed-hunk:docs/specs/platform/SP-4-control-plane-core.md:78` make SP-4 consume the tenancy contract and depend on `AC-CAP-TENANCY-READY`; `changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:40`, `changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:52`, and `changed-hunk:docs/specs/platform/SP-8-instance-lifecycle-requests.md:72` do the same for SP-8.",
+          "`changed-hunk:docs/specs/platform/portfolio.json:1` is a JSON metadata alignment update in the one-line portfolio document; no runtime surface, selector, async, dependency, or CI behavior changed.",
+          "Because the candidate is documentation/spec alignment only and does not alter executable behavior, I found no candidate-caused severe reliability issue to block finalization."
+        ],
+        "result_hash": "sha256:1cf09ab5205422f8482e5dd8ce48a0b3f6b333455fcbd913bf57bd47d3621bd5"
+      }
+    ],
+    "findings": [],
+    "classifications": {},
+    "outcomes": {},
+    "fix_finding_ids": [],
+    "follow_ups": [],
+    "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "evidence_hash": "sha256:bb81dddc093bcb03cb643cd45f26d256051034f1f7a5f2d383195577f6dd6675"
+  }
+}
