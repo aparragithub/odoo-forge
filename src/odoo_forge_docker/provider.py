@@ -16,6 +16,7 @@ import json
 import os
 import subprocess
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -188,10 +189,16 @@ class DockerBackendProvider:
         except CredentialError as exc:
             raise ContainerRunError("credential injection failed") from exc
 
-        if self._container_exists(plan.postgres.name) or self._container_exists(plan.odoo.name):
+        bootstrap_name = f"{plan.odoo.name}-bootstrap"
+        if (
+            self._container_exists(plan.postgres.name)
+            or self._container_exists(plan.odoo.name)
+            or self._container_exists(bootstrap_name)
+        ):
             raise InstanceExistsError(
                 f"instance already exists: {plan.network.name} "
-                f"(postgres={plan.postgres.name!r}, odoo={plan.odoo.name!r})"
+                f"(postgres={plan.postgres.name!r}, odoo={plan.odoo.name!r}, "
+                f"bootstrap={bootstrap_name!r})"
             )
 
         created: list[_CreatedResource] = []
@@ -302,11 +309,18 @@ class DockerBackendProvider:
         self._exec(_network_create_argv(spec))
         created.append(("network", spec.name))
 
-    def _ensure_volume(self, spec: VolumeSpec, created: list[_CreatedResource]) -> None:
+    def _ensure_volume(self, spec: VolumeSpec, created: list[_CreatedResource]) -> bool:
         if self._volume_exists(spec.name):
-            return
-        self._exec(_volume_create_argv(spec))
+            return False
+        ownership = uuid.uuid4().hex
+        owned_spec = spec.model_copy(
+            update={"labels": {**spec.labels, "com.odoo-forge.create-token": ownership}}
+        )
+        self._exec(_volume_create_argv(owned_spec))
+        if not self._volume_has_label(spec.name, "com.odoo-forge.create-token", ownership):
+            raise ContainerRunError(f"volume ownership verification failed: {spec.name!r}")
         created.append(("volume", spec.name))
+        return True
 
     def _run_container(self, spec: ContainerSpec, created: list[_CreatedResource]) -> None:
         if spec.secret_env:
@@ -465,6 +479,16 @@ class DockerBackendProvider:
 
     def _volume_exists(self, name: str) -> bool:
         return self._exists(["docker", "volume", "inspect", name])
+
+    def _volume_has_label(self, name: str, key: str, value: str) -> bool:
+        result = self._run_raw(["docker", "volume", "inspect", name])
+        if result.returncode != 0:
+            return False
+        try:
+            labels = json.loads(result.stdout)[0].get("Labels") or {}
+        except (ValueError, TypeError, IndexError, AttributeError):
+            return False
+        return labels.get(key) == value
 
     def _container_exists(self, name: str) -> bool:
         return self._exists(["docker", "inspect", name])
