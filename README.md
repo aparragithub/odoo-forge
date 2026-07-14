@@ -22,6 +22,10 @@ for target state.
 
 ## Roadmap
 
+The [current stabilization roadmap](docs/specs/2026-07-14-stabilization-roadmap.md) orders the next
+reviewable work. `docs/specs/platform/portfolio.json` remains authoritative for product status and
+dependencies.
+
 1. **Operational foundation** — image factory, CLI core, workspace materialization, local Docker backend, and GHCR adapter. Implemented.
 2. **Provider-neutral foundations** — credentials, data artifacts, database-provider contract, project catalog, and durable operations. Implemented as contracts/domain behavior; concrete consumers remain separate work.
 3. **Published layers** — schema support exists, but registry resolution and override application remain incomplete.
