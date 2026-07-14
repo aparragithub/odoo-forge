@@ -352,17 +352,12 @@ def test_status_reports_not_running_without_raising_for_absent_instance(
     assert "Traceback" not in result.output
 
 
-@pytest.mark.parametrize("command", ["run", "status", "stop", "logs", "exec"])
+@pytest.mark.parametrize("command", ["run"])
 def test_scan_error_from_corrupted_checkout_exits_clean_one_error(
     command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # `ScanError` is a `WorkspaceError` -> `ManifestError`, NOT a
-    # `BackendError` — every command deriving `InstanceRef` via a workspace
-    # scan (`run`/`status`/`stop`/`logs`/`exec`, all sharing the same
-    # `scan()`/`materialize_state()` call `project`/`validate` use) must
-    # still catch it and exit clean. This documents CURRENT behavior; see
-    # DEBT-2 in tasks.md for why `stop`/`logs`/`exec` arguably should NOT
-    # need a workspace scan at all to derive a pure-identity `InstanceRef`.
+    # `run` needs materialized workspace state and must still translate a
+    # `ScanError` into a clean CLI failure.
     fake_workspace = _FakeWorkspaceProvider(
         scan_error=ScanError("cannot read materialized repo state at '/mnt/community/core'")
     )
@@ -379,6 +374,31 @@ def test_scan_error_from_corrupted_checkout_exits_clean_one_error(
     assert result.exit_code == 1
     assert result.output.count("error:") == 1
     assert "Traceback" not in result.output
+
+
+@pytest.mark.parametrize("command", ["status", "stop", "logs", "exec"])
+def test_instance_commands_do_not_scan_workspace(
+    command: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_if_created() -> _FakeWorkspaceProvider:
+        raise AssertionError("instance identity must not require a workspace scan")
+
+    not_running = RoleStatus(running=False, state="exited", ready=False)
+    fake_backend = _FakeBackendProvider(
+        status_result=InstanceStatus(odoo=not_running, postgres=not_running),
+        logs_result="captured logs",
+        exec_result=ExecResult(exit_code=0, stdout="captured output", stderr=""),
+    )
+    monkeypatch.setattr(main, "_make_workspace_provider", fail_if_created)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+
+    args = [command, "--manifest", str(_write_manifest(tmp_path))]
+    if command == "exec":
+        args += ["--", "echo", "hi"]
+
+    result = runner.invoke(app, args)
+
+    assert result.exit_code == 0
 
 
 def test_run_instance_exists_exits_clean_one_error(

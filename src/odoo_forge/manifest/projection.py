@@ -130,9 +130,9 @@ def plan_unlock(manifest: Manifest, layer_name: str, repo_url: str) -> UnlockPla
     read-only mount root (mirroring `plan_projection`), then derives the
     `source` read-only checkout path, the `dest` writable worktree path
     under the reserved `worktrees` root, and a deterministic `branch` name.
-    Raises `ProjectionError` naming the layer when it has no matching
-    manifest layer — the adapter's `promote` is the one that later raises
-    `AlreadyUnlockedError` if `dest` already exists.
+    Raises `ProjectionError` when the layer is unknown or the repository URL
+    is not declared by that layer. The adapter's `promote` is the one that
+    later raises `AlreadyUnlockedError` if `dest` already exists.
     """
     manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
         "core": manifest.core,
@@ -143,6 +143,16 @@ def plan_unlock(manifest: Manifest, layer_name: str, repo_url: str) -> UnlockPla
     matched_layer = manifest_layers_by_name.get(layer_name)
     if matched_layer is None:
         raise ProjectionError(f"layer '{layer_name}' has no matching manifest layer")
+
+    declared_urls = (
+        [matched_layer.url]
+        if isinstance(matched_layer, CoreLayer)
+        else [repo.url for repo in matched_layer.repos]
+        if isinstance(matched_layer, GitLayer)
+        else []
+    )
+    if repo_url not in declared_urls:
+        raise ProjectionError(f"repo does not belong to layer '{layer_name}'")
 
     mount_root = classify_root(matched_layer)
     repo_name = _repo_name(repo_url)

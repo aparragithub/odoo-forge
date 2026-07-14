@@ -1398,6 +1398,7 @@ def test_logs_absent_instance_raises_instance_not_found(monkeypatch: pytest.Monk
 
 def test_exec_returns_exit_code_stdout_stderr(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        assert kwargs["capture_output"] is True
         if argv[1] == "inspect" and len(argv) == 3:
             return _FakeCompletedProcess(0)
         if argv[1] == "exec":
