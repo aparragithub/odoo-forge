@@ -43,6 +43,7 @@ from odoo_forge.manifest.projection import (
     project_workspace,
 )
 from odoo_forge.manifest.schema import Manifest
+from odoo_forge.manifest.state import MaterializedState
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
@@ -481,16 +482,10 @@ def status(
         raise typer.Exit(code=1) from exc
 
     # No registry is persisted: identity is recomputed purely from the
-    # manifest/instance name (the same `plan_backend` -> `instance_ref` path
-    # `run` uses), then handed to the provider's `status`, which itself never
-    # raises for an absent instance (design "Absent/empty inspect"). The same
-    # `ManifestError`/`BackendError` boundary as `run` applies here too, since
-    # this command runs the identical workspace scan.
+    # manifest/instance name, then handed to the provider's `status`, which
+    # itself never raises for an absent instance (design "Absent/empty inspect").
     try:
-        workspace_provider = _make_workspace_provider()
-        scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
-        materialized = materialize_state(scanned, MOUNT_ROOTS)
-        plan = plan_backend(parsed, materialized, instance=instance)
+        plan = plan_backend(parsed, MaterializedState(), instance=instance)
         ref = instance_ref(plan)
         backend_provider = _make_backend_provider()
         report = backend_provider.status(ref)
@@ -511,10 +506,7 @@ def _derive_ref(manifest: Path, instance: str) -> InstanceRef:
     parsed by the caller), so independent invocations agree on the same
     names without any persisted state."""
     parsed = Manifest.model_validate(_read_manifest_data(manifest))
-    workspace_provider = _make_workspace_provider()
-    scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
-    materialized = materialize_state(scanned, MOUNT_ROOTS)
-    plan = plan_backend(parsed, materialized, instance=instance)
+    plan = plan_backend(parsed, MaterializedState(), instance=instance)
     return instance_ref(plan)
 
 
@@ -528,11 +520,8 @@ def stop(
     ),
 ) -> None:
     """Stop and remove `ref`'s containers/network, preserving named volumes."""
-    # Same boundary as `run`/`status`: a `ManifestError` (malformed manifest,
-    # `ScanError` from a corrupted checkout), a `ValidationError` (schema
-    # mismatch), or any `BackendError` (including `InstanceNotFoundError` for
-    # an absent instance) surfaces as a single clean message, never a raw
-    # traceback.
+    # Same boundary as `status`: malformed manifests, schema mismatches, and
+    # backend errors surface as a single clean message, never a raw traceback.
     try:
         ref = _derive_ref(manifest, instance)
         backend_provider = _make_backend_provider()

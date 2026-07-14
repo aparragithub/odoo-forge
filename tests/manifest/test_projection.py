@@ -323,3 +323,9 @@ class TestPlanUnlock:
 
         with pytest.raises(ProjectionError, match="ghost-layer"):
             plan_unlock(manifest, "ghost-layer", "https://example.com/ghost.git")
+
+    def test_rejects_undeclared_repo_with_same_basename(self) -> None:
+        manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+
+        with pytest.raises(ProjectionError, match="does not belong to layer 'custom-x'"):
+            plan_unlock(manifest, "custom-x", "https://attacker.example/other/odoo-partner.git")
