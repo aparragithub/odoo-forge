@@ -15,6 +15,7 @@ created-only rollback (PR-2a-ii). PR-2b adds `status()`/`stop()`/`logs()`/
 import json
 import os
 import subprocess
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -52,6 +53,7 @@ DEFAULT_PG_POLL_INTERVAL_SECONDS = 1.0
 # Two complete 150s health-failure envelopes permit one recovery window.
 DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS = 300.0
 DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = 5.0
+_BOOTSTRAP_TIMEOUT_SECONDS = 300.0
 
 _DAEMON_DOWN_MARKER = "Cannot connect to the Docker daemon"
 _IMAGE_NOT_FOUND_MARKER = "Unable to find image"
@@ -67,6 +69,7 @@ _PULL_AUTH_MARKERS = (
     "authentication required",
     "denied",
 )
+_BOOTSTRAP_OUTPUT_LIMIT = 8_000
 
 _ROLE_VOLUME_TARGET: dict[ContainerRole, str] = {
     "postgres": "/var/lib/postgresql/data",
@@ -132,6 +135,19 @@ def _run_container_argv(
     return argv
 
 
+def _bootstrap_container_argv(
+    spec: ContainerSpec,
+    secret_files: Path | Mapping[str, Path] | None = None,
+    cidfile: Path | None = None,
+) -> list[str]:
+    """Build the foreground, portless base-schema initialization command."""
+    argv = _run_container_argv(spec.model_copy(update={"ports": {}}), secret_files)
+    argv.remove("-d")
+    if cidfile is not None:
+        argv[2:2] = ["--cidfile", str(cidfile)]
+    return [*argv, "-i", "base", "--stop-after-init", "--no-http"]
+
+
 def _pull_image_argv(spec: ContainerSpec) -> list[str]:
     return ["docker", "pull", spec.image]
 
@@ -189,27 +205,35 @@ class DockerBackendProvider:
         except CredentialError as exc:
             raise ContainerRunError("credential injection failed") from exc
 
-        bootstrap_name = f"{plan.odoo.name}-bootstrap"
+        bootstrap = plan.odoo.model_copy(update={"name": f"{plan.odoo.name}-bootstrap"})
         if (
             self._container_exists(plan.postgres.name)
             or self._container_exists(plan.odoo.name)
-            or self._container_exists(bootstrap_name)
+            or self._container_exists(bootstrap.name)
         ):
             raise InstanceExistsError(
                 f"instance already exists: {plan.network.name} "
                 f"(postgres={plan.postgres.name!r}, odoo={plan.odoo.name!r}, "
-                f"bootstrap={bootstrap_name!r})"
+                f"bootstrap={bootstrap.name!r})"
             )
 
         created: list[_CreatedResource] = []
         try:
             self._pull_image(plan.odoo)
             self._ensure_network(plan.network, created)
+            pgdata_created = self._ensure_volume(plan.postgres.volumes[0], created)
             for volume in plan.volumes:
-                self._ensure_volume(volume, created)
+                if volume.name != plan.postgres.volumes[0].name:
+                    self._ensure_volume(volume, created)
 
             self._run_container(plan.postgres, created)
             self._wait_pg_ready(plan.postgres)
+
+            if pgdata_created:
+                self._run_bootstrap(bootstrap, _planned_env_values(plan), created)
+                bootstrap_resource = created[-1]
+                self._exec(["docker", "rm", "-f", "-v", bootstrap_resource[1]])
+                created.remove(bootstrap_resource)
 
             self._run_container(plan.odoo, created)
             self._wait_odoo_healthy(plan.odoo)
@@ -329,6 +353,58 @@ class DockerBackendProvider:
         else:
             self._exec(_run_container_argv(spec))
         created.append(("container", spec.name))
+
+    def _run_bootstrap(
+        self,
+        spec: ContainerSpec,
+        planned_env_values: Sequence[str],
+        created: list[_CreatedResource],
+    ) -> None:
+        """Initialize Odoo base only for PG data owned by this invocation."""
+        with tempfile.TemporaryDirectory(prefix="odoo-forge-bootstrap-") as directory:
+            cidfile = Path(directory) / "container.cid"
+            try:
+                if spec.secret_env:
+                    with self._credential_injector.secret_files(spec) as secret_files:
+                        result = self._run_raw(
+                            _bootstrap_container_argv(spec, secret_files, cidfile),
+                            timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
+                        )
+                else:
+                    result = self._run_raw(
+                        _bootstrap_container_argv(spec, cidfile=cidfile),
+                        timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
+                    )
+            except Exception as exc:
+                self._record_bootstrap_identity(cidfile, created)
+                raise ContainerRunError(
+                    f"bootstrap failed; {self._readiness_diagnostics(spec, planned_env_values)}"
+                ) from exc
+
+            if not self._record_bootstrap_identity(cidfile, created):
+                raise ContainerRunError("bootstrap failed: safe container identity unavailable")
+
+        if result.returncode == 0:
+            return
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part)[
+            -_BOOTSTRAP_OUTPUT_LIMIT:
+        ]
+        raise ContainerRunError(
+            f"bootstrap failed with exit code {result.returncode}; "
+            f"output={self._redact(output, planned_env_values)}; "
+            f"{self._readiness_diagnostics(spec, planned_env_values)}"
+        )
+
+    @staticmethod
+    def _record_bootstrap_identity(cidfile: Path, created: list[_CreatedResource]) -> bool:
+        try:
+            container_id = cidfile.read_text().strip()
+        except OSError:
+            return False
+        if not container_id:
+            return False
+        created.append(("container", container_id))
+        return True
 
     def _pull_image(self, spec: ContainerSpec) -> None:
         """Pull the planned image before container start and classify failures.
