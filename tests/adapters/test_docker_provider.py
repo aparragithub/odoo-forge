@@ -1117,14 +1117,40 @@ def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.M
     assert net_rm_calls[0][-1] == NETWORK
 
 
-def test_readiness_failure_captures_diagnostics_before_rollback(
+def test_readiness_timeout_reports_selected_inspect_and_bounded_combined_logs_before_rollback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     router = _make_router(
         not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
         odoo_healthy_after=9_999,
     )
-    monkeypatch.setattr(subprocess, "run", router)
+    inspect_payload = json.dumps(
+        [
+            {
+                "Config": {"Env": ["DO_NOT_REPORT"]},
+                "Mounts": [{"Source": "DO_NOT_REPORT"}],
+                "State": {
+                    "Status": "running",
+                    "Running": True,
+                    "ExitCode": 0,
+                    "Error": "",
+                    "OOMKilled": False,
+                    "Health": {"Status": "unhealthy", "FailingStreak": 2},
+                },
+            }
+        ]
+    )
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv == ["docker", "inspect", ODOO_NAME] and ODOO_NAME in router._created_containers:
+            router.calls.append(list(argv))
+            return _FakeCompletedProcess(0, stdout=inspect_payload)
+        if argv == ["docker", "logs", "--tail", "200", ODOO_NAME]:
+            router.calls.append(list(argv))
+            return _FakeCompletedProcess(0, stdout="stdout excerpt", stderr="stderr excerpt")
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
 
     clock = _FakeClock()
     provider = DockerBackendProvider(
@@ -1137,12 +1163,131 @@ def test_readiness_failure_captures_diagnostics_before_rollback(
     with pytest.raises(ContainerRunError) as excinfo:
         provider.run(_make_plan())
 
-    assert "readiness diagnostics" in str(excinfo.value)
-    log_idx = next(i for i, call in enumerate(router.calls) if call[1] == "logs")
+    message = str(excinfo.value)
+    assert "odoo readiness timed out after 1s" in message
+    assert "final_health=unhealthy" in message
+    assert '"FailingStreak": 2' in message
+    assert "stdout excerpt" in message
+    assert "stderr excerpt" in message
+    assert "DO_NOT_REPORT" not in message
+    log_idx = router.calls.index(["docker", "logs", "--tail", "200", ODOO_NAME])
     rollback_idx = next(
-        i for i, call in enumerate(router.calls) if call[1] == "rm" and "-f" in call
+        i
+        for i, call in enumerate(router.calls)
+        if call[1] == "rm" and "-f" in call and call[-1] == ODOO_NAME
     )
     assert log_idx < rollback_idx
+
+
+@pytest.mark.parametrize("capture_failure", ["malformed", "nonzero", "exception"])
+def test_readiness_timeout_uses_unavailable_markers_when_capture_fails(
+    monkeypatch: pytest.MonkeyPatch, capture_failure: str
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        is_created = ODOO_NAME in router._created_containers
+        if argv == ["docker", "inspect", ODOO_NAME] and is_created:
+            if capture_failure == "exception" and kwargs["timeout"] == 30.0:
+                raise OSError("inspect unavailable")
+            return _FakeCompletedProcess(0, stdout="not-json")
+        if argv == ["docker", "logs", "--tail", "200", ODOO_NAME]:
+            if capture_failure == "exception":
+                raise OSError("logs unavailable")
+            return _FakeCompletedProcess(1, stderr="logs unavailable")
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
+    )
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        provider.run(_make_plan())
+
+    message = str(excinfo.value)
+    assert "final_health=unknown" in message
+    assert "inspect=unavailable" in message
+    assert "logs=unavailable" in message
+
+
+def test_readiness_timeout_redacts_resolved_and_planned_environment_values_longest_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved_secret = "database-value"
+    shorter_value = resolved_secret
+    longer_value = f"{shorter_value}-suffix"
+    plan = _make_plan().model_copy(
+        update={
+            "postgres": _make_plan().postgres.model_copy(
+                update={
+                    "env": {
+                        "POSTGRES_PASSWORD": shorter_value,
+                        "POSTGRES_USER": longer_value,
+                        "POSTGRES_DB": "planned-database",
+                    },
+                    "secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://postgres")},
+                }
+            ),
+            "odoo": _make_plan().odoo.model_copy(
+                update={
+                    "env": {
+                        "DB_HOST": "planned-host",
+                        "DB_PORT": "planned-port",
+                        "DB_USER": "planned-user",
+                        "DB_PASSWORD": "planned-password",
+                    }
+                }
+            ),
+        }
+    )
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+    raw_diagnostics = " ".join(
+        [resolved_secret, shorter_value, longer_value, *plan.odoo.env.values()]
+    )
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv == ["docker", "inspect", ODOO_NAME] and ODOO_NAME in router._created_containers:
+            return _FakeCompletedProcess(
+                0,
+                stdout=json.dumps(
+                    [{"State": {"Error": raw_diagnostics, "Health": {"Status": "starting"}}}]
+                ),
+            )
+        if argv == ["docker", "logs", "--tail", "200", ODOO_NAME]:
+            return _FakeCompletedProcess(0, stdout=raw_diagnostics, stderr=raw_diagnostics)
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
+        credential_injector=SopsEnvFileInjector(resolver=lambda _handle: resolved_secret),
+    )
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        provider.run(plan)
+
+    message = str(excinfo.value)
+    assert "[REDACTED]-suffix" not in message
+    assert message.count("[REDACTED]") >= 3
+    assert resolved_secret not in message
+    assert shorter_value not in message
+    assert longer_value not in message
+    assert all(value not in message for value in plan.odoo.env.values() if value)
 
 
 def test_rollback_failure_is_reported_with_its_residual_resource(
@@ -1167,11 +1312,13 @@ def test_rollback_failure_is_reported_with_its_residual_resource(
         health_poll_interval=1.0,
     )
 
-    with pytest.raises(
-        ContainerRunError,
-        match="cleanup incomplete: container=odoo-forge-proj-default-odoo",
-    ):
+    with pytest.raises(ContainerRunError) as excinfo:
         provider.run(_make_plan())
+
+    message = str(excinfo.value)
+    assert "odoo readiness timed out after 1s" in message
+    assert "final_health=" in message
+    assert f"cleanup incomplete: container={ODOO_NAME}" in message
 
 
 def test_reattach_then_fail_preserves_existing_volume(monkeypatch: pytest.MonkeyPatch) -> None:
