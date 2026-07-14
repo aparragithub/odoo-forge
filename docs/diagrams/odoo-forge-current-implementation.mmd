@@ -18,6 +18,16 @@ flowchart LR
         workspacePort[WorkspaceProvider]
         backendPort[BackendProvider]
         imagePort[ImageRegistryProvider]
+        databasePort[DatabaseProvider contract only]
+        durableStore[Durable operation store contract only]
+    end
+
+    subgraph foundations[Implemented Domain Foundations - No Operational Adapter]
+        projectCatalog[Project catalog resolution/validation]
+        credentials[Credential materialization]
+        artifacts[Opaque data artifacts]
+        databaseTypes[Database lifecycle values]
+        durable[Durable operation lifecycle/recovery]
     end
 
     subgraph adapters[Implemented Adapters]
@@ -50,14 +60,20 @@ flowchart LR
     docker --> ghcr
     docker --> fs
     statusParse --> docker
+    databaseTypes --> databasePort
+    credentials --> databasePort
+    artifacts --> databasePort
+    durable --> durableStore
 
     classDef cli fill:#FFF3BF,stroke:#7C5C00,stroke-width:2px,color:#3B2F00
     classDef core fill:#D0EBFF,stroke:#1864AB,stroke-width:2px,color:#102A43
     classDef port fill:#D3F9D8,stroke:#2B8A3E,stroke-width:2px,color:#0B3D1B
     classDef adapter fill:#E5DBFF,stroke:#5F3DC4,stroke-width:2px,color:#27145E
     classDef external fill:#FFE3E3,stroke:#C92A2A,stroke-width:2px,color:#4A0D0D
+    classDef foundation fill:#FFF4E6,stroke:#D9480F,stroke-width:2px,stroke-dasharray: 5 5,color:#5F2500
     class developer,cli cli
     class manifest,composition,locking,projection,backendPlan,statusParse,registryTypes,drift core
-    class sourcePort,workspacePort,backendPort,imagePort port
+    class sourcePort,workspacePort,backendPort,imagePort,databasePort,durableStore port
     class git,workspaceAdapter,docker,registry adapter
     class gitCli,dockerCli,ghcr,fs,lock external
+    class projectCatalog,credentials,artifacts,databaseTypes,durable foundation

@@ -6,12 +6,24 @@ An Odoo project (core + enterprise + OCA + localization + custom addons) is a **
 
 ## Status
 
-Phase 1 — Image Factory implemented and merged to `main`. CI builds and publishes multi-arch (amd64 + arm64) Odoo Community base images to GHCR. See [the product design spec](docs/specs/2026-07-05-modular-odoo-platform-design.md) and the [Phase 1 design](docs/specs/2026-07-05-phase-1-image-factory-design.md).
+The operational implementation includes manifest and lockfile handling, Git-backed workspace
+materialization, the local Docker Odoo/PostgreSQL backend, GHCR image operations, and the image
+factory. The repository also contains accepted provider-neutral foundations for credentials, data
+artifacts, database providers, project catalog resolution, and durable operations.
+
+Those foundations are contracts and domain behavior, not operational adapters. In particular, the
+repository does not yet contain a standalone database adapter, managed data-environment workflow,
+tenancy implementation, control plane, remote backend, RBAC service, or web UI. The authoritative
+status and acceptance evidence are in
+[`docs/specs/platform/portfolio.json`](docs/specs/platform/portfolio.json). See the
+[current implementation guide](docs/diagrams/odoo-forge-current-implementation-guide.md) for the
+shipped boundary and the [complete-platform diagram](docs/diagrams/odoo-forge-complete-platform.mmd)
+for target state.
 
 ## Roadmap
 
-1. **Image factory** — multi-version Odoo base images, built and published by CI. Done.
-2. **CLI core** — `project.yaml` manifest, workspace materialization, local backend.
-3. **Published layers** — enterprise/OCA/localization as versioned artifacts with per-layer access control.
-4. **Control plane** — instance lifecycle server (dev/QA spawning, backups, governance).
-5. **Remote backends** — EC2, Kubernetes, Fargate.
+1. **Operational foundation** — image factory, CLI core, workspace materialization, local Docker backend, and GHCR adapter. Implemented.
+2. **Provider-neutral foundations** — credentials, data artifacts, database-provider contract, project catalog, and durable operations. Implemented as contracts/domain behavior; concrete consumers remain separate work.
+3. **Published layers** — schema support exists, but registry resolution and override application remain incomplete.
+4. **Platform workflows** — standalone database adapter, managed data environments, tenancy, control plane, governance, and actor journeys. Planned or absent as recorded in the portfolio.
+5. **Remote backends and interfaces** — EC2, Kubernetes, Fargate, RBAC, and web UI. Target state only.

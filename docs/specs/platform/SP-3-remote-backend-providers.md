@@ -1,5 +1,8 @@
 # SP-3 — Remote BackendProvider adapters
 
+> **Historical brief (superseded).** Preserved for SP-era design lineage. Use
+> [`portfolio.json`](portfolio.json) for current status, evidence, dependencies, and handoffs.
+
 **Layer:** Ports & adapters · **Status:** planned · **SDD change name (proposed):** `platform-remote-backends`
 
 ## Purpose

@@ -1,6 +1,11 @@
 # Phase 2 — Vertical Slices Roadmap
 
-**Status:** living document · **Last updated:** 2026-07-07 (Slice 2 FULLY DONE)
+> **Historical roadmap (superseded).** This document preserves the Phase 2 delivery record and
+> must not be used as the current platform plan. Use
+> [`docs/specs/platform/portfolio.json`](platform/portfolio.json) for authoritative status,
+> dependencies, acceptance evidence, and handoffs.
+
+**Status:** historical/superseded · **Last updated:** 2026-07-07 (Slice 2 FULLY DONE)
 
 Phase 2 (CLI core + manifest + local backend) is delivered as vertical slices, each a
 self-contained SDD change. This is the forward map: what each slice owns and what feeds

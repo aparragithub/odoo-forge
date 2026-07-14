@@ -1,5 +1,9 @@
 # SP-2 — DatabaseProvider + DB lifecycle
 
+> **Historical brief (superseded).** Preserved for SP-era design lineage. The current portfolio
+> separates the accepted `DatabaseProvider` contract from the still-absent concrete adapter and
+> managed data workflows. Use [`portfolio.json`](portfolio.json) as authority.
+
 **Layer:** Ports & adapters · **Status:** planned · **SDD change name (proposed):** `platform-database-provider`
 
 ## Purpose

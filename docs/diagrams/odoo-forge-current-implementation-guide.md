@@ -1,5 +1,13 @@
 # Odoo Forge actual explicado simple
 
+> **Implementation boundary (canonical note).** The Mermaid source is authoritative. Solid adapter
+> paths represent operational implementations. Project catalog, credentials, data artifacts,
+> `DatabaseProvider`, and durable operations are implemented provider-neutral foundations only: no standalone database
+> adapter or durable store is wired into an operational workflow. Tenancy, managed data
+> environments, control-plane services, remote backends, RBAC, and the web UI remain absent target
+> state. The derived SVG requires regeneration from the updated Mermaid source; no deterministic
+> local regeneration command is recorded in this repository, so the SVG was not hand-edited.
+
 Este documento explica el diagrama `odoo-forge-current-implementation.mmd` en palabras simples. La idea central es esta: una persona usa el comando `forge`, y `forge` coordina distintas partes del sistema para leer un proyecto Odoo, resolver versiones, preparar el código, levantar contenedores y trabajar con imágenes.
 
 ## Resumen rápido
@@ -128,6 +136,7 @@ Por ejemplo, el núcleo puede decir: “para este proyecto necesito estos reposi
 | Status parsing | Interpreta la información que devuelve Docker para decir si una instancia está corriendo, detenida o no existe. |
 | Image registry refs/errors | Normaliza nombres de imágenes y errores relacionados con imágenes. Ayuda a trabajar con referencias a imágenes de forma consistente. |
 | Drift validation | Compara la intención del proyecto con lo que realmente existe. Sirve para detectar desvíos entre `project.yaml`, `project.lock` y el workspace. |
+| Project catalog | Resuelve y valida un catálogo de proyectos como fundamento de dominio, todavía sin flujo operativo conectado. |
 
 ## Puertos
 
@@ -261,9 +270,10 @@ Según el diagrama actual, ya existe:
 3. Puertos para código fuente, workspace, backend e imágenes.
 4. Adaptadores concretos para Git, workspace local, Docker y GHCR.
 5. Integración con herramientas externas como `git`, Docker, GHCR, filesystem y `project.lock`.
+6. Fundamentos neutrales para catálogo de proyectos, credenciales, artefactos de datos, lifecycle de bases de datos y operaciones durables, todavía sin adaptadores operativos propios.
 
 ## Qué no muestra este diagrama
 
-Este diagrama representa lo desarrollado actualmente. No muestra todavía la visión completa de plataforma con control plane, RBAC, UI web, múltiples backends remotos, lifecycle de bases de datos o CI/CD completo.
+Este diagrama representa lo desarrollado actualmente. No muestra todavía la visión completa de plataforma con control plane, RBAC, UI web, múltiples backends remotos, un adapter operativo para el lifecycle de bases de datos o CI/CD completo.
 
 Para eso está el diagrama de plataforma completa: `odoo-forge-complete-platform.mmd`.

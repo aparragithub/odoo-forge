@@ -124,7 +124,7 @@ directa sigue siendo válida durante la materialización de confianza y la repro
 
 | Campo de planificación | Límite |
 | --- | --- |
-| Evidencia actual | `src/odoo_forge/ports/durable_operation_store.py:16-20`, `:34-51`, `:96-110`; `tests/ports/test_durable_operation_store.py:306-367`; `openspec/changes/CAP-DURABLE-OPERATIONS-RECORD-FIX/design.md:65-74`, `:228` |
+| Evidencia actual | `src/odoo_forge/ports/durable_operation_store.py:16-20`, `:34-51`, `:96-110`; `tests/ports/test_durable_operation_store.py:306-367`; `openspec/changes/archive/2026-07-14-CAP-DURABLE-OPERATIONS-RECORD-FIX/design.md:65-74`, `:228` |
 | Pruebas de adopción | Para el primer almacén concreto, demostrar el CAS atómico de `CLEANUP_REQUIRED` a `CLOSED`, el incremento de revisión, la conservación exacta del bundle terminal y el rechazo de registros ausentes, terminales sin residuos, ya cerrados y con conflictos de revisión. Demostrar también que la carga/reproducción de confianza acepta registros cerrados con historial residual materializados directamente. |
 | Criterios de salida | No hay criterios de salida de implementación actuales. La futura adopción del almacén solo estará completa cuando las escrituras persistidas tengan una única autoridad de transición y los snapshots materializados conserven el contrato de coherencia actual. |
 | Límite de reversión | N/A para el núcleo actual. Un futuro cambio de adaptador debe mantener su implementación, pruebas de conformidad y migración de persistencia, si existe, en una unidad que pueda revertirse con seguridad. |
@@ -412,3 +412,19 @@ commits ni PR. No existe ningún commit para esta hoja de ruta en el momento de 
 - [ ] Unidad 9: Si se cumple G6 y se autoriza por separado, ejecutar el juicio opcional de integración entre módulos.
 - [ ] Si se autoriza Judgment Day, inmovilizar su objetivo inmutable y aplicar el protocolo terminal de dos rondas.
 - [ ] Cerrar con una revisión ordinaria aprobada o un resultado terminal de Judgment Day; no dejar un linaje de revisión abierto indefinidamente.
+
+## Posdata — 2026-07-14
+
+Esta nota, añadida sin modificar el contenido anterior, actualiza los hechos de entrega sin
+reescribir el registro de revisión.
+
+- El endurecimiento de credenciales del registro está confirmado en `a11eb99`.
+- La limpieza del secreto temporal de factory está confirmada en `44f3213`.
+- La clasificación de referencias remotas de Git está confirmada en `02e2674`.
+- Esta hoja de ruta de auditoría y su traducción al español están confirmadas en `db82fc1`.
+- El delta completado `CAP-DURABLE-OPERATIONS-RECORD-FIX` se sincronizó en
+  `openspec/specs/durable-operations/spec.md` y se archivó en
+  `openspec/changes/archive/2026-07-14-CAP-DURABLE-OPERATIONS-RECORD-FIX/`.
+- El archivo conserva el informe original de verificación PASS WITH WARNINGS. Su única advertencia
+  de trazabilidad no se convirtió en evidencia satisfactoria y no se inició una nueva revisión.
+- El Judgment Day opcional entre módulos sigue sin estar autorizado ni realizado.

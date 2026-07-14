@@ -63,8 +63,8 @@ class TestValidator(unittest.TestCase):
             [plan["meta"]["evidence_catalog"][pointer] for pointer in acceptance["evidence"]],
             [
                 "Engram #6647",
-                "openspec/changes/CAP-CREDENTIALS/specs/credential-materialization/spec.md",
-                "openspec/changes/CAP-CREDENTIALS/design.md",
+                "openspec/changes/archive/2026-07-11-CAP-CREDENTIALS/specs/credential-materialization/spec.md",
+                "openspec/changes/archive/2026-07-11-CAP-CREDENTIALS/design.md",
                 "tests/credentials/test_materialization.py",
             ],
         )
