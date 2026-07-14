@@ -29,7 +29,9 @@ from odoo_forge.credentials.types import CredentialHandle
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import (
+    _BOOTSTRAP_TIMEOUT_SECONDS,
     DockerBackendProvider,
+    _bootstrap_container_argv,
     _docker_env,
     _health_status,
     _network_create_argv,
@@ -40,6 +42,7 @@ from odoo_forge_docker.provider import (
 NETWORK = "odoo-forge-proj-default"
 DB_NAME = "odoo-forge-proj-default-db"
 ODOO_NAME = "odoo-forge-proj-default-odoo"
+BOOTSTRAP_NAME = f"{ODOO_NAME}-bootstrap"
 PGDATA_VOL = "odoo-forge-proj-default-pgdata"
 FILESTORE_VOL = "odoo-forge-proj-default-filestore"
 
@@ -174,6 +177,8 @@ class _Router:
         self.odoo_healthy_after: int = 0
         self._odoo_attempts = 0
         self._created_containers: set[str] = set()
+        self._volume_labels: dict[str, dict[str, str]] = {}
+        self.bootstrap_exists = False
 
     def __call__(self, argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         self.calls.append(list(argv))
@@ -184,9 +189,15 @@ class _Router:
             return _FakeCompletedProcess(1 if name in self.not_found else 0)
         if argv[1:3] == ["volume", "inspect"]:
             name = argv[3]
-            return _FakeCompletedProcess(1 if name in self.not_found else 0)
+            if name in self.not_found:
+                return _FakeCompletedProcess(1)
+            return _FakeCompletedProcess(
+                0, stdout=json.dumps([{"Labels": self._volume_labels.get(name, {})}])
+            )
         if argv[1] == "inspect" and len(argv) == 3:
             name = argv[2]
+            if name == BOOTSTRAP_NAME and name not in self._created_containers:
+                return _FakeCompletedProcess(0 if self.bootstrap_exists else 1)
             if name not in self._created_containers:
                 # Pre-creation existence check (precheck): only "exists" if
                 # NOT in `not_found` — used for the run() refuse-if-exists gate.
@@ -205,6 +216,13 @@ class _Router:
         if argv[1:3] == ["network", "create"]:
             return _FakeCompletedProcess(0)
         if argv[1:3] == ["volume", "create"]:
+            name = argv[-1]
+            self._volume_labels[name] = {
+                value.split("=", 1)[0]: value.split("=", 1)[1]
+                for index, value in enumerate(argv)
+                if index > 0 and argv[index - 1] == "--label"
+            }
+            self.not_found.discard(name)
             return _FakeCompletedProcess(0)
         if argv[1] == "pull":
             if self.pull_error_stderr is not None:
@@ -213,6 +231,8 @@ class _Router:
         if argv[1] == "run":
             name = argv[argv.index("--name") + 1]
             self._created_containers.add(name)
+            if "--cidfile" in argv:
+                Path(argv[argv.index("--cidfile") + 1]).write_text(name)
             return _FakeCompletedProcess(0, stdout="container-id")
         if argv[1] == "exec" and "pg_isready" in argv:
             self._pg_attempts += 1
@@ -267,6 +287,42 @@ def test_run_container_argv_includes_network_env_volumes_ports() -> None:
     assert "-e" in argv and "POSTGRES_USER=odoo" in argv
     assert "-v" in argv and f"{PGDATA_VOL}:/var/lib/postgresql/data" in argv
     assert argv[-1] == "postgres:16"
+
+
+def test_bootstrap_argv_reuses_planned_contract_without_ports_or_shell() -> None:
+    spec = _make_plan().odoo.model_copy(
+        update={
+            "name": BOOTSTRAP_NAME,
+            "mounts": [
+                Mount(
+                    root="custom",
+                    host_path="/host/addons",
+                    container_path="/mnt/addons",
+                    read_only=True,
+                )
+            ],
+            "secret_env": {"DB_PASSWORD": CredentialHandle("sops://odoo-db-password")},
+        }
+    )
+
+    argv = _bootstrap_container_argv(spec, {"DB_PASSWORD": Path("/tmp/db-password")})
+
+    assert argv[:6] == ["docker", "run", "--name", BOOTSTRAP_NAME, "--network", NETWORK]
+    assert "-d" not in argv
+    assert "-p" not in argv
+    assert "sh" not in argv
+    assert "DB_HOST=odoo-forge-proj-default-db" in argv
+    assert f"{FILESTORE_VOL}:/var/lib/odoo" in argv
+    assert "/host/addons:/mnt/addons:ro" in argv
+    assert "DB_PASSWORD_FILE=/run/secrets/DB_PASSWORD" in argv
+    assert "type=bind,source=/tmp/db-password,target=/run/secrets/DB_PASSWORD,readonly" in argv
+    assert argv[-5:] == [
+        "odoo-forge-odoo:19.0",
+        "-i",
+        "base",
+        "--stop-after-init",
+        "--no-http",
+    ]
 
 
 def test_sops_env_file_injector_writes_mode_0600_and_cleans_up() -> None:
@@ -413,7 +469,7 @@ def test_provider_uses_secret_files_and_removes_secrets_from_subprocess_observab
         for token in call
         if token.startswith("type=bind,source=") and ",target=/run/secrets/" in token
     ]
-    assert len(secret_file_paths) == 2
+    assert len(secret_file_paths) == 3
     assert all(not path.exists() for path in secret_file_paths)
     assert all("--env-file" not in call for call in router.calls)
     assert all(secret not in " ".join(call) for call in router.calls)
@@ -700,6 +756,245 @@ def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch
             assert env["LC_ALL"] == "C"
 
 
+def test_preexisting_volume_is_not_created_or_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = _make_router()
+    monkeypatch.setattr(subprocess, "run", router)
+    created: list[tuple[str, str] | tuple[str, str, str]] = []
+
+    owned = DockerBackendProvider()._ensure_volume(_make_plan().volumes[0], created)
+
+    assert owned is False
+    assert created == []
+    assert not any(call[1:3] == ["volume", "create"] for call in router.calls)
+
+
+def test_concurrent_foreign_volume_is_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = _make_router(not_found={PGDATA_VOL})
+    original = router.__call__
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        result = original(argv, **kwargs)
+        if argv[1:3] == ["volume", "create"]:
+            router._volume_labels[PGDATA_VOL] = {"foreign": "owner"}
+        return result
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    created: list[tuple[str, str] | tuple[str, str, str]] = []
+
+    with pytest.raises(ContainerRunError, match="volume ownership verification failed"):
+        DockerBackendProvider()._ensure_volume(_make_plan().volumes[0], created)
+
+    assert created[0][:2] == ("volume", PGDATA_VOL)
+
+
+def test_created_volume_is_owned_only_when_unique_label_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={PGDATA_VOL})
+    monkeypatch.setattr(subprocess, "run", router)
+    created: list[tuple[str, str] | tuple[str, str, str]] = []
+
+    owned = DockerBackendProvider()._ensure_volume(_make_plan().volumes[0], created)
+
+    assert owned is True
+    assert created[0][:2] == ("volume", PGDATA_VOL)
+    assert router._volume_labels[PGDATA_VOL]["com.odoo-forge.create-token"]
+
+
+def test_malformed_post_create_inspect_reports_owned_volume_cleanup_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1:3] == ["volume", "inspect"] and PGDATA_VOL in router._volume_labels:
+            return _FakeCompletedProcess(0, stdout="not-json")
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        DockerBackendProvider().run(_make_plan())
+
+    assert f"cleanup incomplete: volume={PGDATA_VOL}" in str(excinfo.value)
+    assert ["docker", "volume", "rm", PGDATA_VOL] not in router.calls
+
+
+def test_run_bootstraps_only_new_postgres_data_before_normal_odoo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+
+    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    bootstrap_run = next(
+        call
+        for call in router.calls
+        if call[1] == "run" and call[call.index("--name") + 1] == BOOTSTRAP_NAME
+    )
+    normal_run = next(
+        call
+        for call in router.calls
+        if call[1] == "run" and call[call.index("--name") + 1] == ODOO_NAME
+    )
+    bootstrap_rm = ["docker", "rm", "-f", "-v", BOOTSTRAP_NAME]
+    assert bootstrap_run[-4:] == ["-i", "base", "--stop-after-init", "--no-http"]
+    assert router.kwargs[router.calls.index(bootstrap_run)]["timeout"] == 300.0
+    assert _BOOTSTRAP_TIMEOUT_SECONDS == 300.0
+    assert router.calls.index(bootstrap_run) < router.calls.index(bootstrap_rm)
+    assert router.calls.index(bootstrap_rm) < router.calls.index(normal_run)
+
+
+def test_run_skips_bootstrap_for_reused_postgres_data(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = _make_router(not_found={NETWORK, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+
+    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    assert not any(call[1] == "run" and BOOTSTRAP_NAME in call for call in router.calls)
+
+
+def test_run_refuses_bootstrap_name_collision_before_provisioning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router.bootstrap_exists = True
+    monkeypatch.setattr(subprocess, "run", router)
+
+    with pytest.raises(InstanceExistsError, match=BOOTSTRAP_NAME):
+        DockerBackendProvider().run(_make_plan())
+
+    assert not any(call[1:3] == ["network", "create"] for call in router.calls)
+
+
+def test_foreign_volume_has_no_deletion_or_bootstrap_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        pg_ready_after=9_999,
+    )
+    original = router.__call__
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        result = original(argv, **kwargs)
+        if argv[1:3] == ["volume", "create"] and argv[-1] == PGDATA_VOL:
+            router._volume_labels[PGDATA_VOL] = {"foreign": "owner"}
+        return result
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    clock = _FakeClock()
+
+    with pytest.raises(ContainerRunError, match="volume ownership verification failed"):
+        DockerBackendProvider(monotonic=clock, sleep=clock.advance).run(_make_plan())
+
+    assert ["docker", "volume", "rm", PGDATA_VOL] not in router.calls
+    assert ["docker", "network", "rm", NETWORK] in router.calls
+    assert not any(call[1] in {"run", "exec"} for call in router.calls)
+
+
+@pytest.mark.parametrize("failure", [subprocess.TimeoutExpired([], 300.0), OSError("lost pipe")])
+def test_bootstrap_exception_removes_only_cidfile_container(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1] == "run" and argv[argv.index("--name") + 1] == BOOTSTRAP_NAME:
+            router.calls.append(list(argv))
+            Path(argv[argv.index("--cidfile") + 1]).write_text("owned-bootstrap-id")
+            raise failure
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ContainerRunError, match="bootstrap failed"):
+        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    assert ["docker", "rm", "-f", "-v", "owned-bootstrap-id"] in router.calls
+    assert ["docker", "rm", "-f", "-v", BOOTSTRAP_NAME] not in router.calls
+
+
+def test_bootstrap_failure_redacts_bounded_output_and_prevents_normal_odoo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "bootstrap-secret"
+    output = "x" * 10 + secret + "z" * 7_995
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1] == "run" and argv[argv.index("--name") + 1] == BOOTSTRAP_NAME:
+            router.calls.append(list(argv))
+            Path(argv[argv.index("--cidfile") + 1]).write_text(BOOTSTRAP_NAME)
+            return _FakeCompletedProcess(1, stdout=output)
+        if argv == ["docker", "logs", "--tail", "200", BOOTSTRAP_NAME]:
+            router.calls.append(list(argv))
+            return _FakeCompletedProcess(0, stdout=secret)
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provider = DockerBackendProvider(
+        sleep=lambda _seconds: None,
+        credential_injector=SopsEnvFileInjector(resolver=lambda _handle: secret),
+    )
+    plan = _make_plan().model_copy(
+        update={
+            "odoo": _make_plan().odoo.model_copy(
+                update={"secret_env": {"DB_PASSWORD": CredentialHandle("sops://odoo")}}
+            )
+        }
+    )
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        provider.run(plan)
+
+    message = str(excinfo.value)
+    assert output[-8_000:].startswith(secret[-5:]) and secret[-5:] not in message
+    assert secret not in message
+    assert len(message) < 9_000
+    assert ["docker", "rm", "-f", "-v", BOOTSTRAP_NAME] in router.calls
+    assert not any(call[1] == "run" and ODOO_NAME in call for call in router.calls)
+    assert ["docker", "volume", "rm", PGDATA_VOL] in router.calls
+
+
+def test_bootstrap_name_race_skips_foreign_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1] == "run" and argv[argv.index("--name") + 1] == BOOTSTRAP_NAME:
+            raise OSError("safe process failure")
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ContainerRunError, match="safe process failure"):
+        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    assert router.calls.count(["docker", "inspect", BOOTSTRAP_NAME]) == 1
+    assert ["docker", "logs", "--tail", "200", BOOTSTRAP_NAME] not in router.calls
+
+
+def test_bootstrap_removal_failure_prevents_normal_odoo_and_rolls_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv == ["docker", "rm", "-f", "-v", BOOTSTRAP_NAME]:
+            router.calls.append(list(argv))
+            return _FakeCompletedProcess(1, stderr="bootstrap removal failed")
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    with pytest.raises(ContainerRunError, match="bootstrap removal failed"):
+        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    assert not any(call[1] == "run" and ODOO_NAME in call for call in router.calls)
+    assert router.calls.count(["docker", "rm", "-f", "-v", BOOTSTRAP_NAME]) == 2
+
+
 def test_pg_readiness_gate_tcp_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
     router = _make_router(
         not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME}, pg_ready_after=2
@@ -733,9 +1028,48 @@ def test_pg_readiness_gate_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
         provider.run(_make_plan())
 
 
-def test_odoo_health_wait_default_floor() -> None:
-    provider = DockerBackendProvider()
-    assert provider._health_wait_timeout >= 180.0
+def test_odoo_health_wait_default_is_300_seconds_and_override_is_retained() -> None:
+    assert DockerBackendProvider()._health_wait_timeout == 300.0
+    assert DockerBackendProvider(health_wait_timeout=3.0)._health_wait_timeout == 3.0
+
+
+@pytest.mark.parametrize(
+    ("returncode", "first_inspect"),
+    [
+        (0, json.dumps([{"State": {"Health": {"Status": "unhealthy"}}}])),
+        (1, ""),
+        (0, json.dumps([{"State": {"Health": {"Status": "unknown"}}}])),
+        (0, json.dumps([{"State": {"Health": {"Status": "starting"}}}])),
+    ],
+)
+def test_odoo_health_wait_recovers_from_transient_state_before_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    first_inspect: str,
+) -> None:
+    clock = _FakeClock()
+    inspections = iter(
+        [
+            _FakeCompletedProcess(returncode, stdout=first_inspect),
+            _FakeCompletedProcess(0, stdout=_healthy_inspect(ODOO_NAME)),
+        ]
+    )
+
+    def fake_run(argv: list[str], **_kwargs: object) -> _FakeCompletedProcess:
+        assert argv == ["docker", "inspect", ODOO_NAME]
+        return next(inspections)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provider = DockerBackendProvider(
+        health_wait_timeout=2.0,
+        health_poll_interval=1.0,
+        monotonic=clock,
+        sleep=clock.advance,
+    )
+
+    provider._wait_odoo_healthy(_make_plan().odoo)
+
+    assert clock.now == 1.0
 
 
 def test_odoo_health_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1027,7 +1361,7 @@ def test_partial_failure_rollback_removes_only_created_resources(
     vol_rm_calls = [c for c in router.calls if c[1:3] == ["volume", "rm"]]
     net_rm_calls = [c for c in router.calls if c[1:3] == ["network", "rm"]]
 
-    assert [c[-1] for c in rm_calls] == [ODOO_NAME, DB_NAME]
+    assert [c[-1] for c in rm_calls] == [BOOTSTRAP_NAME, ODOO_NAME, DB_NAME]
     assert {c[-1] for c in vol_rm_calls} == {PGDATA_VOL, FILESTORE_VOL}
     assert net_rm_calls[0][-1] == NETWORK
 
@@ -1073,19 +1407,47 @@ def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.M
     # The odoo `rm` call itself raised (recorded only via router when it
     # doesn't raise) — but the pg container's `rm` still ran, and so did
     # both volume removals and the network removal.
-    assert [c[-1] for c in rm_calls] == [DB_NAME]
+    assert [c[-1] for c in rm_calls] == [BOOTSTRAP_NAME, DB_NAME]
     assert {c[-1] for c in vol_rm_calls} == {PGDATA_VOL, FILESTORE_VOL}
     assert net_rm_calls[0][-1] == NETWORK
 
 
-def test_readiness_failure_captures_diagnostics_before_rollback(
+def test_readiness_timeout_reports_selected_inspect_and_bounded_combined_logs_before_rollback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     router = _make_router(
         not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
         odoo_healthy_after=9_999,
     )
-    monkeypatch.setattr(subprocess, "run", router)
+    inspect_payload = json.dumps(
+        [
+            {
+                "Config": {"Env": ["DO_NOT_REPORT"]},
+                "Mounts": [{"Source": "DO_NOT_REPORT"}],
+                "State": {
+                    "Status": "running",
+                    "Running": True,
+                    "ExitCode": 0,
+                    "Error": "y" * 9_000 + "state error",
+                    "OOMKilled": False,
+                    "Health": {"Status": "unhealthy", "FailingStreak": 2},
+                },
+            }
+        ]
+    )
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv == ["docker", "inspect", ODOO_NAME] and ODOO_NAME in router._created_containers:
+            router.calls.append(list(argv))
+            return _FakeCompletedProcess(0, stdout=inspect_payload)
+        if argv == ["docker", "logs", "--tail", "200", ODOO_NAME]:
+            router.calls.append(list(argv))
+            return _FakeCompletedProcess(
+                0, stdout="x" * 9_000 + "stdout excerpt", stderr="stderr excerpt"
+            )
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
 
     clock = _FakeClock()
     provider = DockerBackendProvider(
@@ -1098,12 +1460,133 @@ def test_readiness_failure_captures_diagnostics_before_rollback(
     with pytest.raises(ContainerRunError) as excinfo:
         provider.run(_make_plan())
 
-    assert "readiness diagnostics" in str(excinfo.value)
-    log_idx = next(i for i, call in enumerate(router.calls) if call[1] == "logs")
+    message = str(excinfo.value)
+    assert "odoo readiness timed out after 1s" in message
+    assert "final_health=unhealthy" in message
+    assert '"FailingStreak": 2' in message
+    assert "stdout excerpt" in message
+    assert "stderr excerpt" in message
+    assert "x" * 8_001 not in message
+    assert "y" * 8_001 not in message and "state error" in message
+    assert "DO_NOT_REPORT" not in message
+    log_idx = router.calls.index(["docker", "logs", "--tail", "200", ODOO_NAME])
     rollback_idx = next(
-        i for i, call in enumerate(router.calls) if call[1] == "rm" and "-f" in call
+        i
+        for i, call in enumerate(router.calls)
+        if call[1] == "rm" and "-f" in call and call[-1] == ODOO_NAME
     )
     assert log_idx < rollback_idx
+
+
+@pytest.mark.parametrize("capture_failure", ["malformed", "nonzero", "exception"])
+def test_readiness_timeout_uses_unavailable_markers_when_capture_fails(
+    monkeypatch: pytest.MonkeyPatch, capture_failure: str
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        is_created = ODOO_NAME in router._created_containers
+        if argv == ["docker", "inspect", ODOO_NAME] and is_created:
+            if capture_failure == "exception" and kwargs["timeout"] == 30.0:
+                raise OSError("inspect unavailable")
+            return _FakeCompletedProcess(0, stdout="not-json")
+        if argv == ["docker", "logs", "--tail", "200", ODOO_NAME]:
+            if capture_failure == "exception":
+                raise OSError("logs unavailable")
+            return _FakeCompletedProcess(1, stderr="logs unavailable")
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
+    )
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        provider.run(_make_plan())
+
+    message = str(excinfo.value)
+    assert "final_health=unknown" in message
+    assert "inspect=unavailable" in message
+    assert "logs=unavailable" in message
+
+
+def test_readiness_timeout_redacts_resolved_and_planned_environment_values_longest_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved_secret = "database-value"
+    shorter_value = resolved_secret
+    longer_value = f"{shorter_value}-suffix"
+    plan = _make_plan().model_copy(
+        update={
+            "postgres": _make_plan().postgres.model_copy(
+                update={
+                    "env": {
+                        "POSTGRES_PASSWORD": shorter_value,
+                        "POSTGRES_USER": longer_value,
+                        "POSTGRES_DB": "planned-database",
+                    },
+                    "secret_env": {"POSTGRES_PASSWORD": CredentialHandle("sops://postgres")},
+                }
+            ),
+            "odoo": _make_plan().odoo.model_copy(
+                update={
+                    "env": {
+                        "DB_HOST": "planned-host",
+                        "DB_PORT": "planned-port",
+                        "DB_USER": "planned-user",
+                        "DB_PASSWORD": "planned-password",
+                    }
+                }
+            ),
+        }
+    )
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+    raw_diagnostics = " ".join(
+        [resolved_secret, shorter_value, longer_value, *plan.odoo.env.values()]
+    )
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv == ["docker", "inspect", ODOO_NAME] and ODOO_NAME in router._created_containers:
+            return _FakeCompletedProcess(
+                0,
+                stdout=json.dumps(
+                    [{"State": {"Error": raw_diagnostics, "Health": {"Status": "starting"}}}]
+                ),
+            )
+        if argv == ["docker", "logs", "--tail", "200", ODOO_NAME]:
+            return _FakeCompletedProcess(0, stdout=raw_diagnostics, stderr=raw_diagnostics)
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock,
+        sleep=clock.advance,
+        health_wait_timeout=1.0,
+        health_poll_interval=1.0,
+        credential_injector=SopsEnvFileInjector(resolver=lambda _handle: resolved_secret),
+    )
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        provider.run(plan)
+
+    message = str(excinfo.value)
+    assert "[REDACTED]-suffix" not in message
+    assert message.count("[REDACTED]") >= 3
+    assert resolved_secret not in message
+    assert shorter_value not in message
+    assert longer_value not in message
+    assert all(value not in message for value in plan.odoo.env.values() if value)
 
 
 def test_rollback_failure_is_reported_with_its_residual_resource(
@@ -1128,11 +1611,13 @@ def test_rollback_failure_is_reported_with_its_residual_resource(
         health_poll_interval=1.0,
     )
 
-    with pytest.raises(
-        ContainerRunError,
-        match="cleanup incomplete: container=odoo-forge-proj-default-odoo",
-    ):
+    with pytest.raises(ContainerRunError) as excinfo:
         provider.run(_make_plan())
+
+    message = str(excinfo.value)
+    assert "odoo readiness timed out after 1s" in message
+    assert "final_health=" in message
+    assert f"cleanup incomplete: container={ODOO_NAME}" in message
 
 
 def test_reattach_then_fail_preserves_existing_volume(monkeypatch: pytest.MonkeyPatch) -> None:

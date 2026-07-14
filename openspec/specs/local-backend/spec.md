@@ -124,35 +124,78 @@ the entrypoint exactly (verified against `factory/entrypoint.sh:143-159`):
 
 ### Requirement: run() provisions its own Postgres when none is external
 
-`BackendProvider.run(plan)` MUST create a Postgres container (with its
-`POSTGRES_PASSWORD`/`POSTGRES_USER`/`POSTGRES_DB` supplied so the stock image
-does not exit on boot), a named persistent Postgres data volume, a named
-persistent Odoo-filestore volume (`/var/lib/odoo`), and a Docker network joining
-Postgres to the Odoo container when no external Postgres is configured,
-satisfying `factory/entrypoint.sh:143-159`'s hard requirement for a reachable
-database. Before returning, `run` MUST gate Postgres TCP readiness and then wait
-for the Odoo container's health to reach `healthy`, using a configurable timeout
-whose default floor is the image HEALTHCHECK start-period plus at least one
-interval plus a cold-first-boot margin (`Dockerfile:100`: `--start-period=60s
---interval=30s`), for a recommended default of at least 180s, so a healthy but
-slow cold boot is not spuriously failed as `ContainerRunError`. The returned handle is thus reachable and not merely
-created. Backup/restore of that data MUST NOT be implemented in this slice.
+`BackendProvider.run(plan)` MUST create the planned network, Postgres and Odoo
+containers, and named Postgres-data and Odoo-filestore volumes when no external
+Postgres is configured. It MUST record which resources this invocation created.
+Creation of the planned Postgres-data volume by this invocation MUST be the
+authority that the database lifecycle is new.
 
-`run` MUST record, per resource, whether THIS invocation created it (existence
-checked before create; `docker volume create` is idempotent against a preserved
-named volume). Rollback on failure MUST tear down ONLY resources this invocation
-created; a re-attached, pre-existing named volume MUST NEVER be removed. `stop`
-uses `docker rm -f -v` on the containers: named volumes are immune to `-v`, so
-the named PG and filestore volumes are preserved while stray anonymous volumes
-are reaped.
+For a new lifecycle, `run` MUST complete a provider-owned Odoo bootstrap that
+installs only `base` and exits successfully before it starts the long-running
+Odoo server. It MUST NOT bootstrap, repair, or adopt a lifecycle backed by a
+pre-existing Postgres-data volume. Bootstrap MUST use the plan's database,
+image, network, mounts, filestore, environment, and opaque credentials without
+adding a public configuration surface.
 
-#### Scenario: run() with no external Postgres yields a working instance
-- GIVEN a materialized workspace and a manifest with no external Postgres
-- WHEN `run(plan)` executes
-- THEN a Postgres container (with `POSTGRES_PASSWORD` set), a named Postgres
-  data volume, a named Odoo-filestore volume, and a network are created, the
-  Odoo container joins that network, and the returned `InstanceRef` reflects a
-  running, reachable Odoo container (its health has reached `healthy`)
+After successful bootstrap cleanup, `run` MUST start normal Odoo and poll Docker
+`State.Health.Status` monotonically until `healthy` or a bounded provider-owned
+deadline expires. Non-healthy states MUST remain recoverable until expiry. The
+returned handle MUST represent reachable, Docker-healthy Odoo.
+
+On bootstrap or readiness failure, rollback MUST remove only resources created by
+this invocation; reattached volumes MUST remain. Bootstrap failure MUST prevent
+normal Odoo startup. The temporary bootstrap container MUST be removed on
+success and failure, never preserved for debugging. `stop` MUST preserve named
+lifecycle volumes while removing instance containers and network.
+
+#### Scenario: new lifecycle bootstraps before normal Odoo
+- GIVEN this invocation creates the planned Postgres-data volume
+- WHEN `run(plan)` provisions the backend
+- THEN `base` bootstrap succeeds and its temporary container is removed before normal Odoo starts
+- AND `run` returns only after normal Odoo becomes Docker-healthy
+
+#### Scenario: existing lifecycle is not repaired
+- GIVEN the planned Postgres-data volume already exists
+- WHEN `run(plan)` attaches that lifecycle
+- THEN no bootstrap command runs, even if the database is incomplete
+
+#### Scenario: bootstrap failure rolls back owned resources
+- GIVEN this invocation created a new database lifecycle and bootstrap exits unsuccessfully
+- WHEN `run(plan)` fails
+- THEN normal Odoo is never started, the temporary container is removed, and only invocation-created resources are rolled back
+
+#### Scenario: bootstrap identity collision fails safely
+- GIVEN the derived temporary bootstrap container name already exists
+- WHEN `run(plan)` performs preflight checks
+- THEN it fails before provisioning and does not adopt, remove, or replace that container
+
+#### Scenario: unhealthy normal server recovers before deadline
+- GIVEN bootstrap succeeded and normal Odoo changes from `unhealthy` to `healthy`
+- WHEN polling remains within the bounded deadline
+- THEN `run(plan)` continues polling and succeeds
+
+### Requirement: Bootstrap and readiness diagnostics are secret-safe
+
+Bootstrap and readiness failures MUST capture bounded diagnostics before cleanup, MUST redact resolved credentials and non-empty planned environment values, and MUST preserve the primary failure and cleanup-incomplete details. Readiness timeout diagnostics MUST include final health, selected inspect fields, and bounded Odoo logs. No diagnostic failure MAY broaden cleanup ownership.
+
+#### Scenario: bootstrap failure reports safe evidence
+- GIVEN bootstrap output contains credentials or planned environment values
+- WHEN bootstrap exits unsuccessfully
+- THEN the error identifies bootstrap failure without exposing those values and cleanup still runs
+
+#### Scenario: readiness timeout retains completed defenses
+- GIVEN bootstrap succeeded but normal Odoo never becomes healthy
+- WHEN the provider deadline expires
+- THEN selected final health and bounded redacted logs are reported before created-only rollback
+
+### Requirement: Factory, ownership, and acceptance contracts remain unchanged
+
+This change MUST NOT modify factory behavior, the baseline harness, public configuration, lifecycle-volume ownership, or secret injection contracts. Acceptance MUST use unchanged real-Docker baseline and factory smoke harnesses.
+
+#### Scenario: unchanged harness proves the lifecycle
+- GIVEN Docker prerequisites are available
+- WHEN the baseline executes `run -> status -> stop`
+- THEN fresh bootstrap precedes healthy normal Odoo, lifecycle volumes survive until final cleanup, and no owned residual remains
 
 ### Requirement: Local Docker run performs an explicit image pull
 
@@ -265,6 +308,75 @@ The system MUST fail before container start when the explicit pull fails and MUS
 - WHEN `forge run` executes with explicit pull
 - THEN the command exits non-zero before container start
 - AND the operator sees a distinct single-line authorization diagnostic
+
+### Requirement: Real-Docker baseline provides opt-in lifecycle evidence
+
+The integration evidence MUST remain opt-in and MUST validate the canonical local Docker lifecycle without changing production lifecycle, volume, image, credential, or status semantics. The evidence MUST use an isolated project-factory Odoo image and a pinned official PostgreSQL image.
+
+#### Scenario: Prerequisites are unavailable
+- GIVEN Docker executable or daemon access is unavailable
+- WHEN the explicitly selected integration test starts
+- THEN it is skipped with a clear prerequisite reason and no lifecycle failure is reported
+
+#### Scenario: Prerequisites are available
+- GIVEN Docker access, the project-factory Odoo image, and the pinned official PostgreSQL image are available
+- WHEN the opt-in test executes
+- THEN failures after prerequisite detection fail the test rather than being skipped
+
+#### Scenario: Required images and identity are used
+- GIVEN an isolated test fixture
+- WHEN the lifecycle is provisioned
+- THEN Odoo uses the project-factory image, PostgreSQL uses the pinned official image, and every resource has a unique test-owned identity
+
+#### Scenario: Secrets remain safe
+- GIVEN credentials are required by the disposable fixture
+- WHEN commands, assertions, diagnostics, and verification evidence are produced
+- THEN secret values are absent from arguments, logs, output, committed fixtures, and recorded evidence
+
+#### Scenario: Host ports are collision-resistant
+- GIVEN the lifecycle is provisioned on a host with unrelated services
+- WHEN containers are started
+- THEN host ports are allocated ephemerally and the observed mappings are used for assertions
+
+#### Scenario: Readiness is bounded
+- GIVEN a cold image boot or a service that never becomes ready
+- WHEN lifecycle startup is attempted
+- THEN readiness waits are bounded, successful startup proves both database reachability and Odoo health, and timeout failure is reported
+
+#### Scenario: Run, status, and stop complete
+- GIVEN startup reaches readiness
+- WHEN the test performs `run`, `status`, and `stop`
+- THEN `run` returns a reachable instance, `status` reports its live running state, and `stop` completes successfully
+
+#### Scenario: Stop preserves lifecycle volumes
+- GIVEN the test-owned instance has named lifecycle volumes
+- WHEN `stop` removes the instance
+- THEN the named lifecycle volumes remain present, while containers and the lifecycle network are absent
+
+#### Scenario: Cleanup is ownership-scoped
+- GIVEN setup succeeds, partially succeeds, or fails
+- WHEN final test cleanup runs
+- THEN cleanup is unconditional, deletes only uniquely test-owned disposable resources, and never deletes pre-existing or unrelated resources
+
+#### Scenario: Residual checks are independent
+- GIVEN lifecycle execution or cleanup reports an error
+- WHEN residual checks run
+- THEN independent label/name-based checks identify any remaining test-owned containers, networks, or disposable resources without treating preserved lifecycle volumes as leaks
+
+#### Scenario: The default suite remains daemon-independent
+- GIVEN the repository's default test command is executed
+- WHEN tests are collected and run
+- THEN this integration evidence is excluded; an explicit integration command is required to exercise Docker
+
+#### Scenario: Verification records evidence
+- GIVEN the baseline test has been exercised
+- WHEN verification is completed
+- THEN the receipt records Docker client/server versions, exact commands and results, readiness outcome, stop-preservation result, cleanup result, and residual checks
+
+#### Scenario: Production defects are extracted
+- GIVEN the real-Docker evidence exposes a defect in production behavior
+- WHEN verification classifies the finding
+- THEN this change fails or stops without masking the defect, and the defect is recorded as a separate SDD change rather than changing production code here
 
 ## Non-goals
 
