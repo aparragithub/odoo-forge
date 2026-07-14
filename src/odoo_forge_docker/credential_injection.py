@@ -6,7 +6,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -85,8 +85,9 @@ class SopsEnvFileInjector:
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
-    def redact(self, value: str) -> str:
-        for secret in self._resolved_values:
+    def redact(self, value: str, additional_values: Iterable[str] = ()) -> str:
+        secrets = self._resolved_values | {item for item in additional_values if item}
+        for secret in sorted(secrets, key=len, reverse=True):
             value = value.replace(secret, "[REDACTED]")
         return value
 

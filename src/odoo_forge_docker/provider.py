@@ -148,6 +148,10 @@ def _health_status(inspect_stdout: str) -> str | None:
     return health.get("Status")
 
 
+def _planned_env_values(plan: BackendPlan) -> tuple[str, ...]:
+    return (*plan.postgres.env.values(), *plan.odoo.env.values())
+
+
 class DockerBackendProvider:
     """Adapter that maps `BackendPlan` specs to `docker` CLI invocations."""
 
@@ -203,11 +207,13 @@ class DockerBackendProvider:
             self._run_container(plan.odoo, created)
             self._wait_odoo_healthy(plan.odoo)
         except Exception as exc:
-            diagnostics = self._capture_diagnostics(created)
-            residuals = self._rollback(created)
             detail = str(exc)
-            if diagnostics:
-                detail = f"{detail}; diagnostics: {diagnostics}"
+            if isinstance(exc, ContainerRunError) and "did not become healthy" in detail:
+                detail = (
+                    f"odoo readiness timed out after {self._health_wait_timeout:g}s; "
+                    f"{self._readiness_diagnostics(plan.odoo, _planned_env_values(plan))}"
+                )
+            residuals = self._rollback(created)
             if residuals:
                 detail = f"{detail}; cleanup incomplete: {', '.join(residuals)}"
             if detail != str(exc):
@@ -332,20 +338,6 @@ class DockerBackendProvider:
             raise ImageNotFoundError(stderr or f"image not found: {spec.image!r}")
         raise ContainerRunError(stderr or f"docker pull failed for {spec.image!r}")
 
-    def _capture_diagnostics(self, created: list[_CreatedResource]) -> str:
-        """Capture redacted container logs while failed containers still exist."""
-        diagnostics: list[str] = []
-        for kind, name in created:
-            if kind != "container":
-                continue
-            try:
-                result = self._run_raw(["docker", "logs", name])
-            except Exception:
-                continue
-            if result.returncode == 0 and result.stdout:
-                diagnostics.append(self._credential_injector.redact(result.stdout.strip()))
-        return " | ".join(diagnostics)
-
     def _rollback(self, created: list[_CreatedResource]) -> list[str]:
         """Tear down ONLY resources this invocation created, in reverse order.
 
@@ -409,6 +401,46 @@ class DockerBackendProvider:
             f"odoo container {spec.name!r} did not become healthy "
             f"within {self._health_wait_timeout}s"
         )
+
+    def _readiness_diagnostics(self, spec: ContainerSpec, planned_env_values: Sequence[str]) -> str:
+        """Capture selected, redacted Odoo timeout evidence before rollback."""
+        final_health = "unknown"
+        inspect = "unavailable"
+        try:
+            result = self._run_raw(["docker", "inspect", spec.name])
+            if result.returncode == 0:
+                payload = json.loads(result.stdout)
+                state = payload[0]["State"]
+                health = state.get("Health", {})
+                final_health = health.get("Status", "unknown")
+                selected = {
+                    key: state[key]
+                    for key in ("Status", "Running", "ExitCode", "Error", "OOMKilled")
+                    if key in state
+                }
+                if isinstance(health, dict):
+                    selected["Health"] = {
+                        key: health[key] for key in ("Status", "FailingStreak") if key in health
+                    }
+                inspect = json.dumps(selected, sort_keys=True)
+        except Exception:
+            pass
+
+        logs = "unavailable"
+        try:
+            result = self._run_raw(["docker", "logs", "--tail", "200", spec.name])
+            if result.returncode == 0:
+                logs = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        except Exception:
+            pass
+
+        return (
+            f"final_health={final_health}; inspect={self._redact(inspect, planned_env_values)}; "
+            f"logs={self._redact(logs, planned_env_values)}"
+        )
+
+    def _redact(self, value: str, planned_env_values: Sequence[str]) -> str:
+        return self._credential_injector.redact(value, planned_env_values)
 
     def _wait_until(
         self, probe: Callable[[float], bool], timeout: float, poll_interval: float
