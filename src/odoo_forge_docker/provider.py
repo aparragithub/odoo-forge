@@ -15,7 +15,9 @@ created-only rollback (PR-2a-ii). PR-2b adds `status()`/`stop()`/`logs()`/
 import json
 import os
 import subprocess
+import tempfile
 import time
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
@@ -48,11 +50,10 @@ from odoo_forge_docker.credential_injection import SopsEnvFileInjector
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
 DEFAULT_PG_READINESS_TIMEOUT_SECONDS = 30.0
 DEFAULT_PG_POLL_INTERVAL_SECONDS = 1.0
-# Design floor: HEALTHCHECK start-period=60s + interval=30s + cold-boot margin
-# (`Dockerfile:100`). A shorter default would spuriously time out a container
-# that is in fact healthy — see design "Odoo readiness gate (step 6)".
-DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS = 180.0
+# Two complete 150s health-failure envelopes permit one recovery window.
+DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS = 300.0
 DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = 5.0
+_BOOTSTRAP_TIMEOUT_SECONDS = 300.0
 
 _DAEMON_DOWN_MARKER = "Cannot connect to the Docker daemon"
 _IMAGE_NOT_FOUND_MARKER = "Unable to find image"
@@ -68,6 +69,7 @@ _PULL_AUTH_MARKERS = (
     "authentication required",
     "denied",
 )
+_BOOTSTRAP_OUTPUT_LIMIT = 8_000
 
 _ROLE_VOLUME_TARGET: dict[ContainerRole, str] = {
     "postgres": "/var/lib/postgresql/data",
@@ -75,7 +77,7 @@ _ROLE_VOLUME_TARGET: dict[ContainerRole, str] = {
 }
 
 # ("network", name) | ("volume", name) | ("container", name)
-_CreatedResource = tuple[str, str]
+_CreatedResource = tuple[str, str] | tuple[str, str, str]
 
 
 def _docker_env() -> dict[str, str]:
@@ -133,6 +135,19 @@ def _run_container_argv(
     return argv
 
 
+def _bootstrap_container_argv(
+    spec: ContainerSpec,
+    secret_files: Path | Mapping[str, Path] | None = None,
+    cidfile: Path | None = None,
+) -> list[str]:
+    """Build the foreground, portless base-schema initialization command."""
+    argv = _run_container_argv(spec.model_copy(update={"ports": {}}), secret_files)
+    argv.remove("-d")
+    if cidfile is not None:
+        argv[2:2] = ["--cidfile", str(cidfile)]
+    return [*argv, "-i", "base", "--stop-after-init", "--no-http"]
+
+
 def _pull_image_argv(spec: ContainerSpec) -> list[str]:
     return ["docker", "pull", spec.image]
 
@@ -148,6 +163,10 @@ def _health_status(inspect_stdout: str) -> str | None:
     state = containers[0].get("State") or {}
     health = state.get("Health") or {}
     return health.get("Status")
+
+
+def _planned_env_values(plan: BackendPlan) -> tuple[str, ...]:
+    return (*plan.postgres.env.values(), *plan.odoo.env.values())
 
 
 class DockerBackendProvider:
@@ -186,30 +205,46 @@ class DockerBackendProvider:
         except CredentialError as exc:
             raise ContainerRunError("credential injection failed") from exc
 
-        if self._container_exists(plan.postgres.name) or self._container_exists(plan.odoo.name):
+        bootstrap = plan.odoo.model_copy(update={"name": f"{plan.odoo.name}-bootstrap"})
+        if (
+            self._container_exists(plan.postgres.name)
+            or self._container_exists(plan.odoo.name)
+            or self._container_exists(bootstrap.name)
+        ):
             raise InstanceExistsError(
                 f"instance already exists: {plan.network.name} "
-                f"(postgres={plan.postgres.name!r}, odoo={plan.odoo.name!r})"
+                f"(postgres={plan.postgres.name!r}, odoo={plan.odoo.name!r}, "
+                f"bootstrap={bootstrap.name!r})"
             )
 
         created: list[_CreatedResource] = []
         try:
             self._pull_image(plan.odoo)
             self._ensure_network(plan.network, created)
+            pgdata_created = self._ensure_volume(plan.postgres.volumes[0], created)
             for volume in plan.volumes:
-                self._ensure_volume(volume, created)
+                if volume.name != plan.postgres.volumes[0].name:
+                    self._ensure_volume(volume, created)
 
             self._run_container(plan.postgres, created)
             self._wait_pg_ready(plan.postgres)
 
+            if pgdata_created:
+                self._run_bootstrap(bootstrap, _planned_env_values(plan), created)
+                bootstrap_resource = created[-1]
+                self._exec(["docker", "rm", "-f", "-v", bootstrap_resource[1]])
+                created.remove(bootstrap_resource)
+
             self._run_container(plan.odoo, created)
             self._wait_odoo_healthy(plan.odoo)
         except Exception as exc:
-            diagnostics = self._capture_diagnostics(created)
-            residuals = self._rollback(created)
             detail = str(exc)
-            if diagnostics:
-                detail = f"{detail}; diagnostics: {diagnostics}"
+            if isinstance(exc, ContainerRunError) and "did not become healthy" in detail:
+                detail = (
+                    f"odoo readiness timed out after {self._health_wait_timeout:g}s; "
+                    f"{self._readiness_diagnostics(plan.odoo, _planned_env_values(plan))}"
+                )
+            residuals = self._rollback(created)
             if residuals:
                 detail = f"{detail}; cleanup incomplete: {', '.join(residuals)}"
             if detail != str(exc):
@@ -298,11 +333,18 @@ class DockerBackendProvider:
         self._exec(_network_create_argv(spec))
         created.append(("network", spec.name))
 
-    def _ensure_volume(self, spec: VolumeSpec, created: list[_CreatedResource]) -> None:
+    def _ensure_volume(self, spec: VolumeSpec, created: list[_CreatedResource]) -> bool:
         if self._volume_exists(spec.name):
-            return
-        self._exec(_volume_create_argv(spec))
-        created.append(("volume", spec.name))
+            return False
+        ownership = uuid.uuid4().hex
+        owned_spec = spec.model_copy(
+            update={"labels": {**spec.labels, "com.odoo-forge.create-token": ownership}}
+        )
+        self._exec(_volume_create_argv(owned_spec))
+        created.append(("volume", spec.name, ownership))
+        if not self._volume_has_label(spec.name, "com.odoo-forge.create-token", ownership):
+            raise ContainerRunError(f"volume ownership verification failed: {spec.name!r}")
+        return True
 
     def _run_container(self, spec: ContainerSpec, created: list[_CreatedResource]) -> None:
         if spec.secret_env:
@@ -311,6 +353,57 @@ class DockerBackendProvider:
         else:
             self._exec(_run_container_argv(spec))
         created.append(("container", spec.name))
+
+    def _run_bootstrap(
+        self,
+        spec: ContainerSpec,
+        planned_env_values: Sequence[str],
+        created: list[_CreatedResource],
+    ) -> None:
+        """Initialize Odoo base only for PG data owned by this invocation."""
+        with tempfile.TemporaryDirectory(prefix="odoo-forge-bootstrap-") as directory:
+            cidfile = Path(directory) / "container.cid"
+            try:
+                if spec.secret_env:
+                    with self._credential_injector.secret_files(spec) as secret_files:
+                        result = self._run_raw(
+                            _bootstrap_container_argv(spec, secret_files, cidfile),
+                            timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
+                        )
+                else:
+                    result = self._run_raw(
+                        _bootstrap_container_argv(spec, cidfile=cidfile),
+                        timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
+                    )
+            except Exception as exc:
+                owned = self._record_bootstrap_identity(cidfile, created)
+                detail = self._bounded_redacted(str(exc), planned_env_values)
+                if owned:
+                    detail += f"; {self._readiness_diagnostics(spec, planned_env_values)}"
+                raise ContainerRunError(f"bootstrap failed; output={detail}") from exc
+
+            if not self._record_bootstrap_identity(cidfile, created):
+                raise ContainerRunError("bootstrap failed: safe container identity unavailable")
+
+        if result.returncode == 0:
+            return
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part)
+        raise ContainerRunError(
+            f"bootstrap failed with exit code {result.returncode}; "
+            f"output={self._bounded_redacted(output, planned_env_values)}; "
+            f"{self._readiness_diagnostics(spec, planned_env_values)}"
+        )
+
+    @staticmethod
+    def _record_bootstrap_identity(cidfile: Path, created: list[_CreatedResource]) -> bool:
+        try:
+            container_id = cidfile.read_text().strip()
+        except OSError:
+            return False
+        if not container_id:
+            return False
+        created.append(("container", container_id))
+        return True
 
     def _pull_image(self, spec: ContainerSpec) -> None:
         """Pull the planned image before container start and classify failures.
@@ -334,20 +427,6 @@ class DockerBackendProvider:
             raise ImageNotFoundError(stderr or f"image not found: {spec.image!r}")
         raise ContainerRunError(stderr or f"docker pull failed for {spec.image!r}")
 
-    def _capture_diagnostics(self, created: list[_CreatedResource]) -> str:
-        """Capture redacted container logs while failed containers still exist."""
-        diagnostics: list[str] = []
-        for kind, name in created:
-            if kind != "container":
-                continue
-            try:
-                result = self._run_raw(["docker", "logs", name])
-            except Exception:
-                continue
-            if result.returncode == 0 and result.stdout:
-                diagnostics.append(self._credential_injector.redact(result.stdout.strip()))
-        return " | ".join(diagnostics)
-
     def _rollback(self, created: list[_CreatedResource]) -> list[str]:
         """Tear down ONLY resources this invocation created, in reverse order.
 
@@ -361,11 +440,17 @@ class DockerBackendProvider:
         of how much of the cleanup below actually succeeds.
         """
         residuals: list[str] = []
-        for kind, name in reversed(created):
+        for resource in reversed(created):
+            kind, name = resource[:2]
             try:
                 if kind == "container":
                     argv = ["docker", "rm", "-f", "-v", name]
                 elif kind == "volume":
+                    if len(resource) != 3 or not self._volume_has_label(
+                        name, "com.odoo-forge.create-token", resource[2]
+                    ):
+                        residuals.append(f"{kind}={name}")
+                        continue
                     argv = ["docker", "volume", "rm", name]
                 elif kind == "network":
                     argv = ["docker", "network", "rm", name]
@@ -412,6 +497,50 @@ class DockerBackendProvider:
             f"within {self._health_wait_timeout}s"
         )
 
+    def _readiness_diagnostics(self, spec: ContainerSpec, planned_env_values: Sequence[str]) -> str:
+        """Capture selected, redacted Odoo timeout evidence before rollback."""
+        final_health = "unknown"
+        inspect = "unavailable"
+        try:
+            result = self._run_raw(["docker", "inspect", spec.name])
+            if result.returncode == 0:
+                payload = json.loads(result.stdout)
+                state = payload[0]["State"]
+                health = state.get("Health", {})
+                final_health = health.get("Status", "unknown")
+                selected = {
+                    key: state[key]
+                    for key in ("Status", "Running", "ExitCode", "Error", "OOMKilled")
+                    if key in state
+                }
+                if isinstance(health, dict):
+                    selected["Health"] = {
+                        key: health[key] for key in ("Status", "FailingStreak") if key in health
+                    }
+                inspect = json.dumps(selected, sort_keys=True)
+        except Exception:
+            pass
+
+        logs = "unavailable"
+        try:
+            result = self._run_raw(["docker", "logs", "--tail", "200", spec.name])
+            if result.returncode == 0:
+                logs = self._bounded_redacted(
+                    "\n".join(part for part in (result.stdout, result.stderr) if part),
+                    planned_env_values,
+                )
+        except Exception:
+            pass
+
+        inspect = self._bounded_redacted(inspect, planned_env_values)
+        return f"final_health={final_health}; inspect={inspect}; logs={logs}"
+
+    def _bounded_redacted(self, value: str, planned_env_values: Sequence[str]) -> str:
+        return self._redact(value, planned_env_values)[-_BOOTSTRAP_OUTPUT_LIMIT:]
+
+    def _redact(self, value: str, planned_env_values: Sequence[str]) -> str:
+        return self._credential_injector.redact(value, planned_env_values)
+
     def _wait_until(
         self, probe: Callable[[float], bool], timeout: float, poll_interval: float
     ) -> bool:
@@ -435,6 +564,16 @@ class DockerBackendProvider:
 
     def _volume_exists(self, name: str) -> bool:
         return self._exists(["docker", "volume", "inspect", name])
+
+    def _volume_has_label(self, name: str, key: str, value: str) -> bool:
+        result = self._run_raw(["docker", "volume", "inspect", name])
+        if result.returncode != 0:
+            return False
+        try:
+            labels = json.loads(result.stdout)[0].get("Labels") or {}
+        except (ValueError, TypeError, IndexError, AttributeError):
+            return False
+        return labels.get(key) == value
 
     def _container_exists(self, name: str) -> bool:
         return self._exists(["docker", "inspect", name])
