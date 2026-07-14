@@ -48,10 +48,8 @@ from odoo_forge_docker.credential_injection import SopsEnvFileInjector
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
 DEFAULT_PG_READINESS_TIMEOUT_SECONDS = 30.0
 DEFAULT_PG_POLL_INTERVAL_SECONDS = 1.0
-# Design floor: HEALTHCHECK start-period=60s + interval=30s + cold-boot margin
-# (`Dockerfile:100`). A shorter default would spuriously time out a container
-# that is in fact healthy — see design "Odoo readiness gate (step 6)".
-DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS = 180.0
+# Two complete 150s health-failure envelopes permit one recovery window.
+DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS = 300.0
 DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = 5.0
 
 _DAEMON_DOWN_MARKER = "Cannot connect to the Docker daemon"
