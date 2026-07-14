@@ -40,6 +40,7 @@ from odoo_forge_docker.provider import (
 NETWORK = "odoo-forge-proj-default"
 DB_NAME = "odoo-forge-proj-default-db"
 ODOO_NAME = "odoo-forge-proj-default-odoo"
+BOOTSTRAP_NAME = f"{ODOO_NAME}-bootstrap"
 PGDATA_VOL = "odoo-forge-proj-default-pgdata"
 FILESTORE_VOL = "odoo-forge-proj-default-filestore"
 
@@ -174,6 +175,8 @@ class _Router:
         self.odoo_healthy_after: int = 0
         self._odoo_attempts = 0
         self._created_containers: set[str] = set()
+        self._volume_labels: dict[str, dict[str, str]] = {}
+        self.bootstrap_exists = False
 
     def __call__(self, argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         self.calls.append(list(argv))
@@ -184,9 +187,15 @@ class _Router:
             return _FakeCompletedProcess(1 if name in self.not_found else 0)
         if argv[1:3] == ["volume", "inspect"]:
             name = argv[3]
-            return _FakeCompletedProcess(1 if name in self.not_found else 0)
+            if name in self.not_found:
+                return _FakeCompletedProcess(1)
+            return _FakeCompletedProcess(
+                0, stdout=json.dumps([{"Labels": self._volume_labels.get(name, {})}])
+            )
         if argv[1] == "inspect" and len(argv) == 3:
             name = argv[2]
+            if name == BOOTSTRAP_NAME and name not in self._created_containers:
+                return _FakeCompletedProcess(0 if self.bootstrap_exists else 1)
             if name not in self._created_containers:
                 # Pre-creation existence check (precheck): only "exists" if
                 # NOT in `not_found` — used for the run() refuse-if-exists gate.
@@ -205,6 +214,13 @@ class _Router:
         if argv[1:3] == ["network", "create"]:
             return _FakeCompletedProcess(0)
         if argv[1:3] == ["volume", "create"]:
+            name = argv[-1]
+            self._volume_labels[name] = {
+                value.split("=", 1)[0]: value.split("=", 1)[1]
+                for index, value in enumerate(argv)
+                if index > 0 and argv[index - 1] == "--label"
+            }
+            self.not_found.discard(name)
             return _FakeCompletedProcess(0)
         if argv[1] == "pull":
             if self.pull_error_stderr is not None:
@@ -698,6 +714,90 @@ def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch
         if isinstance(env, dict):
             assert env["LANG"] == "C"
             assert env["LC_ALL"] == "C"
+
+
+def test_preexisting_volume_is_not_created_or_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = _make_router()
+    monkeypatch.setattr(subprocess, "run", router)
+    created: list[tuple[str, str]] = []
+
+    owned = DockerBackendProvider()._ensure_volume(_make_plan().volumes[0], created)
+
+    assert owned is False
+    assert created == []
+    assert not any(call[1:3] == ["volume", "create"] for call in router.calls)
+
+
+def test_concurrent_foreign_volume_is_not_owned(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = _make_router(not_found={PGDATA_VOL})
+    original = router.__call__
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        result = original(argv, **kwargs)
+        if argv[1:3] == ["volume", "create"]:
+            router._volume_labels[PGDATA_VOL] = {"foreign": "owner"}
+        return result
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    created: list[tuple[str, str]] = []
+
+    with pytest.raises(ContainerRunError, match="volume ownership verification failed"):
+        DockerBackendProvider()._ensure_volume(_make_plan().volumes[0], created)
+
+    assert created == []
+
+
+def test_created_volume_is_owned_only_when_unique_label_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={PGDATA_VOL})
+    monkeypatch.setattr(subprocess, "run", router)
+    created: list[tuple[str, str]] = []
+
+    owned = DockerBackendProvider()._ensure_volume(_make_plan().volumes[0], created)
+
+    assert owned is True
+    assert created == [("volume", PGDATA_VOL)]
+    assert router._volume_labels[PGDATA_VOL]["com.odoo-forge.create-token"]
+
+
+def test_run_refuses_bootstrap_name_collision_before_provisioning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router.bootstrap_exists = True
+    monkeypatch.setattr(subprocess, "run", router)
+
+    with pytest.raises(InstanceExistsError, match=BOOTSTRAP_NAME):
+        DockerBackendProvider().run(_make_plan())
+
+    assert not any(call[1:3] == ["network", "create"] for call in router.calls)
+
+
+def test_foreign_volume_has_no_deletion_or_bootstrap_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        pg_ready_after=9_999,
+    )
+    original = router.__call__
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        result = original(argv, **kwargs)
+        if argv[1:3] == ["volume", "create"] and argv[-1] == PGDATA_VOL:
+            router._volume_labels[PGDATA_VOL] = {"foreign": "owner"}
+        return result
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    clock = _FakeClock()
+
+    with pytest.raises(ContainerRunError, match="volume ownership verification failed"):
+        DockerBackendProvider(monotonic=clock, sleep=clock.advance).run(_make_plan())
+
+    assert ["docker", "volume", "rm", PGDATA_VOL] not in router.calls
+    assert ["docker", "network", "rm", NETWORK] in router.calls
+    assert not any(call[1] in {"run", "exec"} for call in router.calls)
 
 
 def test_pg_readiness_gate_tcp_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
