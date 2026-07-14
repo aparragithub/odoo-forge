@@ -733,9 +733,48 @@ def test_pg_readiness_gate_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
         provider.run(_make_plan())
 
 
-def test_odoo_health_wait_default_floor() -> None:
-    provider = DockerBackendProvider()
-    assert provider._health_wait_timeout >= 180.0
+def test_odoo_health_wait_default_is_300_seconds_and_override_is_retained() -> None:
+    assert DockerBackendProvider()._health_wait_timeout == 300.0
+    assert DockerBackendProvider(health_wait_timeout=3.0)._health_wait_timeout == 3.0
+
+
+@pytest.mark.parametrize(
+    ("returncode", "first_inspect"),
+    [
+        (0, json.dumps([{"State": {"Health": {"Status": "unhealthy"}}}])),
+        (1, ""),
+        (0, json.dumps([{"State": {"Health": {"Status": "unknown"}}}])),
+        (0, json.dumps([{"State": {"Health": {"Status": "starting"}}}])),
+    ],
+)
+def test_odoo_health_wait_recovers_from_transient_state_before_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    first_inspect: str,
+) -> None:
+    clock = _FakeClock()
+    inspections = iter(
+        [
+            _FakeCompletedProcess(returncode, stdout=first_inspect),
+            _FakeCompletedProcess(0, stdout=_healthy_inspect(ODOO_NAME)),
+        ]
+    )
+
+    def fake_run(argv: list[str], **_kwargs: object) -> _FakeCompletedProcess:
+        assert argv == ["docker", "inspect", ODOO_NAME]
+        return next(inspections)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    provider = DockerBackendProvider(
+        health_wait_timeout=2.0,
+        health_poll_interval=1.0,
+        monotonic=clock,
+        sleep=clock.advance,
+    )
+
+    provider._wait_odoo_healthy(_make_plan().odoo)
+
+    assert clock.now == 1.0
 
 
 def test_odoo_health_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
