@@ -5,8 +5,8 @@
 > `DatabaseProvider`, and durable operations are implemented provider-neutral foundations only: no standalone database
 > adapter or durable store is wired into an operational workflow. Tenancy, managed data
 > environments, control-plane services, remote backends, RBAC, and the web UI remain absent target
-> state. The derived SVG requires regeneration from the updated Mermaid source; no deterministic
-> local regeneration command is recorded in this repository, so the SVG was not hand-edited.
+> state. The derived SVG is generated from the Mermaid source using the pinned workflow documented
+> in [`README.md`](README.md); it must not be hand-edited.
 
 Este documento explica el diagrama `odoo-forge-current-implementation.mmd` en palabras simples. La idea central es esta: una persona usa el comando `forge`, y `forge` coordina distintas partes del sistema para leer un proyecto Odoo, resolver versiones, preparar el código, levantar contenedores y trabajar con imágenes.
 
