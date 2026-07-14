@@ -1,0 +1,7 @@
+{
+  "executablePath": "/usr/bin/chromium-browser",
+  "args": [
+    "--disable-dev-shm-usage",
+    "--no-sandbox"
+  ]
+}

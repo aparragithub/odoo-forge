@@ -1,0 +1,11 @@
+{
+  "deterministicIds": true,
+  "deterministicIDSeed": "odoo-forge-diagrams-v1",
+  "fontFamily": "Arial, sans-serif",
+  "flowchart": {
+    "htmlLabels": true,
+    "useMaxWidth": true
+  },
+  "securityLevel": "strict",
+  "theme": "base"
+}
