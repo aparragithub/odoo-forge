@@ -1,5 +1,8 @@
 # SP-1 — ImageRegistryProvider
 
+> **Historical brief (superseded).** Preserved for SP-era design lineage. Use
+> [`portfolio.json`](portfolio.json) for current status, evidence, dependencies, and handoffs.
+
 **Layer:** Ports & adapters · **Status:** DONE — the image registry capability is delivered through
 the GHCR adapter. Delivery fabrication and promotion remain owned by
 `SP-DELIVERY-AUTOMATION`, not SP-1. **SDD change:** delivered under the archived

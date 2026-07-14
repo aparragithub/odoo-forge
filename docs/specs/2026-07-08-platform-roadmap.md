@@ -1,6 +1,11 @@
 # odoo-forge — Platform Roadmap (Internal Odoo PaaS)
 
-**Status:** living document · **Created:** 2026-07-08.
+> **Historical roadmap (superseded).** This SP-1 through SP-10 decomposition is preserved for
+> design lineage. Use [`docs/specs/platform/portfolio.json`](platform/portfolio.json) for current
+> capability identities, status, dependencies, acceptance evidence, and handoffs. The legacy
+> `docs/specs/platform/SP-*.md` briefs are historical inputs, not active implementation claims.
+
+**Status:** historical/superseded · **Created:** 2026-07-08.
 
 This document is the forward map for evolving `odoo-forge` from a local CLI into an
 **internal Odoo Platform-as-a-Service** (Odoo.sh / Heroku-style, self-hosted). It defines

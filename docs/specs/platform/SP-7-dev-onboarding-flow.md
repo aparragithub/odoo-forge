@@ -1,5 +1,8 @@
 # SP-7 — Dev onboarding flow
 
+> **Historical brief (superseded).** Preserved for SP-era design lineage. Use
+> [`portfolio.json`](portfolio.json) for current status, evidence, dependencies, and handoffs.
+
 **Layer:** Experience · **Status:** planned · **SDD change name (proposed):** `platform-dev-onboarding-flow`
 
 ## Purpose

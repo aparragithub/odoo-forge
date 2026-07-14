@@ -1,5 +1,8 @@
 # SP-10 — Governance & lifecycle
 
+> **Historical brief (superseded).** Preserved for SP-era design lineage. Use
+> [`portfolio.json`](portfolio.json) for current status, evidence, dependencies, and handoffs.
+
 **Layer:** Orchestration · **Status:** planned · **SDD change name (proposed):** `platform-governance-and-lifecycle`
 
 ## Purpose

@@ -29,6 +29,10 @@
 | Workflow-Level Recovery and Reconciliation | Provider reconciliation remains a separate concern | `test_recovery_port_records_redacted_workflow_outcomes`, `test_recovery_port_requires_revision_bound_attempts` (pre-existing, unaffected) | PASS |
 | Workflow-Level Recovery and Reconciliation | Recovery actions are limited to three | `RecoveryAction(StrEnum)` in `service.py` has exactly `RESUME`, `RECONCILE`, `SURFACE_RESIDUAL` — inspected directly (pre-existing, no `COMPENSATE` member); documented by the append-only archive correction, not a code change | PASS (code was already correct; this slice only fixed drifted documentation) |
 
+> **Archival erratum (2026-07-14):** The preceding three-action assertion was superseded by the
+> delivered four-action model, which also includes `NO_RECOVERY_REQUIRED`. Current truth lives in
+> `openspec/specs/durable-operations/spec.md` and `src/odoo_forge/durable_operations/service.py`.
+
 **One traceability gap** (WARNING, not CRITICAL): the "closed record with no terminal work" scenario
 has no test with `lifecycle=CLOSED, terminal_commit=None`. It is provably true by code inspection
 (the early-return guard in `__post_init__` is unconditional on `lifecycle`), and this code path was

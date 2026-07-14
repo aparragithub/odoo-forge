@@ -118,7 +118,7 @@ valid during trusted materialization and replay.
 
 | Planning field | Boundary |
 | --- | --- |
-| Current evidence | `src/odoo_forge/ports/durable_operation_store.py:16-20`, `:34-51`, `:96-110`; `tests/ports/test_durable_operation_store.py:306-367`; `openspec/changes/CAP-DURABLE-OPERATIONS-RECORD-FIX/design.md:65-74`, `:228` |
+| Current evidence | `src/odoo_forge/ports/durable_operation_store.py:16-20`, `:34-51`, `:96-110`; `tests/ports/test_durable_operation_store.py:306-367`; `openspec/changes/archive/2026-07-14-CAP-DURABLE-OPERATIONS-RECORD-FIX/design.md:65-74`, `:228` |
 | Adoption tests | For the first concrete store, prove the atomic `CLEANUP_REQUIRED` to `CLOSED` CAS, revision increment, exact terminal-bundle preservation, and rejection of missing, clean-terminal, already-closed, and revision-conflict cases. Also prove trusted loading/replay accepts directly materialized closed records with residual history. |
 | Exit criteria | No current implementation exit criterion. Future store adoption is complete only when persisted writes have one transition authority and materialized snapshots retain the current coherence contract. |
 | Rollback boundary | N/A for the current core. A future adapter change must keep its implementation, conformance tests, and persistence migration, if any, in one rollback-safe unit. |
@@ -398,3 +398,18 @@ writing.
 - [ ] Unit 9: If G6 is met and separately authorized, run the optional cross-module integration judgment.
 - [ ] If Judgment Day is authorized, freeze its immutable target and enforce the two-round terminal protocol.
 - [ ] Close with an approved ordinary review or a terminal Judgment Day outcome; do not leave an open-ended review lineage.
+
+## Postscript — 2026-07-14
+
+This append-only note updates delivery facts without rewriting the review record above.
+
+- Registry credential hardening is committed as `a11eb99`.
+- Factory temporary-secret cleanup is committed as `44f3213`.
+- Git remote-ref classification is committed as `02e2674`.
+- This audit roadmap and its Spanish translation are committed as `db82fc1`.
+- The completed `CAP-DURABLE-OPERATIONS-RECORD-FIX` delta was synchronized into
+  `openspec/specs/durable-operations/spec.md` and archived at
+  `openspec/changes/archive/2026-07-14-CAP-DURABLE-OPERATIONS-RECORD-FIX/`.
+- The archive preserves the original PASS WITH WARNINGS verification report. Its one named
+  traceability warning was not converted into successful evidence, and no new review was started.
+- The optional cross-module Judgment Day remains neither authorized nor performed.
