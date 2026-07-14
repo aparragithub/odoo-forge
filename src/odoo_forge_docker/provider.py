@@ -77,7 +77,7 @@ _ROLE_VOLUME_TARGET: dict[ContainerRole, str] = {
 }
 
 # ("network", name) | ("volume", name) | ("container", name)
-_CreatedResource = tuple[str, str]
+_CreatedResource = tuple[str, str] | tuple[str, str, str]
 
 
 def _docker_env() -> dict[str, str]:
@@ -341,9 +341,9 @@ class DockerBackendProvider:
             update={"labels": {**spec.labels, "com.odoo-forge.create-token": ownership}}
         )
         self._exec(_volume_create_argv(owned_spec))
+        created.append(("volume", spec.name, ownership))
         if not self._volume_has_label(spec.name, "com.odoo-forge.create-token", ownership):
             raise ContainerRunError(f"volume ownership verification failed: {spec.name!r}")
-        created.append(("volume", spec.name))
         return True
 
     def _run_container(self, spec: ContainerSpec, created: list[_CreatedResource]) -> None:
@@ -376,22 +376,21 @@ class DockerBackendProvider:
                         timeout=_BOOTSTRAP_TIMEOUT_SECONDS,
                     )
             except Exception as exc:
-                self._record_bootstrap_identity(cidfile, created)
-                raise ContainerRunError(
-                    f"bootstrap failed; {self._readiness_diagnostics(spec, planned_env_values)}"
-                ) from exc
+                owned = self._record_bootstrap_identity(cidfile, created)
+                detail = self._bounded_redacted(str(exc), planned_env_values)
+                if owned:
+                    detail += f"; {self._readiness_diagnostics(spec, planned_env_values)}"
+                raise ContainerRunError(f"bootstrap failed; output={detail}") from exc
 
             if not self._record_bootstrap_identity(cidfile, created):
                 raise ContainerRunError("bootstrap failed: safe container identity unavailable")
 
         if result.returncode == 0:
             return
-        output = "\n".join(part for part in (result.stdout, result.stderr) if part)[
-            -_BOOTSTRAP_OUTPUT_LIMIT:
-        ]
+        output = "\n".join(part for part in (result.stdout, result.stderr) if part)
         raise ContainerRunError(
             f"bootstrap failed with exit code {result.returncode}; "
-            f"output={self._redact(output, planned_env_values)}; "
+            f"output={self._bounded_redacted(output, planned_env_values)}; "
             f"{self._readiness_diagnostics(spec, planned_env_values)}"
         )
 
@@ -441,11 +440,17 @@ class DockerBackendProvider:
         of how much of the cleanup below actually succeeds.
         """
         residuals: list[str] = []
-        for kind, name in reversed(created):
+        for resource in reversed(created):
+            kind, name = resource[:2]
             try:
                 if kind == "container":
                     argv = ["docker", "rm", "-f", "-v", name]
                 elif kind == "volume":
+                    if len(resource) != 3 or not self._volume_has_label(
+                        name, "com.odoo-forge.create-token", resource[2]
+                    ):
+                        residuals.append(f"{kind}={name}")
+                        continue
                     argv = ["docker", "volume", "rm", name]
                 elif kind == "network":
                     argv = ["docker", "network", "rm", name]
@@ -520,14 +525,18 @@ class DockerBackendProvider:
         try:
             result = self._run_raw(["docker", "logs", "--tail", "200", spec.name])
             if result.returncode == 0:
-                logs = "\n".join(part for part in (result.stdout, result.stderr) if part)
+                logs = self._bounded_redacted(
+                    "\n".join(part for part in (result.stdout, result.stderr) if part),
+                    planned_env_values,
+                )
         except Exception:
             pass
 
-        return (
-            f"final_health={final_health}; inspect={self._redact(inspect, planned_env_values)}; "
-            f"logs={self._redact(logs, planned_env_values)}"
-        )
+        inspect = self._bounded_redacted(inspect, planned_env_values)
+        return f"final_health={final_health}; inspect={inspect}; logs={logs}"
+
+    def _bounded_redacted(self, value: str, planned_env_values: Sequence[str]) -> str:
+        return self._redact(value, planned_env_values)[-_BOOTSTRAP_OUTPUT_LIMIT:]
 
     def _redact(self, value: str, planned_env_values: Sequence[str]) -> str:
         return self._credential_injector.redact(value, planned_env_values)
