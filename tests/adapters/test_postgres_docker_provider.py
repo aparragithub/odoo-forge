@@ -33,11 +33,16 @@ from odoo_forge.database.errors import (
 from odoo_forge.database.readiness import GateReadinessEvidence, evaluate_gate_readiness
 from odoo_forge.database.types import DatabaseCreation, DatabaseSpec
 from odoo_forge.ports.database_provider import DatabaseProvider
+from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
 from odoo_forge_postgres_docker.provider import (
     DockerCommandFailedError,
     DockerCommandTimeoutError,
     DockerPostgresqlDatabaseProvider,
     RollbackIncompleteError,
+)
+from odoo_forge_postgres_docker.secret_injection import (
+    PostgreSQLSecretInjector,
+    SecretInjectionError,
 )
 from odoo_forge_postgres_docker.target_handoffs import (
     RestoreArtifactIncoherentError,
@@ -53,13 +58,13 @@ _OWNED_LABELS = (
     '"io.odoo-forge.resource-kind":"container",'
     '"io.odoo-forge.creator-token":"token-42"}'
 )
-_OWNED_INSPECT = '[{"Config":{"Labels":' + _OWNED_LABELS + "}}]"
+_OWNED_INSPECT = '[{"Id":"immutable-database-42","Config":{"Labels":' + _OWNED_LABELS + "}}]"
 
 
 def _credential_target(
     _descriptor: CredentialInjectionDescriptor,
-) -> AbstractContextManager[Path]:
-    return nullcontext(Path("/run/secrets/postgres-password"))
+) -> AbstractContextManager[str]:
+    return nullcontext("postgres-password")
 
 
 def _restore_manifest() -> RestoreSetManifest:
@@ -238,21 +243,16 @@ def test_credential_target_injector_failure_is_typed_and_redacted() -> None:
     assert secret not in str(excinfo.value)
 
 
-def test_provision_passes_only_a_protected_credential_target_file_to_docker(
+def test_provision_passes_only_a_protected_credential_target_file_reference_to_docker(
     tmp_path: Path,
 ) -> None:
     secret = "credential-target-secret"
     calls: list[tuple[str, ...]] = []
-    target_file = tmp_path / "postgres.env"
 
     @contextmanager
-    def credential_target(descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
+    def credential_target(descriptor: CredentialInjectionDescriptor) -> Iterator[str]:
         assert descriptor.store_ref == "sops://opaque"
-        target_file.write_text(f"POSTGRES_PASSWORD={secret}\n")
-        try:
-            yield target_file
-        finally:
-            target_file.unlink()
+        yield secret
 
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         calls.append(tuple(argv))
@@ -265,10 +265,72 @@ def test_provision_passes_only_a_protected_credential_target_file_to_docker(
     ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
 
     assert creation.ref.identifier == "database-42"
-    assert ("--env-file", str(target_file)) in zip(calls[0], calls[0][1:], strict=False)
+    assert "--env-file" not in calls[0]
+    assert "POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password" in calls[0]
+    assert any(item.startswith("type=bind,src=") for item in calls[0])
     assert secret not in " ".join(item for call in calls for item in call)
     assert secret not in repr(creation)
-    assert not target_file.exists()
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_provision_preserves_a_ready_container_when_secret_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "cleanup-failure-secret"
+    calls: list[tuple[str, ...]] = []
+
+    @contextmanager
+    def credential_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[str]:
+        yield secret
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def failing_erase(_secret_path: object, _directory: object) -> None:
+        raise SecretInjectionError()
+
+    monkeypatch.setattr(PostgreSQLSecretInjector, "_erase", staticmethod(failing_erase))
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert creation.ref.identifier == "database-42"
+    assert not any(call[:3] == ("docker", "rm", "-f") for call in calls)
+
+
+def test_provision_survives_a_directory_fsync_failure_after_the_state_commit(
+    tmp_path: Path,
+) -> None:
+    secret = "fsync-after-commit-secret"
+    calls: list[tuple[str, ...]] = []
+
+    @contextmanager
+    def credential_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[str]:
+        yield secret
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    class FsyncFailingAuthority(LocalOwnershipAuthority):
+        def _fsync_directory(self) -> None:
+            raise OSError("directory fsync failed after commit")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        credential_target=credential_target,
+        ownership_authority=FsyncFailingAuthority(tmp_path / "authority"),
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert creation.ref.identifier == "database-42"
+    assert not any(call[:3] == ("docker", "rm", "-f") for call in calls)
 
 
 def test_restore_target_injector_failure_is_typed_and_redacted() -> None:
@@ -338,7 +400,9 @@ def test_restore_applies_and_verifies_the_validated_component_at_the_live_target
     assert calls[0][:3] == ("docker", "run", "--detach")
 
 
-def test_runtime_attestation_is_minted_only_after_live_ownership_and_readiness_checks() -> None:
+def test_runtime_attestation_is_minted_only_after_live_ownership_and_readiness_checks(
+    tmp_path: Path,
+) -> None:
     calls: list[tuple[str, ...]] = []
 
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -347,7 +411,19 @@ def test_runtime_attestation_is_minted_only_after_live_ownership_and_readiness_c
             return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    provider = DockerPostgresqlDatabaseProvider(runner=runner, token_factory=lambda: "token-42")
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.write(
+        {
+            "operation": "postgres-docker:token-42",
+            "kind": "container",
+            "name": "database-42",
+            "docker_id": "immutable-database-42",
+            "state": "active",
+        }
+    )
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", ownership_authority=authority
+    )
     creation = DatabaseCreation(
         ref=DatabaseRef(identifier="database-42", ownership=ResourceOwnership.CREATED),
         receipt=CreationReceipt(
@@ -420,130 +496,101 @@ def test_runtime_attestation_refuses_a_forged_receipt_membership() -> None:
         provider.verify_runtime_ownership(forged_creation)
 
 
-def test_credential_target_exit_rolls_back_the_created_container_and_target_file(
+def test_runtime_attestation_refuses_labels_and_readiness_without_authority(tmp_path: Path) -> None:
+    creation = DatabaseCreation(
+        ref=DatabaseRef(identifier="database-42", ownership=ResourceOwnership.CREATED),
+        receipt=CreationReceipt(
+            operation=OperationIdentity(value="postgres-docker:token-42"),
+            owned_resource_ids=("database-42",),
+        ),
+    )
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=lambda argv, *, timeout: subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, ""),
+        ownership_authority=LocalOwnershipAuthority(tmp_path / "authority"),
+    )
+
+    with pytest.raises(OwnershipRefusedError):
+        provider.verify_runtime_ownership(creation)
+
+
+def test_run_timeout_recovers_live_authorized_container_and_retires_it(tmp_path: Path) -> None:
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["docker", "run"]:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        credential_target=_credential_target,
+        ownership_authority=authority,
+    )
+
+    with pytest.raises(DockerCommandTimeoutError):
+        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert authority.read()["records"][-1]["state"] == "retired"
+
+
+def test_retry_retires_active_authority_when_prior_removal_left_no_container(
     tmp_path: Path,
 ) -> None:
-    calls: list[tuple[str, ...]] = []
-    target_file = tmp_path / "credentials.env"
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=("database-42",),
+    )
+    authority.write(
+        {
+            "operation": receipt.operation.value,
+            "kind": "container",
+            "name": "database-42",
+            "docker_id": "immutable-database-42",
+            "state": "active",
+        }
+    )
 
-    @contextmanager
-    def failing_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
-        target_file.write_text("POSTGRES_PASSWORD=not-in-diagnostics\n")
-        yield target_file
-        raise RuntimeError("target cleanup failed")
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=lambda argv, *, timeout: subprocess.CompletedProcess(
+            argv, 1, "", "Error: No such object: database-42"
+        ),
+        ownership_authority=authority,
+    )
+
+    assert provider.cleanup(receipt).residual_failures == ()
+    assert authority.read()["records"][-1]["state"] == "retired"
+
+
+def test_cleanup_accepts_visible_retirement_after_directory_fsync_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=("database-42",),
+    )
+    authority.reserve(receipt.operation.value, "database-42")
+    authority.bind(receipt.operation.value, "database-42", "immutable-database-42")
+    authority.activate(receipt.operation.value, "database-42", "immutable-database-42")
+    monkeypatch.setattr(authority, "_fsync_directory", lambda: (_ for _ in ()).throw(OSError()))
 
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
-        calls.append(tuple(argv))
-        if argv[:2] == ["docker", "inspect"]:
+        if argv[:2] == ["docker", "inspect"] and len(argv) == 3:
+            if authority.read()["records"][-1]["state"] == "retired":
+                return subprocess.CompletedProcess(argv, 1, "", "No such object")
             return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    provider = DockerPostgresqlDatabaseProvider(
-        runner=runner, token_factory=lambda: "token-42", credential_target=failing_target
+    assert (
+        DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority).cleanup(
+            receipt
+        ).residual_failures
+        == ()
     )
-    with pytest.raises(CredentialUnavailableError):
-        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("x"))
-
-    assert calls[0][:3] == ("docker", "run", "--detach")
-    assert not target_file.exists()
-
-
-def test_persistent_credential_file_unlink_failure_is_rollback_incomplete(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    calls: list[tuple[str, ...]] = []
-    target_file = tmp_path / "credential-secret.env"
-    unlink_attempts = 0
-    original_unlink = Path.unlink
-
-    @contextmanager
-    def failing_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
-        target_file.write_text("POSTGRES_PASSWORD=not-in-diagnostics\n")
-        try:
-            yield target_file
-        finally:
-            target_file.unlink()
-
-    def persistent_unlink(self: Path, *, missing_ok: bool = False) -> None:
-        nonlocal unlink_attempts
-        if self == target_file:
-            unlink_attempts += 1
-            raise OSError(f"cannot unlink raw-path={target_file}")
-        original_unlink(self, missing_ok=missing_ok)
-
-    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
-        calls.append(tuple(argv))
-        if argv[:2] == ["docker", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(Path, "unlink", persistent_unlink)
-    provider = DockerPostgresqlDatabaseProvider(
-        runner=runner, token_factory=lambda: "token-42", credential_target=failing_target
-    )
-
-    with pytest.raises(RollbackIncompleteError) as excinfo:
-        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
-
-    assert calls[-1] == ("docker", "rm", "-f", "database-42")
-    assert unlink_attempts == 2
-    assert excinfo.value.receipt.owned_resource_ids == ("database-42",)
-    assert excinfo.value.residual_failures == ()
-    assert excinfo.value.cleanup_failures == ("credential-file",)
-    assert isinstance(excinfo.value.__cause__, CredentialUnavailableError)
-    for sensitive_value in (
-        "raw-path",
-        "credential-secret.env",
-        "not-in-diagnostics",
-        "opaque",
-        "descriptor",
-    ):
-        assert sensitive_value not in repr(excinfo.value)
-
-
-def test_rollback_incomplete_survives_provision_and_credential_cleanup_failures(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    calls: list[tuple[str, ...]] = []
-    target_file = tmp_path / "credential-secret.env"
-    secret = "credential-cleanup-super-secret"
-    original_unlink = Path.unlink
-
-    @contextmanager
-    def failing_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
-        try:
-            target_file.write_text(f"POSTGRES_PASSWORD={secret}\n")
-            yield target_file
-        finally:
-            raise RuntimeError(f"credential cleanup failed at {target_file}")
-
-    def persistent_unlink(self: Path, *, missing_ok: bool = False) -> None:
-        if self == target_file:
-            raise OSError(f"cannot unlink raw-path={target_file}")
-        original_unlink(self, missing_ok=missing_ok)
-
-    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
-        calls.append(tuple(argv))
-        if argv[:2] == ["docker", "inspect"]:
-            return subprocess.CompletedProcess(argv, 1, "", "inspection failed")
-        if argv[:3] == ["docker", "rm", "-f"]:
-            return subprocess.CompletedProcess(argv, 1, "", "removal failed")
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    monkeypatch.setattr(Path, "unlink", persistent_unlink)
-    provider = DockerPostgresqlDatabaseProvider(
-        runner=runner, token_factory=lambda: "token-42", credential_target=failing_target
-    )
-
-    with pytest.raises(RollbackIncompleteError) as excinfo:
-        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
-
-    assert calls[0][:3] == ("docker", "run", "--detach")
-    assert excinfo.value.receipt.owned_resource_ids == ("database-42",)
-    assert excinfo.value.residual_failures == ("database-42",)
-    assert excinfo.value.cleanup_failures == ("credential-file",)
-    for sensitive_value in (str(target_file), secret, "raw-path", "opaque"):
-        assert sensitive_value not in repr(excinfo.value)
 
 
 @pytest.mark.parametrize("failure_after_run", [False, True])
@@ -716,6 +763,179 @@ def test_provision_creates_only_receipted_container_then_proves_bounded_readines
     assert ("docker", "exec", "database-42", "pg_isready", "-U", "postgres") in calls
 
 
+def test_provision_reserves_before_docker_then_binds_and_activates(tmp_path: Path) -> None:
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "run"]:
+            records = authority.read()["records"]
+            assert records[-1]["state"] == "reserved"
+            assert records[-1]["docker_id"] == ""
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        credential_target=_credential_target,
+        ownership_authority=authority,
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    records = authority.read()["records"]
+    assert [record["state"] for record in records] == ["reserved", "reserved", "active"]
+    assert records[-1]["docker_id"] == "immutable-database-42"
+    assert creation.ref.identifier == "database-42"
+    assert calls[0][:2] == ("docker", "run")
+
+
+def test_pre_docker_authority_failure_is_typed_redacted_and_never_runs_docker(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def fail_reserve(_operation: str, _name: str) -> None:
+        raise RuntimeError("authority password=super-secret")
+
+    monkeypatch.setattr(authority, "reserve", fail_reserve)
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, credential_target=_credential_target, ownership_authority=authority
+    )
+
+    with pytest.raises(DatabaseOperationError) as excinfo:
+        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert str(excinfo.value) == "database provider operation failed"
+    assert "super-secret" not in str(excinfo.value)
+    assert calls == []
+
+
+def test_cleanup_retires_verified_authority_and_lost_authority_refuses_mutation(
+    tmp_path: Path,
+) -> None:
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=("database-42",),
+    )
+    authority.reserve(receipt.operation.value, "database-42")
+    authority.bind(receipt.operation.value, "database-42", "immutable-database-42")
+    authority.activate(receipt.operation.value, "database-42", "immutable-database-42")
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+
+    provider = DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority)
+    assert provider.cleanup(receipt).residual_failures == ()
+    assert authority.read()["records"][-1]["state"] == "retired"
+
+    with pytest.raises(OwnershipRefusedError):
+        provider.delete(
+            DatabaseCreation(
+                ref=DatabaseRef(identifier="database-42", ownership=ResourceOwnership.CREATED),
+                receipt=receipt,
+            )
+        )
+    assert calls.count(("docker", "rm", "-f", "database-42")) == 1
+
+
+@pytest.mark.parametrize("resource_id", ["db; touch /tmp/pwned", "database-42 $(id)"])
+def test_lifecycle_rejects_shell_injected_ids_before_docker(resource_id: str) -> None:
+    calls: list[tuple[str, ...]] = []
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=(resource_id,),
+    )
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(runner=runner)
+
+    with pytest.raises(DatabaseOperationError):
+        provider.cleanup(receipt)
+
+    assert calls == []
+
+
+def test_unsupported_docker_runtime_is_typed_and_redacted() -> None:
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        raise FileNotFoundError("docker 19 unsupported password=super-secret")
+
+    with pytest.raises(DockerCommandFailedError) as excinfo:
+        DockerPostgresqlDatabaseProvider(runner=runner).inspect_resource("database-42")
+
+    assert str(excinfo.value) == "database provider operation failed"
+    assert "super-secret" not in str(excinfo.value)
+
+
+def test_successful_default_provision_persists_its_immutable_docker_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+
+    state = LocalOwnershipAuthority(tmp_path / "odoo-forge" / "postgres-docker").read()
+    assert state["records"][-1]["operation"] == creation.receipt.operation.value
+    assert state["records"][-1]["name"] == creation.ref.identifier
+    assert state["records"][-1]["docker_id"] == "immutable-database-42"
+
+
+def test_delete_refuses_same_name_replacement_with_copied_labels(tmp_path: Path) -> None:
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=("database-42",),
+    )
+    from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.write(
+        {
+            "operation": receipt.operation.value,
+            "kind": "container",
+            "name": "database-42",
+            "docker_id": "original-immutable-id",
+            "state": "active",
+        }
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    with pytest.raises(OwnershipRefusedError):
+        DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority).delete(
+            DatabaseCreation(
+                ref=DatabaseRef(identifier="database-42", ownership=ResourceOwnership.CREATED),
+                receipt=receipt,
+            )
+        )
+
+    assert ("docker", "rm", "-f", "database-42") not in calls
+
+
 def test_provision_extracts_labels_from_a_docker_inspect_container_array() -> None:
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         if argv[:2] == ["docker", "inspect"]:
@@ -800,21 +1020,26 @@ def test_partial_provision_failure_rolls_back_created_resources_in_reverse_order
     assert calls[-1] == ("docker", "rm", "-f", "database-42")
 
 
-def test_reconcile_rebuilds_a_created_receipt_from_matching_live_labels() -> None:
+def test_reconcile_refuses_to_rebuild_a_created_receipt_from_matching_live_labels(
+    tmp_path: Path,
+) -> None:
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         if argv[:2] == ["docker", "ps"]:
             return subprocess.CompletedProcess(argv, 0, "database-42\n", "")
         return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
 
-    creation = DockerPostgresqlDatabaseProvider(runner=runner).reconcile(
-        OperationIdentity(value="postgres-docker:token-42")
-    )
+    with pytest.raises(OwnershipRefusedError):
+        DockerPostgresqlDatabaseProvider(
+            runner=runner,
+            ownership_authority=LocalOwnershipAuthority(tmp_path / "authority"),
+        ).reconcile(
+            OperationIdentity(value="postgres-docker:token-42")
+        )
 
-    assert creation.ref.identifier == "database-42"
-    assert creation.receipt.owned_resource_ids == ("database-42",)
 
-
-def test_delete_and_cleanup_refuse_foreign_resources_and_remove_all_owned_resources() -> None:
+def test_delete_and_cleanup_require_local_authority_and_refuse_foreign_resources(
+    tmp_path: Path,
+) -> None:
     calls: list[tuple[str, ...]] = []
     receipt = CreationReceipt(
         operation=OperationIdentity(value="postgres-docker:token-42"),
@@ -827,11 +1052,29 @@ def test_delete_and_cleanup_refuse_foreign_resources_and_remove_all_owned_resour
             return subprocess.CompletedProcess(argv, 0, '{"io.odoo-forge.provider":"external"}', "")
         return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
 
-    provider = DockerPostgresqlDatabaseProvider(runner=runner)
+    from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    for resource_id in receipt.owned_resource_ids:
+        authority.write(
+            {
+                "operation": receipt.operation.value,
+                "kind": "container",
+                "name": resource_id,
+                "docker_id": f"immutable-{resource_id}",
+                "state": "active",
+            }
+        )
+    unproven = DockerPostgresqlDatabaseProvider(runner=runner)
     foreign = DatabaseCreation(
         ref=DatabaseRef(identifier="database-43", ownership=ResourceOwnership.CREATED),
         receipt=receipt,
     )
+    with pytest.raises(OwnershipRefusedError):
+        unproven.delete(foreign)
+    assert ("docker", "rm", "-f", "database-43") not in calls
+
+    provider = DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority)
     with pytest.raises(OwnershipRefusedError):
         provider.delete(foreign)
 
@@ -842,13 +1085,28 @@ def test_delete_and_cleanup_refuse_foreign_resources_and_remove_all_owned_resour
     assert ("docker", "rm", "-f", "database-43") not in calls
 
 
-def test_cleanup_reports_zero_residuals_after_all_receipt_owned_resources_are_removed() -> None:
+def test_cleanup_reports_zero_residuals_after_all_locally_owned_resources_are_removed(
+    tmp_path: Path,
+) -> None:
     receipt = CreationReceipt(
         operation=OperationIdentity(value="postgres-docker:token-42"),
         owned_resource_ids=("database-42",),
     )
+    from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.write(
+        {
+            "operation": receipt.operation.value,
+            "kind": "container",
+            "name": "database-42",
+            "docker_id": "immutable-database-42",
+            "state": "active",
+        }
+    )
     report = DockerPostgresqlDatabaseProvider(
-        runner=lambda argv, *, timeout: subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        runner=lambda argv, *, timeout: subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, ""),
+        ownership_authority=authority,
     ).cleanup(receipt)
 
     assert report.residual_failures == ()
