@@ -410,9 +410,7 @@ class DockerPostgresqlDatabaseProvider:
                 raise DatabaseReadinessError()
             self._sleep(self._poll_interval)
 
-    def _remove_owned(
-        self, receipt: CreationReceipt, resource_id: str
-    ) -> None:
+    def _remove_owned(self, receipt: CreationReceipt, resource_id: str) -> None:
         self._validate_identifier(resource_id)
         if resource_id not in receipt.owned_resource_ids:
             raise OwnershipRefusedError()

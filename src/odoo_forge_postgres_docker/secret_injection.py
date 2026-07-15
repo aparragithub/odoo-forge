@@ -14,6 +14,8 @@ _CONTAINER_SECRET_PATH = "/run/secrets/postgres-password"
 
 class SecretInjectionError(Exception):
     pass
+
+
 SecretResolver = Callable[[CredentialInjectionDescriptor], AbstractContextManager[str]]
 
 
