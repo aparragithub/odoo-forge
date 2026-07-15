@@ -40,10 +40,10 @@ Only tracker/integration merges to main; no size exception. Child diffs exclude 
 
 ## Phase 3: RED — Consumers and CLI safety
 
-- [ ] 3.1 RED: Add projection/drift failures proving published entries remain locked but are neither checked out nor compared to Git; GREEN/REFACTOR `projection.py` and `drift.py`.
-- [ ] 3.2 RED: Add CLI failures for full pinned lock/readback, unresolved core ref, clean resolution error, and byte-identical atomic-write rollback; GREEN/REFACTOR `main.py` boundaries and compatibility paths.
+- [x] 3.1 RED: Add projection/drift failures proving published entries remain locked but are neither checked out nor compared to Git; GREEN/REFACTOR `projection.py` and `drift.py`.
+- [x] 3.2 RED: Add CLI failures for full pinned lock/readback, unresolved core ref, clean resolution error, and byte-identical atomic-write rollback; GREEN/REFACTOR `main.py` boundaries and compatibility paths.
 
 ## Phase 4: Verification and refactor
 
-- [ ] 4.1 RED/GREEN: Add the odoo-idp composition fire fixture and verify all 12 spec scenarios (including published/override pinning and every lockfile case); REFACTOR shared fixtures and names.
-- [ ] 4.2 Run `uv run pytest`, `uv run lint-imports`, `uv run mypy`, and `uv run ruff check`; fix only findings within the four work-unit boundaries.
+- [x] 4.1 RED/GREEN: Add the odoo-idp composition fire fixture and verify all 12 spec scenarios (including published/override pinning and every lockfile case); REFACTOR shared fixtures and names.
+- [x] 4.2 Run `uv run pytest`, `uv run lint-imports`, `uv run mypy`, and `uv run ruff check`; fix only findings within the four work-unit boundaries.

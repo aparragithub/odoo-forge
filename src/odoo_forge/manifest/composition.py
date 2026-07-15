@@ -75,4 +75,6 @@ def _check_overrides(manifest: Manifest) -> None:
                 f"override for layer '{override.layer}' specifies repo "
                 f"'{override.repo}', but that layer has no repos (not a git layer)"
             )
+
+
 __all__ = ["compose"]

@@ -89,3 +89,37 @@
 ## Delivery: Work Unit 3
 - Feature-branch-chain PR #3 base: `feat/manifest-git-overrides` / `bb1c229`; no commit, push, PR, review, projection, drift, or CLI safety work was created.
 - Diff against `bb1c229` is within the 400-line hard cap, including OpenSpec metadata.
+
+## Work Unit 4 Evidence
+### TDD Cycle Evidence
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 3.1 | `tests/manifest/test_projection.py`, `tests/manifest/test_drift.py` | Unit | `uv run pytest tests/manifest/test_projection.py tests/manifest/test_drift.py`: 31 passed | Added legacy-view guard tests first; exit 1, 2 failed / 31 passed because consumers used `lock.layers` | Changed consumers to `lock.git_layers`; exit 0, 33 passed | v2 published-only plus existing v1/Git projection and mismatch cases | Named the v2 Git-only iteration boundary; 33 passed |
+| 3.2 | `tests/cli/test_lock.py` | CLI integration | `uv run pytest tests/cli/test_lock.py`: 10 passed | Pre-existing acceptance tests already cover full v2 readback, unresolved core ref, clean resolver error, and atomic rollback; no missing behavior was found | Verified unchanged: 10 passed | Existing success/failure and absent/existing-lock paths | No candidate refactor needed |
+| 4.1 | `tests/manifest/test_composition.py`, `tests/manifest/test_lockfile_format.py`, `tests/manifest/test_locking.py`, `tests/cli/test_lock.py` | Unit/CLI integration | `uv run pytest tests/manifest tests/cli`: 175 passed | The tracked `odoo-idp.project.yaml` fire fixture and all scenario tests pre-existed this unit; no test-only mutation or duplicate test was added | 175 passed | Covers fixture composition, invalid targets, pinning, v1/v2, unknown versions, CLI lock/readback, core default, and failure rollback | No shared-fixture rename was needed |
+
+### Work Unit Evidence
+| Evidence | Result |
+|---|---|
+| Focused test | `uv run pytest tests/manifest tests/cli` — exit 0, 175 passed. |
+| Runtime harness | `uv run pytest tests/cli/test_lock.py` — exit 0, 10 passed through the real Typer `lock`/`validate` commands with temporary manifests and files; no shell/process boundary applies. |
+| Rollback boundary | Revert only `projection.py`, `drift.py`, and their two focused test files to restore compatibility-view iteration; no lock model, resolver, adapter, or CLI behavior is removed. |
+
+### Quality Gate
+- `uv run lint-imports` — exit 0, 6 contracts kept.
+- `uv run ruff check .` — exit 0, all checks passed.
+- `uv run ruff format --check .` — exit 1: pre-existing formatting findings in unchanged `src/odoo_forge/manifest/composition.py`, `src/odoo_forge/manifest/locking.py`, and `tests/cli/test_lock.py`; not fixed because they are outside this Work Unit.
+- `uv run mypy` — exit 0, no issues in 110 source files.
+- `uv run pytest` — exit 0, 574 passed and 6 deselected.
+
+## Delivery: Work Unit 4
+- Feature-branch-chain PR #4 base: `feat/manifest-published-layers` / `ce2d165`; no commit, push, PR, review, or verify report was created.
+- Diff against `ce2d165` before OpenSpec task/progress metadata: 87 additions + 5 deletions = 92 changed lines; below the 400-line hard cap.
+- Task 4.2 remains unchecked: complete quality verification cannot be proven while the pre-existing formatter findings remain, and fixing them is explicitly out of scope.
+
+## Work Unit 4 Quality Completion
+- The formatter findings are owned by earlier units in this feature chain relative to tracker/main, so task 4.2 permits their mechanical correction.
+- `uv run ruff format src/odoo_forge/manifest/composition.py src/odoo_forge/manifest/locking.py tests/cli/test_lock.py` reformatted exactly those three chain-owned files without behavioral changes.
+- Exact CI order: `uv run lint-imports` — exit 0, 6 contracts kept; `uv run ruff check .` — exit 0; `uv run ruff format --check .` — exit 0, 113 files already formatted; `uv run mypy` — exit 0, no issues in 110 source files; `uv run pytest` — exit 0, 574 passed and 6 deselected.
+- Task 4.2 is complete. Final task state: 9/9 checked.
+- Final Unit 4 diff against `ce2d165`: 129 additions + 14 deletions = 143 changed lines, below the 400-line hard cap.

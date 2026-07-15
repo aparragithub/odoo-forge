@@ -274,9 +274,7 @@ def test_validate_rejects_invalid_lock_version_without_traceback(
 ) -> None:
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
-    (tmp_path / "project.lock").write_text(
-        json.dumps({"schema_version": schema_version})
-    )
+    (tmp_path / "project.lock").write_text(json.dumps({"schema_version": schema_version}))
 
     result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
 
