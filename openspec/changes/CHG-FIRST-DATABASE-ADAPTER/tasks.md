@@ -39,9 +39,9 @@ Chain strategy: feature-branch-chain
 
 ## Phase 3: Handoffs and Restore (PR 3)
 
-- [ ] 3.1 RED: test `target_handoffs.py` for opaque credential injection, artifact-reference use, secret/byte redaction, and validation failure before any Docker mutation.
-- [ ] 3.2 GREEN: create `src/odoo_forge_postgres_docker/target_handoffs.py`; wire `CAP-CREDENTIALS` materialization and validated `CAP-DATA-ARTIFACTS` restore injection.
-- [ ] 3.3 REFACTOR: cover unavailable, incoherent, and integrity-invalid refs with fail-closed typed errors.
+- [x] 3.1 RED: test `target_handoffs.py` for opaque credential injection, artifact-reference use, secret/byte redaction, and validation failure before any Docker mutation.
+- [x] 3.2 GREEN: create `src/odoo_forge_postgres_docker/target_handoffs.py`; wire `CAP-CREDENTIALS` materialization and validated `CAP-DATA-ARTIFACTS` restore injection.
+- [x] 3.3 REFACTOR: cover unavailable, incoherent, and integrity-invalid refs with fail-closed typed errors.
 
 ## Phase 4: Integration and Acceptance (PR 4)
 

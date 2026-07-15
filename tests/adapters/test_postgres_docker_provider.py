@@ -10,10 +10,20 @@ from typing import get_type_hints
 import pytest
 
 import odoo_forge_postgres_docker.provider as provider_module
-from odoo_forge.credentials.types import CredentialHandle
-from odoo_forge.data_artifacts.types import DataArtifactRef
+from odoo_forge.credentials.types import CredentialHandle, CredentialInjectionDescriptor
+from odoo_forge.data_artifacts import (
+    ArtifactComponentKind,
+    ArtifactDigest,
+    DataArtifactRef,
+    DiscardOutcome,
+    RestoreReadiness,
+    RestoreSetComponent,
+    RestoreSetManifest,
+    ValidationFailureCode,
+)
 from odoo_forge.database import CreationReceipt, DatabaseRef, OperationIdentity, ResourceOwnership
 from odoo_forge.database.errors import (
+    CredentialUnavailableError,
     DatabaseOperationError,
     DatabaseReadinessError,
     OwnershipRefusedError,
@@ -25,6 +35,13 @@ from odoo_forge_postgres_docker.provider import (
     DockerCommandTimeoutError,
     DockerPostgresqlDatabaseProvider,
 )
+from odoo_forge_postgres_docker.target_handoffs import (
+    RestoreArtifactIncoherentError,
+    RestoreArtifactIntegrityError,
+    RestoreArtifactUnavailableError,
+    materialize_database_credentials,
+    validated_database_restore,
+)
 
 _OWNED_LABELS = (
     '{"io.odoo-forge.provider":"postgres-docker",'
@@ -33,6 +50,196 @@ _OWNED_LABELS = (
     '"io.odoo-forge.creator-token":"token-42"}'
 )
 _OWNED_INSPECT = '[{"Config":{"Labels":' + _OWNED_LABELS + '}}]'
+
+
+def _restore_manifest() -> RestoreSetManifest:
+    digest = ArtifactDigest(algorithm="sha256", value="a" * 64)
+    return RestoreSetManifest(
+        restore_set_id="restore-set-42",
+        lineage_id="lineage-42",
+        components=(
+            RestoreSetComponent(
+                kind=ArtifactComponentKind.DATABASE,
+                opaque_component_ref="database-component-42",
+                format_version="v1",
+                digest=digest,
+            ),
+            RestoreSetComponent(
+                kind=ArtifactComponentKind.FILESTORE,
+                opaque_component_ref="filestore-component-42",
+                format_version="v1",
+                digest=digest,
+            ),
+        ),
+    )
+
+
+class _Artifacts:
+    def __init__(self, readiness: RestoreReadiness) -> None:
+        self._readiness = readiness
+        self.refs: list[DataArtifactRef] = []
+
+    def validate_for_restore(self, ref: DataArtifactRef) -> RestoreReadiness:
+        self.refs.append(ref)
+        return self._readiness
+
+    def resolve(self, ref: DataArtifactRef) -> RestoreSetManifest:
+        self.refs.append(ref)
+        if self._readiness.manifest is None:
+            raise RuntimeError("restore reference is unavailable")
+        return self._readiness.manifest
+
+    def discard(self, ref: DataArtifactRef) -> DiscardOutcome:
+        raise NotImplementedError
+
+
+def test_target_handoffs_materialize_only_an_opaque_credential_descriptor() -> None:
+    descriptor = materialize_database_credentials(CredentialHandle("postgres-password"))
+
+    assert descriptor.store_ref == "sops://postgres-password"
+    assert descriptor.target_kind == "database"
+    assert "plaintext" not in repr(descriptor)
+
+
+def test_target_handoffs_pass_only_the_database_component_reference_to_restore_injector() -> None:
+    artifacts = _Artifacts(
+        RestoreReadiness(
+            ready=True,
+            manifest=_restore_manifest(),
+            failure_code=None,
+            redacted_detail=None,
+        )
+    )
+    artifact = DataArtifactRef("restore-set-42")
+
+    component = validated_database_restore(artifact, artifacts)
+
+    assert artifacts.refs == [artifact]
+    assert component.opaque_component_ref == "database-component-42"
+    assert "restore bytes" not in repr(component)
+
+
+@pytest.mark.parametrize(
+    ("failure_code", "error_type"),
+    [
+        (ValidationFailureCode.UNAVAILABLE, RestoreArtifactUnavailableError),
+        (ValidationFailureCode.COHERENCE_FAILED, RestoreArtifactIncoherentError),
+        (ValidationFailureCode.INTEGRITY_FAILED, RestoreArtifactIntegrityError),
+    ],
+)
+def test_restore_validation_fails_closed_without_docker_mutation(
+    failure_code: ValidationFailureCode, error_type: type[DatabaseOperationError]
+) -> None:
+    artifacts = _Artifacts(
+        RestoreReadiness(
+            ready=False,
+            manifest=None,
+            failure_code=failure_code,
+            redacted_detail="artifact validation failed",
+        )
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        artifact_capability=artifacts,
+    )
+
+    with pytest.raises(error_type) as excinfo:
+        provider.restore(
+            DatabaseSpec(name="database-42"),
+            DataArtifactRef("restore-set-42"),
+            CredentialHandle("super-secret"),
+        )
+
+    assert calls == []
+    assert "super-secret" not in str(excinfo.value)
+
+
+def test_restore_injects_validated_opaque_handoffs_before_provisioning() -> None:
+    calls: list[tuple[str, ...]] = []
+    descriptors: list[CredentialInjectionDescriptor] = []
+    components: list[RestoreSetComponent] = []
+    artifacts = _Artifacts(
+        RestoreReadiness(
+            ready=True,
+            manifest=_restore_manifest(),
+            failure_code=None,
+            redacted_detail=None,
+        )
+    )
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        artifact_capability=artifacts,
+        credential_injector=descriptors.append,
+        restore_injector=components.append,
+    ).restore(
+        DatabaseSpec(name="database-42"),
+        DataArtifactRef("restore-set-42"),
+        CredentialHandle("postgres-password"),
+    )
+
+    assert creation.ref.identifier == "database-42"
+    assert descriptors[0].store_ref == "sops://postgres-password"
+    assert components[0].opaque_component_ref == "database-component-42"
+    assert calls[0][:3] == ("docker", "run", "--detach")
+
+
+def test_credential_target_injector_failure_is_typed_and_redacted() -> None:
+    secret = "credential-injector-super-secret"
+
+    def credential_injector(_descriptor: CredentialInjectionDescriptor) -> None:
+        raise RuntimeError(f"credential injection failed: {secret}")
+
+    provider = DockerPostgresqlDatabaseProvider(credential_injector=credential_injector)
+
+    with pytest.raises(CredentialUnavailableError) as excinfo:
+        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert str(excinfo.value) == "database credentials are unavailable"
+    assert secret not in str(excinfo.value)
+
+
+def test_restore_target_injector_failure_is_typed_and_redacted() -> None:
+    secret = "restore-artifact-super-secret"
+    artifacts = _Artifacts(
+        RestoreReadiness(
+            ready=True,
+            manifest=_restore_manifest(),
+            failure_code=None,
+            redacted_detail=None,
+        )
+    )
+
+    def restore_injector(_component: RestoreSetComponent) -> None:
+        raise RuntimeError(f"restore injection failed: {secret}")
+
+    provider = DockerPostgresqlDatabaseProvider(
+        artifact_capability=artifacts,
+        restore_injector=restore_injector,
+    )
+
+    with pytest.raises(DatabaseOperationError) as excinfo:
+        provider.restore(
+            DatabaseSpec(name="database-42"),
+            DataArtifactRef("restore-set-42"),
+            CredentialHandle("opaque"),
+        )
+
+    assert str(excinfo.value) == "database provider operation failed"
+    assert secret not in str(excinfo.value)
 
 
 def test_hostile_resource_name_is_rejected_before_subprocess_execution() -> None:
