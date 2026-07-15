@@ -8,7 +8,7 @@ Define the additive, isolated Docker PostgreSQL implementation of the accepted `
 
 ### Requirement: Isolated Docker Lifecycle
 
-The adapter MUST implement the accepted database lifecycle for Docker PostgreSQL and MUST be selectable only through `DPROV-DB`. It MUST remain additive and MUST NOT extract, reroute, or cut over the local-backend PostgreSQL.
+The adapter MUST implement the accepted database lifecycle for Docker PostgreSQL and MUST be selectable only through `DPROV-DB`. It MUST remain additive and MUST NOT extract, reroute, or cut over the local-backend PostgreSQL. Provider-neutral contracts, opaque handoffs, typed redaction, and exclusions for tracker integration, control-plane authority, data environments, data copy, and PublishedLayer/Override semantics MUST remain unchanged.
 
 #### Scenario: Provider is selected without cutover
 
@@ -25,39 +25,37 @@ The adapter MUST implement the accepted database lifecycle for Docker PostgreSQL
 
 ### Requirement: Ownership-Scoped Resource Lifecycle
 
-The adapter MUST record creator proof for resources it creates and MUST mutate, reconcile, recover, disable, delete, or clean up only resources proven to belong to its creation receipt. Adopted, external, and unproven resources MUST remain protected.
+The adapter MUST record durable authority for resources it creates and MUST mutate, reconcile, recover, disable, delete, or clean up only resources proven by that authority to belong to its creation lineage. Labels and inspection data are discovery identifiers only; adopted, legacy, external, and unproven resources MUST remain protected and MUST be recreated when required.
 
 #### Scenario: Created resources are reconciled and cleaned
 
-- GIVEN the adapter created Docker resources and retained a valid creation receipt
-- WHEN reconciliation, recovery, rollback, or cleanup runs
-- THEN only receipt-owned resources are considered
+- GIVEN the adapter created Docker resources and durable authority verifies their lineage
+- WHEN reconciliation, rollback, or cleanup runs after restart
+- THEN only authority-owned resources are considered
 - AND successful cleanup leaves no adapter-owned residuals
 
-#### Scenario: Foreign resource is protected
+#### Scenario: Foreign or legacy resource is protected
 
-- GIVEN a Docker resource is external, adopted, or lacks matching creator proof
+- GIVEN a resource is external, adopted, legacy, or lacks matching authority
 - WHEN destructive recovery or cleanup is requested
-- THEN the adapter refuses that resource
-- AND reports a typed, redacted ownership outcome
+- THEN the adapter refuses it and reports a typed, redacted ownership outcome
 
 ### Requirement: Credential and Artifact Handoffs Remain Opaque
 
-The adapter MUST obtain credentials only through `CAP-CREDENTIALS` and MUST keep them opaque outside the authorized target-side injection step. Backup outputs and restore inputs MUST use `CAP-DATA-ARTIFACTS` references; the adapter MUST validate restore readiness before mutation.
+The adapter MUST obtain credentials only through `CAP-CREDENTIALS`, inject them through an approved Docker target-side mechanism, and keep them opaque outside that step. Backup outputs and restore inputs MUST use `CAP-DATA-ARTIFACTS` references; the adapter MUST validate restore readiness before mutation.
 
 #### Scenario: Provision and restore use approved handoffs
 
 - GIVEN a valid `CredentialHandle` and, for restore, a valid `DataArtifactRef`
 - WHEN provisioning or restore is requested
 - THEN the adapter completes using those references
-- AND returned values, diagnostics, and evidence contain no plaintext credentials or artifact bytes
+- AND returned values, diagnostics, evidence, and Docker inspection expose neither credentials nor artifact bytes
 
 #### Scenario: Invalid restore input fails closed
 
 - GIVEN a restore reference is unavailable, incoherent, or fails integrity validation
 - WHEN restore readiness is checked
-- THEN the operation fails before target mutation
-- AND the failure is typed and redacted
+- THEN the operation fails before target mutation and the failure is typed and redacted
 
 ### Requirement: Bounded Availability and Recovery
 
@@ -113,18 +111,16 @@ When cleanup of an opaque `credential-file` target leaves a residual, the adapte
 
 ### Requirement: Runtime Evidence Must Prove Fail-Closed Acceptance
 
-Acceptance evaluation MUST remain false unless required real-Docker and ownership-safety evidence is present and genuine at runtime. Evidence that is missing, simulated, or otherwise unable to demonstrate those runtime properties MUST NOT support acceptance, even when all other evidence is complete. The acceptance test suite MUST explicitly exercise this negative policy.
+Acceptance MUST remain false unless final-lineage real-Docker, authority, and ownership-safety evidence is genuine at runtime. Missing, simulated, imported, forged, stale, or inspection-reconstructed evidence MUST NOT support acceptance.
 
-#### Scenario: Missing real-Docker or ownership evidence blocks acceptance
+#### Scenario: Missing or stale evidence blocks acceptance
 
-- GIVEN all approval and lifecycle evidence is complete except required real-Docker or ownership evidence
-- WHEN acceptance readiness is evaluated at runtime
-- THEN acceptance remains false
-- AND the missing evidence is reported as the blocking condition
+- GIVEN required final-lineage or authority evidence is missing or stale
+- WHEN acceptance readiness is evaluated
+- THEN acceptance remains false and the blocking condition is reported
 
-#### Scenario: Simulated evidence blocks acceptance
+#### Scenario: Simulated or forged evidence blocks acceptance
 
-- GIVEN otherwise complete evidence marks real-Docker or ownership behavior as simulated rather than runtime-proven
-- WHEN acceptance readiness is evaluated at runtime
-- THEN acceptance remains false
-- AND the runtime test demonstrates the fail-closed result
+- GIVEN evidence is simulated, imported, or reconstructed from inspection
+- WHEN acceptance readiness is evaluated
+- THEN acceptance remains false and the runtime test demonstrates fail-closed behavior
