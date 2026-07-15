@@ -53,7 +53,7 @@ Use a feature-branch chain only during apply: (1) v2 models/reader plus tests; (
 
 ## Threat Matrix
 
-N/A — no routing, shell-command construction, subprocess implementation, VCS/PR automation, executable classification, or process boundary is changed. The new adapter delegates through the existing registry provider; existing subprocess safety remains outside this design’s changed boundary.
+N/A — no routing, shell-command construction, subprocess implementation, VCS/PR automation, executable classification, or process boundary is changed. The new adapter delegates through the existing registry provider; existing subprocess safety remains outside this design's changed boundary.
 
 ## Migration / Rollout
 

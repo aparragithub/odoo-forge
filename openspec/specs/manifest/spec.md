@@ -78,12 +78,24 @@ object. It MUST NOT read or hash raw file bytes.
 
 ## Capability: onion-composition (New)
 
+### Requirement: Published layers and Git overrides are effective
+
+`PublishedLayer` MUST resolve to its declared version and immutable artifact digest; missing digest MUST fail before lock writing. PublishedLayer and Override remain supported. For an additional `GitLayer`, `Override.repo` MUST exactly equal the declared URL; replacement MUST precede resolution and the lock MUST record effective fork/ref/commit.
+
+#### Scenario: Published and overridden entries are pinned
+- GIVEN a published layer with version/digest and a matching Git override
+- WHEN locking runs
+- THEN the lock contains the published version/digest and effective fork/ref/commit
+
+#### Scenario: Invalid declaration prevents lock writing
+- GIVEN a missing digest or a duplicate, unknown, PublishedLayer, or core override target
+- WHEN locking runs
+- THEN it fails before writing a lock
+
 ### Requirement: Compose orders and validates without materializing
 
-`compose(manifest) -> list[Layer]` MUST order layers core-first,
-client-last, and MUST validate: edition coherence (above), every
-`Override.layer` reference exists in `layers`, and the client is the final
-writable layer. It MUST perform zero filesystem or network access.
+`compose(manifest) -> list[Layer]` MUST order core-first/client-last and validate edition coherence, override layers/repos, and final writable client. It MUST reject duplicates, unknown targets, invalid combinations, PublishedLayer/core targets before knowable I/O, and perform zero filesystem/network access.
+(Previously: it did not validate override repositories, duplicates, or target combinations.)
 
 #### Scenario: Override referencing a missing layer fails
 - GIVEN an `Override` naming a layer not present in `manifest.layers`
@@ -179,11 +191,8 @@ to `compose()`.
 
 ### Requirement: project.lock has a canonical, versioned, deterministic serialization
 
-`Lockfile` MUST expose pure `to_canonical_json() -> str` and `from_json(data: str) -> Lockfile`
-helpers. The JSON payload MUST include an explicit integer `schema_version` field
-(starting at `1`), MUST use sorted keys, and MUST use a fixed indentation.
-Serializing, deserializing, and re-serializing the same `Lockfile` MUST produce
-byte-identical output both times.
+`Lockfile` MUST expose pure canonical JSON helpers with integer `schema_version`, sorted keys, and fixed indentation; v2 represents published entries. Readers MUST accept v1/v2, reject unknown versions, and read v1 without fabricating published entries. Round-tripping MUST be byte-identical.
+(Previously: only v1 and legacy-read behavior were defined.)
 
 #### Scenario: schema_version is present
 - GIVEN a `Lockfile` instance
@@ -203,12 +212,14 @@ byte-identical output both times.
 - THEN the first and second serialized outputs are byte-identical
 
 #### Scenario: Legacy document without schema_version is tolerated
-- GIVEN a JSON document with no `schema_version` field (pre-Slice-2a lock
-  shape) but otherwise valid `Lockfile` fields
+- GIVEN a valid pre-Slice-2a lock without `schema_version`
 - WHEN `from_json` is called
-- THEN it MUST succeed, treating the absent field as schema version `1`
-- AND re-serializing the result MUST emit the current `schema_version`
-  explicitly
+- THEN it succeeds as v1 and re-serialization emits `schema_version`
+
+#### Scenario: Unknown version is rejected
+- GIVEN an unsupported schema version
+- WHEN `from_json` is called
+- THEN it rejects the document
 
 ## Capability: ref-resolution (New) — Slice 2b
 
@@ -275,13 +286,8 @@ existing two Slice-1 contracts — neither existing contract MUST be weakened.
 
 ### Requirement: forge lock writes a pinned, canonical project.lock
 
-`forge lock [--manifest project.yaml]` MUST parse and compose the manifest,
-resolve `core.ref` via `resolve_default_ref` when unset, resolve every
-declared layer/repo ref to a commit SHA through an injected
-`SourceProvider`, build a `Lockfile` with `schema_version` set, and write it
-via `to_canonical_json()`. All resolution/orchestration logic MUST live in
-`odoo_forge` behind the `SourceProvider` Protocol; the CLI only constructs
-the concrete adapter and orchestrates I/O.
+`forge lock [--manifest project.yaml]` MUST parse/compose, resolve core defaults and Git refs through `SourceProvider`, resolve PublishedLayer version/digest, apply overrides first, and write the canonical lock. Resolution MUST remain in `odoo_forge`; Git-only behavior and deterministic hashing/serialization MUST remain unchanged.
+(Previously: it resolved core/Git refs only.)
 
 #### Scenario: Valid manifest produces a pinned lock
 - GIVEN a valid manifest with all refs resolvable
