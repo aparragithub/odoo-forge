@@ -67,15 +67,10 @@ def _wait_for_psql(name: str, *environment: str) -> subprocess.CompletedProcess[
 
 
 @contextmanager
-def _credential_target(password: str) -> Iterator[Path]:
-    with tempfile.NamedTemporaryFile(mode="w", delete=False, encoding="utf-8") as env_file:
-        env_file.write(f"POSTGRES_PASSWORD={password}\n")
-        path = Path(env_file.name)
-    path.chmod(0o600)
-    try:
-        yield path
-    finally:
-        path.unlink(missing_ok=True)
+def _credential_target(password: str) -> Iterator[str]:
+    # The provider now consumes the plaintext secret directly; the injector
+    # writes it to the container's POSTGRES_PASSWORD_FILE target.
+    yield password
 
 
 class _ReadyArtifacts:
