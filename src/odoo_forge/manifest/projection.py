@@ -88,8 +88,9 @@ def classify_root(layer: CoreLayer | GitLayer | PublishedLayer) -> MountRoot:
 
 
 def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
-    """Join `lock.layers` to the current manifest by name and classify each
-    to a mount root, preserving `lock.layers` order. Pure, zero I/O.
+    """Join v2 `lock.git_layers` to the current manifest by name and classify each
+    to a mount root, preserving Git-layer order. Published entries are retained
+    in the lock but have no Git checkout. Pure, zero I/O.
 
     Raises `ProjectionError` naming the orphaned layer when a locked layer
     has no matching manifest layer — no partial plan is ever returned.
@@ -101,7 +102,7 @@ def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
         manifest_layers_by_name[layer.name] = layer
 
     steps: list[WorkspacePlanEntry] = []
-    for lock_layer in lock.layers:
+    for lock_layer in lock.git_layers:
         matched_layer = manifest_layers_by_name.get(lock_layer.name)
         if matched_layer is None:
             raise ProjectionError(

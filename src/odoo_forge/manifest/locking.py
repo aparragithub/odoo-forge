@@ -69,8 +69,7 @@ def _resolve_git_layer(
     layer: GitLayer, provider: SourceProvider, overrides: dict[tuple[str, str], Override]
 ) -> ResolvedLayer:
     repos = [
-        _resolve_repo(layer.name, repo.url, repo.ref, provider, overrides)
-        for repo in layer.repos
+        _resolve_repo(layer.name, repo.url, repo.ref, provider, overrides) for repo in layer.repos
     ]
     return ResolvedLayer(name=layer.name, repos=repos)
 
