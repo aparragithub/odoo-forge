@@ -5,6 +5,7 @@ description = "Pure Pydantic domain + CLI for composing decentralized Odoo proje
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "cryptography>=43.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "typer>=0.12",

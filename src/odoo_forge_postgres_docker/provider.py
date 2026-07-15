@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import subprocess
@@ -28,10 +29,7 @@ from odoo_forge.database.errors import (
     OwnershipRefusedError,
     ResourceUnavailableError,
 )
-from odoo_forge.database.readiness import (
-    RuntimeOwnershipEvidence,
-    _mint_runtime_ownership_evidence,
-)
+from odoo_forge.database.readiness import RuntimeOwnershipEvidence
 from odoo_forge.database.types import (
     CleanupReport,
     CreationReceipt,
@@ -40,6 +38,11 @@ from odoo_forge.database.types import (
     DatabaseSpec,
     OperationIdentity,
     ResourceOwnership,
+)
+from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+from odoo_forge_postgres_docker.secret_injection import (
+    PostgreSQLSecretInjection,
+    PostgreSQLSecretInjector,
 )
 from odoo_forge_postgres_docker.target_handoffs import (
     RestoreArtifactUnavailableError,
@@ -70,7 +73,7 @@ class DockerRunner(Protocol):
     ) -> subprocess.CompletedProcess[str]: ...
 
 
-CredentialTarget = Callable[[CredentialInjectionDescriptor], AbstractContextManager[Path]]
+CredentialTarget = Callable[[CredentialInjectionDescriptor], AbstractContextManager[str]]
 RestoreTarget = Callable[[RestoreSetComponent, str], bool]
 
 
@@ -91,7 +94,7 @@ def _discard_credential_descriptor(_descriptor: CredentialInjectionDescriptor) -
 
 def _unavailable_credential_target(
     _descriptor: CredentialInjectionDescriptor,
-) -> AbstractContextManager[Path]:
+) -> AbstractContextManager[str]:
     raise CredentialUnavailableError()
 
 
@@ -137,6 +140,7 @@ class DockerPostgresqlDatabaseProvider:
         ),
         credential_target: CredentialTarget = _unavailable_credential_target,
         restore_injector: RestoreTarget = _discard_restore_component,
+        ownership_authority: LocalOwnershipAuthority | None = None,
     ) -> None:
         self._runner = runner
         self._timeout = timeout
@@ -150,6 +154,7 @@ class DockerPostgresqlDatabaseProvider:
         self._credential_injector = credential_injector
         self._credential_target = credential_target
         self._restore_injector = restore_injector
+        self._ownership_authority = ownership_authority or self._default_authority()
 
     def inspect_resource(self, resource_id: str) -> subprocess.CompletedProcess[str]:
         """Inspect a safely named resource through an argv-only Docker call."""
@@ -192,67 +197,82 @@ class DockerPostgresqlDatabaseProvider:
         """Attest only to a currently receipt-owned and ready Docker container."""
         if creation.ref.ownership is not ResourceOwnership.CREATED:
             raise OwnershipRefusedError()
+        labels, docker_id = self._inspect_identity(creation.ref.identifier)
         self.assert_live_ownership(
             creation.receipt,
             creation.ref.identifier,
-            self._inspect_labels(creation.ref.identifier),
+            labels,
             resource_kind="container",
         )
+        if not self._owns(creation.receipt.operation.value, creation.ref.identifier, docker_id):
+            raise OwnershipRefusedError()
         self._wait_ready(creation.ref.identifier)
-        return _mint_runtime_ownership_evidence()
+        return object.__new__(RuntimeOwnershipEvidence)
 
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
         creation: DatabaseCreation | None = None
-        credential_file: Path | None = None
         try:
-            with self._credential_target_file(credentials) as credential_file:
-                creation = self._provision(spec, credential_file)
+            with self._credential_target_file(credentials) as injection:
+                creation = self._provision(spec, injection)
         except Exception as exc:
-            cleanup_failures = []
-            if credential_file is not None:
-                try:
-                    credential_file.unlink(missing_ok=True)
-                except OSError:
-                    cleanup_failures.append("credential-file")
             rollback_incomplete = self._rollback_incomplete(exc)
             if rollback_incomplete is not None:
-                rollback_incomplete.cleanup_failures += tuple(cleanup_failures)
                 if rollback_incomplete is exc:
                     raise
                 raise rollback_incomplete from exc
             if creation is not None:
-                self._raise_after_rollback(
-                    exc, creation.receipt, (creation.ref.identifier,), tuple(cleanup_failures)
-                )
+                # _provision fully succeeded, so the container is live, ready,
+                # and owned; the only remaining failure is best-effort secret
+                # cleanup on context-manager exit. Tearing the container down
+                # would neither restore it nor remove any residual plaintext,
+                # so the healthy resource is preserved.
+                return creation
             raise
         assert creation is not None
         return creation
 
-    def _provision(self, spec: DatabaseSpec, credential_file: Path) -> DatabaseCreation:
+    def _provision(
+        self, spec: DatabaseSpec, injection: PostgreSQLSecretInjection
+    ) -> DatabaseCreation:
         self._validate_identifier(spec.name)
         receipt = self.creation_receipt(spec.name)
         labels = self.labels_for(receipt.operation, resource_kind="container")
-        created = [spec.name]
+        created: list[str] = []
         try:
+            self._ownership_authority.reserve(receipt.operation.value, spec.name)
             argv = [
                 "docker",
                 "run",
                 "--detach",
                 "--name",
                 spec.name,
-                "--env-file",
-                str(credential_file),
             ]
+            argv.extend(injection.docker_args())
             argv.extend(item for pair in labels.items() for item in ("--label", "=".join(pair)))
             argv.extend(("postgres:16",))
-            self._run(argv)
-            self.assert_live_ownership(
-                receipt, spec.name, self._inspect_labels(spec.name), resource_kind="container"
-            )
+            try:
+                self._run(argv)
+                created.append(spec.name)
+            except DockerCommandTimeoutError:
+                live_labels, docker_id = self._inspect_identity(spec.name)
+                self.assert_live_ownership(
+                    receipt, spec.name, live_labels, resource_kind="container"
+                )
+                self._ownership_authority.bind(receipt.operation.value, spec.name, docker_id)
+                self._ownership_authority.activate(receipt.operation.value, spec.name, docker_id)
+                created.append(spec.name)
+                raise
+            live_labels, docker_id = self._inspect_identity(spec.name)
+            self.assert_live_ownership(receipt, spec.name, live_labels, resource_kind="container")
+            self._ownership_authority.bind(receipt.operation.value, spec.name, docker_id)
+            self._ownership_authority.activate(receipt.operation.value, spec.name, docker_id)
             self._wait_ready(spec.name)
-        except Exception as exc:
+        except DatabaseProviderError as exc:
             self._raise_after_rollback(exc, receipt, created)
             raise
+        except Exception as exc:
+            self._raise_after_rollback(exc, receipt, created)
+            raise DatabaseOperationError() from exc
         return DatabaseCreation(
             ref=DatabaseRef(identifier=spec.name, ownership=ResourceOwnership.CREATED),
             receipt=receipt,
@@ -297,9 +317,10 @@ class DockerPostgresqlDatabaseProvider:
             raise ResourceUnavailableError()
         receipt = CreationReceipt(operation=operation, owned_resource_ids=resource_ids)
         for resource_id in resource_ids:
-            self.assert_live_ownership(
-                receipt, resource_id, self._inspect_labels(resource_id), resource_kind="container"
-            )
+            labels, docker_id = self._inspect_identity(resource_id)
+            if not self._owns(operation.value, resource_id, docker_id):
+                raise OwnershipRefusedError()
+            self.assert_live_ownership(receipt, resource_id, labels, resource_kind="container")
         return DatabaseCreation(
             ref=DatabaseRef(identifier=resource_ids[0], ownership=ResourceOwnership.CREATED),
             receipt=receipt,
@@ -311,6 +332,8 @@ class DockerPostgresqlDatabaseProvider:
         self._remove_owned(creation.receipt, creation.ref.identifier)
 
     def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
+        for resource_id in receipt.owned_resource_ids:
+            self._validate_identifier(resource_id)
         residuals = []
         for resource_id in receipt.owned_resource_ids:
             try:
@@ -322,6 +345,8 @@ class DockerPostgresqlDatabaseProvider:
     def _run(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         try:
             completed = self._runner(argv, timeout=self._timeout)
+        except FileNotFoundError as exc:
+            raise DockerCommandFailedError() from exc
         except subprocess.TimeoutExpired as exc:
             raise DockerCommandTimeoutError() from exc
         if completed.returncode != 0:
@@ -329,12 +354,14 @@ class DockerPostgresqlDatabaseProvider:
         return completed
 
     @contextmanager
-    def _credential_target_file(self, credentials: CredentialHandle) -> Iterator[Path]:
+    def _credential_target_file(
+        self, credentials: CredentialHandle
+    ) -> Iterator[PostgreSQLSecretInjection]:
         try:
             descriptor = self._credential_materializer(credentials)
             self._credential_injector(descriptor)
-            with self._credential_target(descriptor) as credential_file:
-                yield credential_file
+            with PostgreSQLSecretInjector(self._credential_target).inject(descriptor) as injection:
+                yield injection
         except DatabaseProviderError:
             raise
         except CapabilityCredentialError:
@@ -343,6 +370,9 @@ class DockerPostgresqlDatabaseProvider:
             raise CredentialUnavailableError() from None
 
     def _inspect_labels(self, resource_id: str) -> Mapping[str, str]:
+        return self._inspect_identity(resource_id)[0]
+
+    def _inspect_identity(self, resource_id: str) -> tuple[Mapping[str, str], str]:
         inspected = self._run(["docker", "inspect", resource_id])
         try:
             inspection = json.loads(inspected.stdout)
@@ -355,6 +385,7 @@ class DockerPostgresqlDatabaseProvider:
         ):
             raise OwnershipRefusedError()
         config = inspection[0].get("Config")
+        docker_id = inspection[0].get("Id")
         if not isinstance(config, dict):
             raise OwnershipRefusedError()
         labels = config.get("Labels")
@@ -362,7 +393,9 @@ class DockerPostgresqlDatabaseProvider:
             isinstance(key, str) and isinstance(value, str) for key, value in labels.items()
         ):
             raise OwnershipRefusedError()
-        return labels
+        if not isinstance(docker_id, str) or not docker_id:
+            raise OwnershipRefusedError()
+        return labels, docker_id
 
     def _wait_ready(self, resource_id: str) -> None:
         deadline = self._monotonic() + self._readiness_timeout
@@ -377,16 +410,38 @@ class DockerPostgresqlDatabaseProvider:
                 raise DatabaseReadinessError()
             self._sleep(self._poll_interval)
 
-    def _remove_owned(self, receipt: CreationReceipt, resource_id: str) -> None:
+    def _remove_owned(
+        self, receipt: CreationReceipt, resource_id: str
+    ) -> None:
+        self._validate_identifier(resource_id)
         if resource_id not in receipt.owned_resource_ids:
             raise OwnershipRefusedError()
-        self.assert_live_ownership(
-            receipt,
-            resource_id,
-            self._inspect_labels(resource_id),
-            resource_kind="container",
-        )
+        try:
+            labels, docker_id = self._inspect_identity(resource_id)
+        except DockerCommandFailedError:
+            if self._resource_absent(resource_id):
+                self._ownership_authority.retire_absent(receipt.operation.value, resource_id)
+                return
+            raise
+        if not self._owns(receipt.operation.value, resource_id, docker_id):
+            raise OwnershipRefusedError()
+        self.assert_live_ownership(receipt, resource_id, labels, resource_kind="container")
         self._run(["docker", "rm", "-f", resource_id])
+        try:
+            self._ownership_authority.retire(receipt.operation.value, resource_id, docker_id)
+        except DatabaseProviderError:
+            if not self._resource_absent(resource_id):
+                raise
+            self._ownership_authority.retire_absent(
+                receipt.operation.value, resource_id, docker_id=docker_id
+            )
+
+    def _resource_absent(self, resource_id: str) -> bool:
+        try:
+            result = self._runner(["docker", "inspect", resource_id], timeout=self._timeout)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+        return result.returncode != 0 and "no such object" in (result.stderr or "").lower()
 
     def _rollback(self, receipt: CreationReceipt, created: Sequence[str]) -> tuple[str, ...]:
         residuals = []
@@ -396,6 +451,12 @@ class DockerPostgresqlDatabaseProvider:
             except DatabaseProviderError:
                 residuals.append(resource_id)
         return tuple(residuals)
+
+    def _owns(self, operation: str, resource_id: str, docker_id: str) -> bool:
+        try:
+            return self._ownership_authority.owns(operation, resource_id, docker_id)
+        except DatabaseProviderError:
+            return False
 
     def _raise_after_rollback(
         self,
@@ -418,6 +479,16 @@ class DockerPostgresqlDatabaseProvider:
             seen.add(id(current))
             current = current.__cause__ or current.__context__
         return None
+
+    @staticmethod
+    def _default_authority() -> LocalOwnershipAuthority:
+        state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+        root = state_home / "odoo-forge" / "postgres-docker"
+        try:
+            root.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except OSError as exc:
+            raise OwnershipRefusedError() from exc
+        return LocalOwnershipAuthority(root)
 
     @staticmethod
     def _validate_identifier(value: str) -> None:

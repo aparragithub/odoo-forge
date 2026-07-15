@@ -2,6 +2,7 @@ from typing import cast
 
 import pytest
 
+import odoo_forge.database.readiness as readiness_module
 from odoo_forge.database import CreationReceipt, DatabaseCreation, DatabaseRef, OperationIdentity
 from odoo_forge.database.readiness import (
     GateReadinessEvidence,
@@ -66,6 +67,7 @@ def test_direct_runtime_attestation_construction_is_refused() -> None:
         RuntimeOwnershipEvidence()  # type: ignore[call-arg]
 
     assert not hasattr(RuntimeOwnershipEvidence, "from_verified_creation")
+    assert not hasattr(readiness_module, "_mint_runtime_ownership_evidence")
 
 
 def test_manually_built_database_creation_cannot_pass_readiness() -> None:
