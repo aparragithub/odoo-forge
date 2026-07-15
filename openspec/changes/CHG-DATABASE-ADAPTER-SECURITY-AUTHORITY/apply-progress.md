@@ -146,3 +146,43 @@ Completed task: 4.1. PR 4 targets PR 3B in the feature-branch chain; PR 5 was no
 
 - Strategy: feature-branch-chain; PR 4 targets PR 3B, never `main`.
 - Out of scope: real-Docker/readiness/final-lineage proof (PR 5), reviews, commits, pushes, and PR creation.
+
+## Slice 5 — Integration and Final Proof
+
+Completed tasks: 5.1, 5.2. Executed from the final chain lineage on `main` at `8233899`
+against a real Docker Engine (29.6.1) and the official `postgres:16` image.
+
+### Real-Docker Acceptance Evidence
+
+| Property | Test | Result |
+|---|---|---|
+| Password enforcement (injected secret is the only accepted password) | `test_provision_enforces_only_the_injected_secret_as_the_password` | Peer container over the bridge: correct password connects, `wrong-*` is rejected by `scram-sha-256`; loopback `trust` is deliberately not used as the proof path |
+| Secret absence from `Config.Env` | `test_provisioned_container_never_exposes_the_plaintext_secret_in_config_env` | `Config.Env` carries only `POSTGRES_PASSWORD_FILE=…`; no `POSTGRES_PASSWORD=` and no plaintext substring |
+| Restart-durable authority (daemon-restart reconcile/cleanup) | `test_daemon_restart_reconcile_and_cleanup_survive_on_durable_authority` | A fresh provider on the persisted signed records reconciles and cleans a stopped container; the erased secret mount means containers are reconciled/cleaned, never re-run |
+| Foreign survival + reconcile + cleanup | `test_provision_reconcile_foreign_survival_and_cleanup_against_real_docker` | Owned lifecycle cannot remove an independently created container |
+| Live-ready signed attestation | `test_runtime_attestation_requires_a_live_ready_docker_container` | `RuntimeOwnershipEvidence` minted only after live ownership + readiness; identifier absent from repr |
+| Forced-readiness rollback | `test_forced_readiness_failure_rolls_back_the_real_created_container` | Real created container rolled back; secret redacted from the error |
+| Opaque restore handoff + cleanup | `test_restore_uses_an_opaque_artifact_handoff_and_real_cleanup` | Opaque component injected over loopback trust; content restored; real cleanup leaves no residual |
+| Redacted credential/restore failures | `test_credential_and_restore_failures_are_redacted_before_docker_mutation` | Secrets never surface in typed errors |
+
+Forged/stale/missing/replay signed-evidence rejection is proved at the unit layer
+(`test_signed_evidence_rejects_tampering_unknown_keys_and_invalid_schema`,
+`test_rejects_schema_valid_tampering_of_signed_ownership_records`,
+`test_rotation_recovery_and_replay_or_expired_nonce_are_rejected`,
+`test_imported_or_inspect_minted_evidence_is_rejected_and_errors_are_redacted`).
+
+### Work Unit Evidence
+
+| Evidence | Result |
+|---|---|
+| Real-Docker suite | `uv run pytest tests/adapters/test_postgres_docker_provider_integration.py -m real_docker` → 8 passed (Docker 29.6.1, `postgres:16`) |
+| Unit + contract suite | `uv run pytest` → 662 passed, 14 deselected |
+| Static checks | `ruff check .`, `ruff format --check .`, `uv run mypy` (119 files), `lint-imports` (6/6 contracts) → all clean |
+| Build | `uv build --offline` → source + wheel built |
+| Final-lineage evidence | Regenerated from the `main`@`8233899` chain lineage; predecessor review evidence not read or reused |
+
+### Delivery Boundary
+
+- Strategy: feature-branch-chain; Slice 5 targets `main` at `8233899` via its own PR.
+- Design note: erasing the host secret after provisioning makes containers non-restartable by
+  design; durability is provided by the persisted signed ownership authority, not by the container.
