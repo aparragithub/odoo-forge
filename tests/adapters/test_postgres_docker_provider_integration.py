@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
 import tempfile
 import time
@@ -29,6 +31,7 @@ from odoo_forge.database.errors import (
     DatabaseReadinessError,
 )
 from odoo_forge.database.readiness import GateReadinessEvidence, evaluate_gate_readiness
+from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
 from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.real_docker]
@@ -58,11 +61,56 @@ def _psql(name: str, *environment: str) -> subprocess.CompletedProcess[str]:
 
 
 def _wait_for_psql(name: str, *environment: str) -> subprocess.CompletedProcess[str]:
-    for _ in range(30):
-        result = _psql(name, *environment)
+    result = _psql(name, *environment)
+    for _ in range(60):
         if result.returncode == 0:
             return result
-        time.sleep(0.1)
+        time.sleep(0.25)
+        result = _psql(name, *environment)
+    return result
+
+
+def _container_ip(name: str) -> str:
+    result = _docker(
+        ["inspect", "-f", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", name]
+    )
+    return result.stdout.strip()
+
+
+def _config_env(name: str) -> list[str]:
+    result = _docker(["inspect", "-f", "{{json .Config.Env}}", name])
+    env: list[str] = json.loads(result.stdout)
+    return env
+
+
+def _peer_psql(host: str, password: str) -> subprocess.CompletedProcess[str]:
+    # A separate container reaches the provisioned database over the bridge by
+    # IP, so pg_hba's scram-sha-256 (not the loopback trust rule) is exercised.
+    return _docker(
+        [
+            "run",
+            "--rm",
+            "-e",
+            f"PGPASSWORD={password}",
+            "postgres:16",
+            "psql",
+            "-h",
+            host,
+            "-U",
+            "postgres",
+            "-c",
+            "select 1",
+        ]
+    )
+
+
+def _wait_peer_psql(host: str, password: str) -> subprocess.CompletedProcess[str]:
+    result = _peer_psql(host, password)
+    for _ in range(40):
+        if result.returncode == 0:
+            return result
+        time.sleep(0.25)
+        result = _peer_psql(host, password)
     return result
 
 
@@ -177,8 +225,8 @@ def test_runtime_attestation_requires_a_live_ready_docker_container() -> None:
             assert provider.cleanup(creation.receipt).residual_failures == ()
 
 
-def test_provision_requires_the_authorized_credential_target_handoff() -> None:
-    """PostgreSQL rejects missing/wrong passwords but accepts the target credential."""
+def test_provision_enforces_only_the_injected_secret_as_the_password() -> None:
+    """A peer over the bridge proves the injected secret is the enforced password."""
     _require_real_docker()
     name = f"auth-{uuid.uuid4().hex[:12]}"
     password = f"auth-{uuid.uuid4().hex}"
@@ -186,21 +234,77 @@ def test_provision_requires_the_authorized_credential_target_handoff() -> None:
         readiness_timeout=30.0, credential_target=lambda _descriptor: _credential_target(password)
     )
     creation: DatabaseCreation | None = None
-    pgpass = Path(tempfile.mkstemp(prefix="odoo-forge-pgpass-")[1])
 
     try:
-        pgpass.write_text(f"127.0.0.1:5432:*:postgres:{password}\n")
-        pgpass.chmod(0o600)
         creation = provider.provision(DatabaseSpec(name=name), CredentialHandle("opaque"))
-        assert _psql(name).returncode != 0
-        assert _psql(name, "-e", "PGPASSWORD=wrong").returncode != 0
-        assert _docker(["cp", str(pgpass), f"{name}:/tmp/pgpass"]).returncode == 0
-        assert _wait_for_psql(name, "-e", "PGPASSFILE=/tmp/pgpass").returncode == 0
+        host = _container_ip(name)
+        assert host, "provisioned container must expose a bridge address"
+        assert _wait_peer_psql(host, password).returncode == 0
+        assert _peer_psql(host, f"wrong-{password}").returncode != 0
     finally:
-        pgpass.unlink(missing_ok=True)
         if creation is not None:
             assert provider.cleanup(creation.receipt).residual_failures == ()
             assert not _container_exists(name)
+
+
+def test_provisioned_container_never_exposes_the_plaintext_secret_in_config_env() -> None:
+    """Config.Env carries only the POSTGRES_PASSWORD_FILE reference, never the secret."""
+    _require_real_docker()
+    name = f"secret-{uuid.uuid4().hex[:12]}"
+    password = f"secret-{uuid.uuid4().hex}"
+    provider = DockerPostgresqlDatabaseProvider(
+        readiness_timeout=30.0, credential_target=lambda _descriptor: _credential_target(password)
+    )
+    creation: DatabaseCreation | None = None
+
+    try:
+        creation = provider.provision(DatabaseSpec(name=name), CredentialHandle("opaque"))
+        env = _config_env(name)
+        assert any(entry.startswith("POSTGRES_PASSWORD_FILE=") for entry in env)
+        assert not any(entry.startswith("POSTGRES_PASSWORD=") for entry in env)
+        assert all(password not in entry for entry in env)
+    finally:
+        if creation is not None:
+            assert provider.cleanup(creation.receipt).residual_failures == ()
+            assert not _container_exists(name)
+
+
+def test_daemon_restart_reconcile_and_cleanup_survive_on_durable_authority() -> None:
+    """Durable signed records let a fresh provider reconcile and clean up after a restart."""
+    _require_real_docker()
+    name = f"restart-{uuid.uuid4().hex[:12]}"
+    password = f"restart-{uuid.uuid4().hex}"
+    authority_root = Path(tempfile.mkdtemp(prefix="odoo-forge-authority-"))
+    provider = DockerPostgresqlDatabaseProvider(
+        readiness_timeout=30.0,
+        credential_target=lambda _descriptor: _credential_target(password),
+        ownership_authority=LocalOwnershipAuthority(authority_root),
+    )
+    creation: DatabaseCreation | None = None
+
+    try:
+        creation = provider.provision(DatabaseSpec(name=name), CredentialHandle("opaque"))
+        # A daemon restart leaves the container present (here simulated as stopped)
+        # while the signed authority records persist on disk; the erased secret
+        # mount means the container is reconciled and cleaned, never re-run.
+        assert _docker(["stop", name]).returncode == 0
+        assert _container_exists(name)
+
+        restarted = DockerPostgresqlDatabaseProvider(
+            readiness_timeout=30.0,
+            ownership_authority=LocalOwnershipAuthority(authority_root),
+        )
+        reconciled = restarted.reconcile(creation.receipt.operation)
+        assert reconciled.receipt.owned_resource_ids == (name,)
+
+        cleanup = restarted.cleanup(reconciled.receipt)
+        assert cleanup.residual_failures == ()
+        assert not _container_exists(name)
+        creation = None
+    finally:
+        if creation is not None:
+            provider.cleanup(creation.receipt)
+        shutil.rmtree(authority_root, ignore_errors=True)
 
 
 def test_forced_readiness_failure_rolls_back_the_real_created_container() -> None:
@@ -230,23 +334,16 @@ def test_restore_uses_an_opaque_artifact_handoff_and_real_cleanup() -> None:
     _require_real_docker()
     name = f"restore-{uuid.uuid4().hex[:12]}"
     injected: list[RestoreSetComponent] = []
-    pgpass = Path(tempfile.mkstemp(prefix="odoo-forge-pgpass-")[1])
-    pgpass.write_text("127.0.0.1:5432:*:postgres:existing\n")
-    pgpass.chmod(0o600)
 
     def restore_target(component: RestoreSetComponent, target: str) -> bool:
+        # Loopback is trust in the postgres:16 image, so the injector reaches the
+        # database over 127.0.0.1 without carrying any credential of its own.
         injected.append(component)
-        copied = _docker(["cp", str(pgpass), f"{target}:/tmp/pgpass"])
-        if (
-            copied.returncode != 0
-            or _wait_for_psql(target, "-e", "PGPASSFILE=/tmp/pgpass").returncode != 0
-        ):
+        if _wait_for_psql(target).returncode != 0:
             return False
         applied = _docker(
             [
                 "exec",
-                "-e",
-                "PGPASSFILE=/tmp/pgpass",
                 target,
                 "psql",
                 "-h",
@@ -261,8 +358,6 @@ def test_restore_uses_an_opaque_artifact_handoff_and_real_cleanup() -> None:
         observed = _docker(
             [
                 "exec",
-                "-e",
-                "PGPASSFILE=/tmp/pgpass",
                 target,
                 "psql",
                 "-h",
@@ -293,7 +388,6 @@ def test_restore_uses_an_opaque_artifact_handoff_and_real_cleanup() -> None:
         assert "bytes" not in repr(injected[0])
         assert _container_exists(creation.ref.identifier)
     finally:
-        pgpass.unlink(missing_ok=True)
         if creation is not None:
             cleanup = provider.cleanup(creation.receipt)
             assert cleanup.residual_failures == ()
