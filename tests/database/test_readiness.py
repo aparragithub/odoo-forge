@@ -64,7 +64,7 @@ def test_plain_or_missing_runtime_values_cannot_pass_readiness(value: object) ->
 
 def test_direct_runtime_attestation_construction_is_refused() -> None:
     with pytest.raises((TypeError, ValueError)):
-        RuntimeOwnershipEvidence()  # type: ignore[call-arg]
+        RuntimeOwnershipEvidence()
 
     assert not hasattr(RuntimeOwnershipEvidence, "from_verified_creation")
     assert not hasattr(readiness_module, "_mint_runtime_ownership_evidence")
