@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 
@@ -57,8 +58,15 @@ def test_valid_manifest_writes_canonical_lock(
     lock_path = tmp_path / "project.lock"
     assert lock_path.exists()
 
-    lock = Lockfile.from_json(lock_path.read_text())
-    assert lock.schema_version == 1
+    raw_lock = lock_path.read_text()
+    lock = Lockfile.from_json(raw_lock)
+    assert lock.schema_version == 2
+    assert json.loads(raw_lock).keys() == {
+        "generated_from",
+        "git_layers",
+        "published_layers",
+        "schema_version",
+    }
     core_layer = next(layer for layer in lock.layers if layer.name == "core")
     assert core_layer.repos[0].commit.startswith("sha-")
 
@@ -234,3 +242,21 @@ def test_load_lock_rejects_invalid_json(tmp_path: Path) -> None:
 
     with pytest.raises(LockfileError):
         main._load_lock(lock_path)
+
+
+@pytest.mark.parametrize("schema_version", [3, "two"])
+def test_validate_rejects_invalid_lock_version_without_traceback(
+    tmp_path: Path, schema_version: object
+) -> None:
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
+    (tmp_path / "project.lock").write_text(
+        json.dumps({"schema_version": schema_version})
+    )
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "invalid lockfile" in result.output
+    assert "Traceback" not in result.output
