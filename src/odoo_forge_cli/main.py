@@ -45,12 +45,13 @@ from odoo_forge.manifest.projection import (
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.manifest.state import MaterializedState
 from odoo_forge.ports.backend_provider import BackendProvider
+from odoo_forge.ports.published_artifact_resolver import PublishedArtifactResolver
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
-from odoo_forge_registry import GhcrImageRegistryProvider
+from odoo_forge_registry import GhcrImageRegistryProvider, PublishedArtifactRegistryResolver
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
 app = typer.Typer()
@@ -59,6 +60,11 @@ app = typer.Typer()
 def _make_provider() -> SourceProvider:
     """Composition root: the ONE place the concrete git adapter is built."""
     return GitSourceProvider()
+
+
+def _make_published_artifact_resolver() -> PublishedArtifactResolver:
+    """Composition root: the registry adapter stays outside the pure core."""
+    return PublishedArtifactRegistryResolver(GhcrImageRegistryProvider())
 
 
 def _make_workspace_provider() -> WorkspaceProvider:
@@ -112,7 +118,7 @@ def _load_lock(path: Path) -> Lockfile | None:
         return Lockfile.from_json(raw)
     except json.JSONDecodeError as exc:
         raise LockfileError(f"invalid JSON in lockfile '{path}': {exc}") from exc
-    except ValidationError as exc:
+    except (ValidationError, ValueError) as exc:
         raise LockfileError(f"invalid lockfile '{path}': {exc}") from exc
 
 
@@ -294,7 +300,8 @@ def lock(
     lock_path = manifest.parent / "project.lock"
     try:
         provider = _make_provider()
-        lockfile = build_lock(parsed, provider)
+        artifact_resolver = _make_published_artifact_resolver()
+        lockfile = build_lock(parsed, provider, artifact_resolver)
         _write_lock_atomic(lock_path, lockfile.to_canonical_json())
     except (ManifestError, ResolutionError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
