@@ -50,5 +50,5 @@ Chain strategy: feature-branch-chain
 
 ## Phase 5: Integration and Final Proof (PR 5)
 
-- [ ] 5.1 RED/GREEN: verify restart cleanup, foreign survival, forged/stale/missing evidence, secret absence, and final signed lineage with Docker/readiness tests; target PR 4.
-- [ ] 5.2 Run pytest, build, import-linter, mypy, Ruff, and final-lineage archive verification; never touch the prohibited review.
+- [x] 5.1 RED/GREEN: verify restart cleanup, foreign survival, forged/stale/missing evidence, secret absence, and final signed lineage with Docker/readiness tests; target PR 4.
+- [x] 5.2 Run pytest, build, import-linter, mypy, Ruff, and final-lineage archive verification; never touch the prohibited review.
