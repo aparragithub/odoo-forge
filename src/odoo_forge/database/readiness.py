@@ -4,27 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-_RUNTIME_OWNERSHIP_MARKER = object()
-
 
 class RuntimeOwnershipEvidence:
     """Opaque proof minted only after adapter-specific runtime verification."""
 
-    __slots__ = ("_marker",)
+    __slots__ = ()
 
-    def __init__(self, *, marker: object) -> None:
-        if marker is not _RUNTIME_OWNERSHIP_MARKER:
-            raise ValueError("runtime ownership evidence must be provider-derived")
-        self._marker = marker
-
-    @property
-    def is_trusted(self) -> bool:
-        return self._marker is _RUNTIME_OWNERSHIP_MARKER
-
-
-def _mint_runtime_ownership_evidence() -> RuntimeOwnershipEvidence:
-    """Create an attestation for an adapter that has completed live verification."""
-    return RuntimeOwnershipEvidence(marker=_RUNTIME_OWNERSHIP_MARKER)
+    def __new__(cls) -> RuntimeOwnershipEvidence:
+        raise TypeError("runtime ownership evidence must be provider-derived")
 
 
 @dataclass(frozen=True)
@@ -54,7 +41,6 @@ def evaluate_gate_readiness(evidence: GateReadinessEvidence) -> GateReadiness:
     ) + (
         ()
         if isinstance(evidence.runtime_ownership_evidence, RuntimeOwnershipEvidence)
-        and evidence.runtime_ownership_evidence.is_trusted
         else ("runtime_ownership_evidence",)
     )
     return GateReadiness(
