@@ -1,7 +1,10 @@
+import pytest
+
 from odoo_forge.manifest.drift import DriftEntry, detect_drift
 from odoo_forge.manifest.lockfile import (
     Lockfile,
     ResolvedLayer,
+    ResolvedPublishedLayer,
     ResolvedRepo,
     compute_manifest_hash,
 )
@@ -64,6 +67,34 @@ def test_clean_state_is_clean() -> None:
     assert report.is_clean is True
     assert report.manifest_lock_drift == []
     assert report.lock_state_drift == []
+
+
+def test_v2_published_layers_are_not_compared_to_materialized_git_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _manifest()
+    lock = Lockfile(
+        generated_from=compute_manifest_hash(manifest),
+        git_layers=[],
+        published_layers=[
+            ResolvedPublishedLayer(
+                name="enterprise",
+                source="registry://example/odoo-ee",
+                version="19.0.1",
+                digest="sha256:" + "a" * 64,
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        Lockfile,
+        "layers",
+        property(lambda _: (_ for _ in ()).throw(AssertionError("legacy layers view used"))),
+    )
+
+    report = detect_drift(manifest, lock, MaterializedState(layers=[]))
+
+    assert report.is_clean is True
 
 
 def test_manifest_changed_lock_stale() -> None:

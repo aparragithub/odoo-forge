@@ -1,9 +1,11 @@
+import json
 import os
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from odoo_forge.manifest.artifacts import PublishedArtifactResolution
 from odoo_forge.manifest.errors import RefNotFoundError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.projection import ScannedRepo
@@ -25,6 +27,22 @@ class _FailingSourceProvider:
         raise RefNotFoundError(url, ref)
 
 
+class _FakePublishedArtifactResolver:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def resolve(self, source: str, version: str) -> PublishedArtifactResolution:
+        self.calls.append((source, version))
+        return PublishedArtifactResolution(source, version, "sha256:" + "b" * 64)
+
+
+@pytest.fixture(autouse=True)
+def published_artifact_resolver(monkeypatch: pytest.MonkeyPatch) -> _FakePublishedArtifactResolver:
+    resolver = _FakePublishedArtifactResolver()
+    monkeypatch.setattr(main, "_make_published_artifact_resolver", lambda: resolver)
+    return resolver
+
+
 class _FakeProjectedWorkspaceProvider:
     """A `WorkspaceProvider` double whose `scan` reports a fully-projected
     workspace matching the lock written by `_FakeSourceProvider` — used to
@@ -44,7 +62,9 @@ class _FakeProjectedWorkspaceProvider:
 
 
 def test_valid_manifest_writes_canonical_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published_artifact_resolver: _FakePublishedArtifactResolver,
 ) -> None:
     monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
 
@@ -57,10 +77,24 @@ def test_valid_manifest_writes_canonical_lock(
     lock_path = tmp_path / "project.lock"
     assert lock_path.exists()
 
-    lock = Lockfile.from_json(lock_path.read_text())
-    assert lock.schema_version == 1
+    raw_lock = lock_path.read_text()
+    lock = Lockfile.from_json(raw_lock)
+    assert lock.schema_version == 2
+    assert json.loads(raw_lock).keys() == {
+        "generated_from",
+        "git_layers",
+        "published_layers",
+        "schema_version",
+    }
     core_layer = next(layer for layer in lock.layers if layer.name == "core")
     assert core_layer.repos[0].commit.startswith("sha-")
+    assert lock.published_layers[0].model_dump() == {
+        "name": "enterprise",
+        "source": "registry://example/odoo-ee",
+        "version": "19.0.1",
+        "digest": "sha256:" + "b" * 64,
+    }
+    assert published_artifact_resolver.calls == [("registry://example/odoo-ee", "19.0.1")]
 
 
 def test_core_ref_none_resolved_via_default_before_pinning(
@@ -128,13 +162,11 @@ def test_lock_then_validate_round_trip_no_drift(
     assert core_layer.repos[0].commit == "sha-19.0"
     localization_layer = lock.layers[1]
     assert [repo.url for repo in localization_layer.repos] == [
-        "https://github.com/ingadhoc/odoo-argentina-ee.git"
+        "https://github.com/acme/odoo-argentina-ee.git"
     ]
-    # The manifest declares an override (fork + custom-fix ref) for this repo,
-    # but override application is deferred past Slice 2b — the original ref's
-    # SHA is pinned, not the fork's.
-    assert localization_layer.repos[0].ref == "19.0"
-    assert localization_layer.repos[0].commit == "sha-19.0"
+    assert localization_layer.repos[0].url == "https://github.com/acme/odoo-argentina-ee.git"
+    assert localization_layer.repos[0].ref == "custom-fix"
+    assert localization_layer.repos[0].commit == "sha-custom-fix"
 
     # `validate` now scans the real mount roots (Slice 3): a fully-projected
     # workspace — simulated here via a fake `WorkspaceProvider.scan` matching
@@ -152,8 +184,8 @@ def test_lock_then_validate_round_trip_no_drift(
                 ),
                 ScannedRepo(
                     path=Path("/mnt/enterprise/localization/odoo-argentina-ee"),
-                    url="https://github.com/ingadhoc/odoo-argentina-ee.git",
-                    commit="sha-19.0",
+                    url="https://github.com/acme/odoo-argentina-ee.git",
+                    commit="sha-custom-fix",
                 ),
             ]
         ),
@@ -234,3 +266,19 @@ def test_load_lock_rejects_invalid_json(tmp_path: Path) -> None:
 
     with pytest.raises(LockfileError):
         main._load_lock(lock_path)
+
+
+@pytest.mark.parametrize("schema_version", [3, "two"])
+def test_validate_rejects_invalid_lock_version_without_traceback(
+    tmp_path: Path, schema_version: object
+) -> None:
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
+    (tmp_path / "project.lock").write_text(json.dumps({"schema_version": schema_version}))
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "invalid lockfile" in result.output
+    assert "Traceback" not in result.output

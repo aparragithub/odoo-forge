@@ -57,6 +57,6 @@ client:
   python_requirements: client/requirements.txt
 overrides:
   - layer: localization
-    repo: odoo-argentina-ee
+    repo: https://github.com/ingadhoc/odoo-argentina-ee.git
     fork: https://github.com/acme/odoo-argentina-ee.git
     ref: custom-fix

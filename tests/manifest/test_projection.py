@@ -4,7 +4,12 @@ from pathlib import Path
 import pytest
 
 from odoo_forge.manifest.errors import ProjectionError, ScanError
-from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo
+from odoo_forge.manifest.lockfile import (
+    Lockfile,
+    ResolvedLayer,
+    ResolvedPublishedLayer,
+    ResolvedRepo,
+)
 from odoo_forge.manifest.projection import (
     MOUNT_ROOTS,
     ScannedRepo,
@@ -98,6 +103,49 @@ class TestClassifyRoot:
 
 
 class TestPlanProjection:
+    def test_v2_published_layers_are_retained_but_not_projected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        manifest = _manifest(
+            edition="enterprise",
+            layers=[
+                PublishedLayer(
+                    type="published",
+                    name="enterprise",
+                    source="registry://example/odoo-ee",
+                    version="19.0.1",
+                    requires_edition="enterprise",
+                ),
+            ],
+        )
+        lock = Lockfile(
+            generated_from="hash",
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+            ],
+            published_layers=[
+                ResolvedPublishedLayer(
+                    name="enterprise",
+                    source="registry://example/odoo-ee",
+                    version="19.0.1",
+                    digest="sha256:" + "a" * 64,
+                ),
+            ],
+        )
+
+        monkeypatch.setattr(
+            Lockfile,
+            "layers",
+            property(lambda _: (_ for _ in ()).throw(AssertionError("legacy layers view used"))),
+        )
+
+        plan = plan_projection(manifest, lock)
+
+        assert [(step.layer, step.commit) for step in plan.steps] == [("core", "sha-core")]
+
     def test_plan_mirrors_lock_order(self) -> None:
         manifest = _manifest(
             edition="enterprise",
@@ -329,3 +377,19 @@ class TestPlanUnlock:
 
         with pytest.raises(ProjectionError, match="does not belong to layer 'custom-x'"):
             plan_unlock(manifest, "custom-x", "https://attacker.example/other/odoo-partner.git")
+
+    def test_override_uses_effective_fork_path_but_requires_declared_repo_identity(self) -> None:
+        declared_url = "https://github.com/ingadhoc/odoo-partner.git"
+        fork_url = "https://github.com/acme/partner-fork.git"
+        manifest = _manifest(
+            layers=[_git_layer(name="custom-x", category="custom")],
+            overrides=[{"layer": "custom-x", "repo": declared_url, "fork": fork_url, "ref": "fix"}],
+        )
+
+        plan = plan_unlock(manifest, "custom-x", declared_url)
+
+        assert plan.source == Path("/mnt/custom/custom-x/partner-fork")
+        assert plan.dest == Path("/mnt/worktrees/custom-x/partner-fork")
+        assert plan.branch == "unlock/custom-x/partner-fork"
+        with pytest.raises(ProjectionError, match="does not belong to layer 'custom-x'"):
+            plan_unlock(manifest, "custom-x", fork_url)

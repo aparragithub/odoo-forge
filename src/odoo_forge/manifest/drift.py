@@ -80,7 +80,9 @@ def _lock_state_drift(
     materialized_by_name = {layer.name: layer for layer in materialized.layers}
     drift: list[DriftEntry] = []
 
-    for lock_layer in lock.layers:
+    # Published artifacts remain pinned in the lock but have no materialized
+    # Git checkout contract; their manifest changes are detected by the hash.
+    for lock_layer in lock.git_layers:
         materialized_layer = materialized_by_name.get(lock_layer.name)
         if materialized_layer is None:
             drift.append(DriftEntry(kind="not_materialized", layer=lock_layer.name))
