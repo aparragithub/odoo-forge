@@ -7,7 +7,9 @@ import re
 import secrets
 import subprocess
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
+from pathlib import Path
 from typing import Protocol
 
 from odoo_forge.credentials.errors import CredentialError as CapabilityCredentialError
@@ -22,6 +24,7 @@ from odoo_forge.database.errors import (
     DatabaseOperationError,
     DatabaseProviderError,
     DatabaseReadinessError,
+    IncompleteCleanupError,
     OwnershipRefusedError,
     ResourceUnavailableError,
 )
@@ -63,6 +66,10 @@ class DockerRunner(Protocol):
     ) -> subprocess.CompletedProcess[str]: ...
 
 
+CredentialTarget = Callable[[CredentialInjectionDescriptor], AbstractContextManager[Path]]
+RestoreTarget = Callable[[RestoreSetComponent, str], bool]
+
+
 def _run_subprocess(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         list(argv),
@@ -78,8 +85,30 @@ def _discard_credential_descriptor(_descriptor: CredentialInjectionDescriptor) -
     """Default target injector retains no credential material in the provider."""
 
 
-def _discard_restore_component(_component: RestoreSetComponent) -> None:
+def _unavailable_credential_target(
+    _descriptor: CredentialInjectionDescriptor,
+) -> AbstractContextManager[Path]:
+    raise CredentialUnavailableError()
+
+
+def _discard_restore_component(_component: RestoreSetComponent, _target: str) -> bool:
     """Default target injector retains no artifact bytes in the provider."""
+    return False
+
+
+class RollbackIncompleteError(IncompleteCleanupError):
+    """Redacted failure carrying the receipt required to reconcile residuals."""
+
+    def __init__(
+        self,
+        receipt: CreationReceipt,
+        residual_failures: tuple[str, ...],
+        cleanup_failures: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__()
+        self.receipt = receipt
+        self.residual_failures = residual_failures
+        self.cleanup_failures = cleanup_failures
 
 
 class DockerPostgresqlDatabaseProvider:
@@ -102,7 +131,8 @@ class DockerPostgresqlDatabaseProvider:
         credential_injector: Callable[[CredentialInjectionDescriptor], None] = (
             _discard_credential_descriptor
         ),
-        restore_injector: Callable[[RestoreSetComponent], None] = _discard_restore_component,
+        credential_target: CredentialTarget = _unavailable_credential_target,
+        restore_injector: RestoreTarget = _discard_restore_component,
     ) -> None:
         self._runner = runner
         self._timeout = timeout
@@ -114,6 +144,7 @@ class DockerPostgresqlDatabaseProvider:
         self._artifact_capability = artifact_capability
         self._credential_materializer = credential_materializer
         self._credential_injector = credential_injector
+        self._credential_target = credential_target
         self._restore_injector = restore_injector
 
     def inspect_resource(self, resource_id: str) -> subprocess.CompletedProcess[str]:
@@ -154,16 +185,42 @@ class DockerPostgresqlDatabaseProvider:
             raise OwnershipRefusedError()
 
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
-        self._inject_credentials(credentials)
-        return self._provision(spec)
+        creation: DatabaseCreation | None = None
+        credential_file: Path | None = None
+        try:
+            with self._credential_target_file(credentials) as credential_file:
+                creation = self._provision(spec, credential_file)
+        except Exception as exc:
+            cleanup_failures = []
+            if credential_file is not None:
+                try:
+                    credential_file.unlink(missing_ok=True)
+                except OSError:
+                    cleanup_failures.append("credential-file")
+            if creation is not None:
+                cleanup_failures.insert(0, "credential-target")
+                self._raise_after_rollback(
+                    exc, creation.receipt, (creation.ref.identifier,), tuple(cleanup_failures)
+                )
+            raise
+        assert creation is not None
+        return creation
 
-    def _provision(self, spec: DatabaseSpec) -> DatabaseCreation:
+    def _provision(self, spec: DatabaseSpec, credential_file: Path) -> DatabaseCreation:
         self._validate_identifier(spec.name)
         receipt = self.creation_receipt(spec.name)
         labels = self.labels_for(receipt.operation, resource_kind="container")
         created = [spec.name]
         try:
-            argv = ["docker", "run", "--detach", "--name", spec.name]
+            argv = [
+                "docker",
+                "run",
+                "--detach",
+                "--name",
+                spec.name,
+                "--env-file",
+                str(credential_file),
+            ]
             argv.extend(item for pair in labels.items() for item in ("--label", "=".join(pair)))
             argv.extend(("postgres:16",))
             self._run(argv)
@@ -171,8 +228,8 @@ class DockerPostgresqlDatabaseProvider:
                 receipt, spec.name, self._inspect_labels(spec.name), resource_kind="container"
             )
             self._wait_ready(spec.name)
-        except Exception:
-            self._rollback(receipt, created)
+        except Exception as exc:
+            self._raise_after_rollback(exc, receipt, created)
             raise
         return DatabaseCreation(
             ref=DatabaseRef(identifier=spec.name, ownership=ResourceOwnership.CREATED),
@@ -185,14 +242,17 @@ class DockerPostgresqlDatabaseProvider:
         if self._artifact_capability is None:
             raise RestoreArtifactUnavailableError()
         component = validated_database_restore(artifact, self._artifact_capability)
-        self._inject_credentials(credentials)
+        creation = self.provision(spec, credentials)
         try:
-            self._restore_injector(component)
-        except DatabaseProviderError:
+            if not self._restore_injector(component, creation.ref.identifier):
+                raise DatabaseOperationError()
+        except DatabaseProviderError as exc:
+            self._raise_after_rollback(exc, creation.receipt, (creation.ref.identifier,))
             raise
         except Exception as exc:
+            self._raise_after_rollback(exc, creation.receipt, (creation.ref.identifier,))
             raise DatabaseOperationError() from exc
-        return self._provision(spec)
+        return creation
 
     def adopt(self, ref: DatabaseRef) -> DatabaseRef:
         return ref
@@ -207,7 +267,7 @@ class DockerPostgresqlDatabaseProvider:
                 "--filter",
                 f"label={_OPERATION_LABEL}={operation.value}",
                 "--format",
-                "{{.ID}}",
+                "{{.Names}}",
             ]
         )
         resource_ids = tuple(identifier for identifier in listed.stdout.splitlines() if identifier)
@@ -246,16 +306,19 @@ class DockerPostgresqlDatabaseProvider:
             raise DockerCommandFailedError()
         return completed
 
-    def _inject_credentials(self, credentials: CredentialHandle) -> None:
+    @contextmanager
+    def _credential_target_file(self, credentials: CredentialHandle) -> Iterator[Path]:
         try:
             descriptor = self._credential_materializer(credentials)
             self._credential_injector(descriptor)
+            with self._credential_target(descriptor) as credential_file:
+                yield credential_file
         except DatabaseProviderError:
             raise
-        except CapabilityCredentialError as exc:
-            raise CredentialUnavailableError() from exc
-        except Exception as exc:
-            raise CredentialUnavailableError() from exc
+        except CapabilityCredentialError:
+            raise CredentialUnavailableError() from None
+        except Exception:
+            raise CredentialUnavailableError() from None
 
     def _inspect_labels(self, resource_id: str) -> Mapping[str, str]:
         inspected = self._run(["docker", "inspect", resource_id])
@@ -303,12 +366,25 @@ class DockerPostgresqlDatabaseProvider:
         )
         self._run(["docker", "rm", "-f", resource_id])
 
-    def _rollback(self, receipt: CreationReceipt, created: Sequence[str]) -> None:
+    def _rollback(self, receipt: CreationReceipt, created: Sequence[str]) -> tuple[str, ...]:
+        residuals = []
         for resource_id in reversed(created):
             try:
                 self._remove_owned(receipt, resource_id)
             except DatabaseProviderError:
-                continue
+                residuals.append(resource_id)
+        return tuple(residuals)
+
+    def _raise_after_rollback(
+        self,
+        original: Exception,
+        receipt: CreationReceipt,
+        created: Sequence[str],
+        cleanup_failures: tuple[str, ...] = (),
+    ) -> None:
+        residuals = self._rollback(receipt, created)
+        if residuals:
+            raise RollbackIncompleteError(receipt, residuals, cleanup_failures) from original
 
     @staticmethod
     def _validate_identifier(value: str) -> None:
@@ -326,4 +402,5 @@ __all__ = [
     "DockerCommandFailedError",
     "DockerCommandTimeoutError",
     "DockerPostgresqlDatabaseProvider",
+    "RollbackIncompleteError",
 ]

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from inspect import getsource
+from pathlib import Path
 from typing import get_type_hints
 
 import pytest
@@ -34,6 +36,7 @@ from odoo_forge_postgres_docker.provider import (
     DockerCommandFailedError,
     DockerCommandTimeoutError,
     DockerPostgresqlDatabaseProvider,
+    RollbackIncompleteError,
 )
 from odoo_forge_postgres_docker.target_handoffs import (
     RestoreArtifactIncoherentError,
@@ -49,7 +52,13 @@ _OWNED_LABELS = (
     '"io.odoo-forge.resource-kind":"container",'
     '"io.odoo-forge.creator-token":"token-42"}'
 )
-_OWNED_INSPECT = '[{"Config":{"Labels":' + _OWNED_LABELS + '}}]'
+_OWNED_INSPECT = '[{"Config":{"Labels":' + _OWNED_LABELS + "}}]"
+
+
+def _credential_target(
+    _descriptor: CredentialInjectionDescriptor,
+) -> AbstractContextManager[Path]:
+    return nullcontext(Path("/run/secrets/postgres-password"))
 
 
 def _restore_manifest() -> RestoreSetManifest:
@@ -91,6 +100,20 @@ class _Artifacts:
 
     def discard(self, ref: DataArtifactRef) -> DiscardOutcome:
         raise NotImplementedError
+
+
+def _append_component(
+    components: list[RestoreSetComponent], component: RestoreSetComponent
+) -> bool:
+    components.append(component)
+    return True
+
+
+def _append_restore(
+    applied: list[tuple[str, str]], component: RestoreSetComponent, target: str
+) -> bool:
+    applied.append((component.opaque_component_ref, target))
+    return True
 
 
 def test_target_handoffs_materialize_only_an_opaque_credential_descriptor() -> None:
@@ -146,6 +169,7 @@ def test_restore_validation_fails_closed_without_docker_mutation(
 
     provider = DockerPostgresqlDatabaseProvider(
         runner=runner,
+        token_factory=lambda: "token-42",
         artifact_capability=artifacts,
     )
 
@@ -184,7 +208,8 @@ def test_restore_injects_validated_opaque_handoffs_before_provisioning() -> None
         token_factory=lambda: "token-42",
         artifact_capability=artifacts,
         credential_injector=descriptors.append,
-        restore_injector=components.append,
+        credential_target=_credential_target,
+        restore_injector=lambda component, _target: _append_component(components, component),
     ).restore(
         DatabaseSpec(name="database-42"),
         DataArtifactRef("restore-set-42"),
@@ -212,6 +237,39 @@ def test_credential_target_injector_failure_is_typed_and_redacted() -> None:
     assert secret not in str(excinfo.value)
 
 
+def test_provision_passes_only_a_protected_credential_target_file_to_docker(
+    tmp_path: Path,
+) -> None:
+    secret = "credential-target-secret"
+    calls: list[tuple[str, ...]] = []
+    target_file = tmp_path / "postgres.env"
+
+    @contextmanager
+    def credential_target(descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
+        assert descriptor.store_ref == "sops://opaque"
+        target_file.write_text(f"POSTGRES_PASSWORD={secret}\n")
+        try:
+            yield target_file
+        finally:
+            target_file.unlink()
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert creation.ref.identifier == "database-42"
+    assert ("--env-file", str(target_file)) in zip(calls[0], calls[0][1:], strict=False)
+    assert secret not in " ".join(item for call in calls for item in call)
+    assert secret not in repr(creation)
+    assert not target_file.exists()
+
+
 def test_restore_target_injector_failure_is_typed_and_redacted() -> None:
     secret = "restore-artifact-super-secret"
     artifacts = _Artifacts(
@@ -223,11 +281,19 @@ def test_restore_target_injector_failure_is_typed_and_redacted() -> None:
         )
     )
 
-    def restore_injector(_component: RestoreSetComponent) -> None:
+    def restore_injector(_component: RestoreSetComponent, _target: str) -> bool:
         raise RuntimeError(f"restore injection failed: {secret}")
 
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
     provider = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
         artifact_capability=artifacts,
+        credential_target=_credential_target,
         restore_injector=restore_injector,
     )
 
@@ -240,6 +306,178 @@ def test_restore_target_injector_failure_is_typed_and_redacted() -> None:
 
     assert str(excinfo.value) == "database provider operation failed"
     assert secret not in str(excinfo.value)
+
+
+def test_restore_applies_and_verifies_the_validated_component_at_the_live_target() -> None:
+    calls: list[tuple[str, ...]] = []
+    applied: list[tuple[str, str]] = []
+    artifacts = _Artifacts(
+        RestoreReadiness(
+            ready=True, manifest=_restore_manifest(), failure_code=None, redacted_detail=None
+        )
+    )
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        artifact_capability=artifacts,
+        credential_target=_credential_target,
+        restore_injector=lambda component, target: _append_restore(applied, component, target),
+    ).restore(
+        DatabaseSpec(name="database-42"), DataArtifactRef("restore-set-42"), CredentialHandle("x")
+    )
+
+    assert applied == [("database-component-42", creation.ref.identifier)]
+    assert calls[0][:3] == ("docker", "run", "--detach")
+
+
+def test_credential_target_exit_rolls_back_the_created_container_and_target_file(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    target_file = tmp_path / "credentials.env"
+
+    @contextmanager
+    def failing_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
+        target_file.write_text("POSTGRES_PASSWORD=not-in-diagnostics\n")
+        yield target_file
+        raise RuntimeError("target cleanup failed")
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=failing_target
+    )
+    with pytest.raises(CredentialUnavailableError):
+        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("x"))
+
+    assert calls[-1] == ("docker", "rm", "-f", "database-42")
+    assert not target_file.exists()
+
+
+def test_persistent_credential_file_unlink_failure_does_not_skip_container_rollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    target_file = tmp_path / "credential-secret.env"
+    unlink_attempts = 0
+    original_unlink = Path.unlink
+
+    @contextmanager
+    def failing_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
+        target_file.write_text("POSTGRES_PASSWORD=not-in-diagnostics\n")
+        try:
+            yield target_file
+        finally:
+            target_file.unlink()
+
+    def persistent_unlink(self: Path, *, missing_ok: bool = False) -> None:
+        nonlocal unlink_attempts
+        if self == target_file:
+            unlink_attempts += 1
+            raise OSError(f"cannot unlink raw-path={target_file}")
+        original_unlink(self, missing_ok=missing_ok)
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(Path, "unlink", persistent_unlink)
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=failing_target
+    )
+
+    with pytest.raises(CredentialUnavailableError) as excinfo:
+        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert calls[-1] == ("docker", "rm", "-f", "database-42")
+    assert unlink_attempts == 2
+    assert excinfo.value.__cause__ is None
+    assert "raw-path" not in str(excinfo.value)
+    assert "credential-secret.env" not in str(excinfo.value)
+
+
+def test_rollback_incomplete_survives_simultaneous_credential_target_exit_failure() -> None:
+    calls: list[tuple[str, ...]] = []
+    target_exited = False
+
+    @contextmanager
+    def failing_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[Path]:
+        nonlocal target_exited
+        try:
+            yield Path("/run/secrets/postgres-password")
+        finally:
+            target_exited = True
+            raise RuntimeError("credential cleanup failed at /raw/path")
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        if argv[:3] == ["docker", "rm", "-f"]:
+            return subprocess.CompletedProcess(argv, 1, "", "removal failed")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=failing_target
+    )
+
+    with pytest.raises(RollbackIncompleteError) as excinfo:
+        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    assert target_exited
+    assert calls[-1] == ("docker", "rm", "-f", "database-42")
+    assert excinfo.value.receipt.owned_resource_ids == ("database-42",)
+    assert excinfo.value.residual_failures == ("database-42",)
+    assert excinfo.value.cleanup_failures == ("credential-target",)
+    assert "/raw/path" not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("failure_after_run", [False, True])
+def test_failed_rollback_returns_a_reconciliation_handle(
+    failure_after_run: bool,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    inspections = 0
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        nonlocal inspections
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            inspections += 1
+            return subprocess.CompletedProcess(
+                argv, 1 if failure_after_run and inspections > 1 else 0, _OWNED_INSPECT, ""
+            )
+        if argv[:2] == ["docker", "exec"]:
+            return subprocess.CompletedProcess(argv, 1, "", "not ready")
+        if argv[:3] == ["docker", "rm", "-f"] and not failure_after_run:
+            return subprocess.CompletedProcess(argv, 1, "", "removal failed")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        readiness_timeout=0,
+        credential_target=_credential_target,
+    )
+    with pytest.raises(RollbackIncompleteError) as excinfo:
+        provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("x"))
+
+    assert excinfo.value.receipt.owned_resource_ids == ("database-42",)
+    assert excinfo.value.residual_failures == ("database-42",)
+    assert "x" not in str(excinfo.value)
 
 
 def test_hostile_resource_name_is_rejected_before_subprocess_execution() -> None:
@@ -362,7 +600,9 @@ def test_provision_creates_only_receipted_container_then_proves_bounded_readines
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     tokens = iter(["token-42"])
-    provider = DockerPostgresqlDatabaseProvider(runner=runner, token_factory=lambda: next(tokens))
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: next(tokens), credential_target=_credential_target
+    )
 
     creation = provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
 
@@ -386,7 +626,7 @@ def test_provision_extracts_labels_from_a_docker_inspect_container_array() -> No
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     creation = DockerPostgresqlDatabaseProvider(
-        runner=runner, token_factory=lambda: "token-42"
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
     ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
 
     assert creation.ref.identifier == "database-42"
@@ -421,6 +661,7 @@ def test_provision_fails_with_typed_unavailable_outcome_when_readiness_bound_exp
         readiness_timeout=1.0,
         monotonic=lambda: next(ticks),
         sleep=lambda _seconds: None,
+        credential_target=_credential_target,
     )
 
     with pytest.raises(DatabaseReadinessError) as excinfo:
@@ -448,6 +689,7 @@ def test_partial_provision_failure_rolls_back_created_resources_in_reverse_order
         readiness_timeout=1.0,
         monotonic=lambda: next(ticks),
         sleep=lambda _seconds: None,
+        credential_target=_credential_target,
     )
 
     with pytest.raises(DatabaseReadinessError):
