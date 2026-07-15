@@ -9,6 +9,8 @@ class GateReadinessEvidence:
     approved_specification_id: str | None
     approved_design_id: str | None
     verification_receipt_id: str | None
+    real_docker_verified: bool | None = None
+    ownership_safety_verified: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -26,6 +28,10 @@ def evaluate_gate_readiness(evidence: GateReadinessEvidence) -> GateReadiness:
     )
     missing_identifiers = tuple(
         identifier for identifier in required_identifiers if getattr(evidence, identifier) is None
+    ) + tuple(
+        identifier
+        for identifier in ("real_docker_verified", "ownership_safety_verified")
+        if getattr(evidence, identifier) is not True
     )
     return GateReadiness(
         is_ready=not missing_identifiers,

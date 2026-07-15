@@ -198,7 +198,6 @@ class DockerPostgresqlDatabaseProvider:
                 except OSError:
                     cleanup_failures.append("credential-file")
             if creation is not None:
-                cleanup_failures.insert(0, "credential-target")
                 self._raise_after_rollback(
                     exc, creation.receipt, (creation.ref.identifier,), tuple(cleanup_failures)
                 )
@@ -383,7 +382,7 @@ class DockerPostgresqlDatabaseProvider:
         cleanup_failures: tuple[str, ...] = (),
     ) -> None:
         residuals = self._rollback(receipt, created)
-        if residuals:
+        if residuals or cleanup_failures:
             raise RollbackIncompleteError(receipt, residuals, cleanup_failures) from original
 
     @staticmethod

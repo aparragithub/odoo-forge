@@ -365,7 +365,7 @@ def test_credential_target_exit_rolls_back_the_created_container_and_target_file
     assert not target_file.exists()
 
 
-def test_persistent_credential_file_unlink_failure_does_not_skip_container_rollback(
+def test_persistent_credential_file_unlink_failure_is_rollback_incomplete(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     calls: list[tuple[str, ...]] = []
@@ -399,14 +399,23 @@ def test_persistent_credential_file_unlink_failure_does_not_skip_container_rollb
         runner=runner, token_factory=lambda: "token-42", credential_target=failing_target
     )
 
-    with pytest.raises(CredentialUnavailableError) as excinfo:
+    with pytest.raises(RollbackIncompleteError) as excinfo:
         provider.provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
 
     assert calls[-1] == ("docker", "rm", "-f", "database-42")
     assert unlink_attempts == 2
-    assert excinfo.value.__cause__ is None
-    assert "raw-path" not in str(excinfo.value)
-    assert "credential-secret.env" not in str(excinfo.value)
+    assert excinfo.value.receipt.owned_resource_ids == ("database-42",)
+    assert excinfo.value.residual_failures == ()
+    assert excinfo.value.cleanup_failures == ("credential-file",)
+    assert isinstance(excinfo.value.__cause__, CredentialUnavailableError)
+    for sensitive_value in (
+        "raw-path",
+        "credential-secret.env",
+        "not-in-diagnostics",
+        "opaque",
+        "descriptor",
+    ):
+        assert sensitive_value not in repr(excinfo.value)
 
 
 def test_rollback_incomplete_survives_simultaneous_credential_target_exit_failure() -> None:
@@ -441,7 +450,7 @@ def test_rollback_incomplete_survives_simultaneous_credential_target_exit_failur
     assert calls[-1] == ("docker", "rm", "-f", "database-42")
     assert excinfo.value.receipt.owned_resource_ids == ("database-42",)
     assert excinfo.value.residual_failures == ("database-42",)
-    assert excinfo.value.cleanup_failures == ("credential-target",)
+    assert excinfo.value.cleanup_failures == ()
     assert "/raw/path" not in str(excinfo.value)
 
 
