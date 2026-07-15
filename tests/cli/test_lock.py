@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from odoo_forge.manifest.artifacts import PublishedArtifactResolution
 from odoo_forge.manifest.errors import RefNotFoundError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.projection import ScannedRepo
@@ -26,6 +27,22 @@ class _FailingSourceProvider:
         raise RefNotFoundError(url, ref)
 
 
+class _FakePublishedArtifactResolver:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+
+    def resolve(self, source: str, version: str) -> PublishedArtifactResolution:
+        self.calls.append((source, version))
+        return PublishedArtifactResolution(source, version, "sha256:" + "b" * 64)
+
+
+@pytest.fixture(autouse=True)
+def published_artifact_resolver(monkeypatch: pytest.MonkeyPatch) -> _FakePublishedArtifactResolver:
+    resolver = _FakePublishedArtifactResolver()
+    monkeypatch.setattr(main, "_make_published_artifact_resolver", lambda: resolver)
+    return resolver
+
+
 class _FakeProjectedWorkspaceProvider:
     """A `WorkspaceProvider` double whose `scan` reports a fully-projected
     workspace matching the lock written by `_FakeSourceProvider` — used to
@@ -45,7 +62,9 @@ class _FakeProjectedWorkspaceProvider:
 
 
 def test_valid_manifest_writes_canonical_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published_artifact_resolver: _FakePublishedArtifactResolver,
 ) -> None:
     monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
 
@@ -69,6 +88,13 @@ def test_valid_manifest_writes_canonical_lock(
     }
     core_layer = next(layer for layer in lock.layers if layer.name == "core")
     assert core_layer.repos[0].commit.startswith("sha-")
+    assert lock.published_layers[0].model_dump() == {
+        "name": "enterprise",
+        "source": "registry://example/odoo-ee",
+        "version": "19.0.1",
+        "digest": "sha256:" + "b" * 64,
+    }
+    assert published_artifact_resolver.calls == [("registry://example/odoo-ee", "19.0.1")]
 
 
 def test_core_ref_none_resolved_via_default_before_pinning(
