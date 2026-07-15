@@ -10,9 +10,15 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
-from odoo_forge.credentials.types import CredentialHandle
+from odoo_forge.credentials.errors import CredentialError as CapabilityCredentialError
+from odoo_forge.credentials.types import CredentialHandle, CredentialInjectionDescriptor
+from odoo_forge.data_artifacts.contracts import (
+    DataArtifactCapability,
+    RestoreSetComponent,
+)
 from odoo_forge.data_artifacts.types import DataArtifactRef
 from odoo_forge.database.errors import (
+    CredentialUnavailableError,
     DatabaseOperationError,
     DatabaseProviderError,
     DatabaseReadinessError,
@@ -27,6 +33,11 @@ from odoo_forge.database.types import (
     DatabaseSpec,
     OperationIdentity,
     ResourceOwnership,
+)
+from odoo_forge_postgres_docker.target_handoffs import (
+    RestoreArtifactUnavailableError,
+    materialize_database_credentials,
+    validated_database_restore,
 )
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
@@ -63,6 +74,14 @@ def _run_subprocess(argv: Sequence[str], *, timeout: float) -> subprocess.Comple
     )
 
 
+def _discard_credential_descriptor(_descriptor: CredentialInjectionDescriptor) -> None:
+    """Default target injector retains no credential material in the provider."""
+
+
+def _discard_restore_component(_component: RestoreSetComponent) -> None:
+    """Default target injector retains no artifact bytes in the provider."""
+
+
 class DockerPostgresqlDatabaseProvider:
     """A provider boundary that refuses unproven Docker resource mutation."""
 
@@ -76,6 +95,14 @@ class DockerPostgresqlDatabaseProvider:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         token_factory: Callable[[], str] | None = None,
+        artifact_capability: DataArtifactCapability | None = None,
+        credential_materializer: Callable[[CredentialHandle], CredentialInjectionDescriptor] = (
+            materialize_database_credentials
+        ),
+        credential_injector: Callable[[CredentialInjectionDescriptor], None] = (
+            _discard_credential_descriptor
+        ),
+        restore_injector: Callable[[RestoreSetComponent], None] = _discard_restore_component,
     ) -> None:
         self._runner = runner
         self._timeout = timeout
@@ -84,6 +111,10 @@ class DockerPostgresqlDatabaseProvider:
         self._monotonic = monotonic
         self._sleep = sleep
         self._token_factory = token_factory or (lambda: secrets.token_urlsafe(24))
+        self._artifact_capability = artifact_capability
+        self._credential_materializer = credential_materializer
+        self._credential_injector = credential_injector
+        self._restore_injector = restore_injector
 
     def inspect_resource(self, resource_id: str) -> subprocess.CompletedProcess[str]:
         """Inspect a safely named resource through an argv-only Docker call."""
@@ -123,6 +154,10 @@ class DockerPostgresqlDatabaseProvider:
             raise OwnershipRefusedError()
 
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
+        self._inject_credentials(credentials)
+        return self._provision(spec)
+
+    def _provision(self, spec: DatabaseSpec) -> DatabaseCreation:
         self._validate_identifier(spec.name)
         receipt = self.creation_receipt(spec.name)
         labels = self.labels_for(receipt.operation, resource_kind="container")
@@ -147,7 +182,17 @@ class DockerPostgresqlDatabaseProvider:
     def restore(
         self, spec: DatabaseSpec, artifact: DataArtifactRef, credentials: CredentialHandle
     ) -> DatabaseCreation:
-        raise NotImplementedError("restore is implemented in the handoff slice")
+        if self._artifact_capability is None:
+            raise RestoreArtifactUnavailableError()
+        component = validated_database_restore(artifact, self._artifact_capability)
+        self._inject_credentials(credentials)
+        try:
+            self._restore_injector(component)
+        except DatabaseProviderError:
+            raise
+        except Exception as exc:
+            raise DatabaseOperationError() from exc
+        return self._provision(spec)
 
     def adopt(self, ref: DatabaseRef) -> DatabaseRef:
         return ref
@@ -200,6 +245,17 @@ class DockerPostgresqlDatabaseProvider:
         if completed.returncode != 0:
             raise DockerCommandFailedError()
         return completed
+
+    def _inject_credentials(self, credentials: CredentialHandle) -> None:
+        try:
+            descriptor = self._credential_materializer(credentials)
+            self._credential_injector(descriptor)
+        except DatabaseProviderError:
+            raise
+        except CapabilityCredentialError as exc:
+            raise CredentialUnavailableError() from exc
+        except Exception as exc:
+            raise CredentialUnavailableError() from exc
 
     def _inspect_labels(self, resource_id: str) -> Mapping[str, str]:
         inspected = self._run(["docker", "inspect", resource_id])
