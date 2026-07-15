@@ -21,6 +21,8 @@ def _descriptor() -> CredentialInjectionDescriptor:
         store_ref="sops://opaque-postgres-password",
         redaction_label="SOPS credential",
     )
+
+
 def test_injection_uses_a_private_file_mount_and_postgres_file_environment(tmp_path: Path) -> None:
     secret = "postgres-password-not-in-docker-config"
 
@@ -44,6 +46,8 @@ def test_injection_uses_a_private_file_mount_and_postgres_file_environment(tmp_p
     assert not injection.host_path.exists()
     assert not injection.host_path.parent.exists()
     assert secret not in repr(injection)
+
+
 def test_injection_erases_temporary_material_when_the_consumer_fails(tmp_path: Path) -> None:
     @contextmanager
     def resolve(_descriptor: CredentialInjectionDescriptor) -> Iterator[str]:
@@ -51,9 +55,10 @@ def test_injection_erases_temporary_material_when_the_consumer_fails(tmp_path: P
 
     injector = PostgreSQLSecretInjector(resolve, temporary_root=tmp_path)
 
-    with pytest.raises(RuntimeError, match="readiness failed"), injector.inject(
-        _descriptor()
-    ) as injection:
+    with (
+        pytest.raises(RuntimeError, match="readiness failed"),
+        injector.inject(_descriptor()) as injection,
+    ):
         path = injection.host_path
         raise RuntimeError("readiness failed")
 
@@ -77,6 +82,8 @@ def test_cleanup_erases_the_mounted_inode_before_unlinking(tmp_path: Path) -> No
 
     assert mounted_path.read_bytes() == b""
     assert not injection.host_path.exists()
+
+
 def test_injection_erases_material_when_the_resolver_exit_fails_after_write(
     tmp_path: Path,
 ) -> None:
@@ -152,15 +159,16 @@ def test_injection_rejects_non_ref_capable_or_unsupported_targets_without_resolu
         resolved = True
         yield "must-not-be-exposed"
 
-    with pytest.raises(SecretInjectionError), PostgreSQLSecretInjector(
-        resolve, temporary_root=tmp_path
-    ).inject(
-        CredentialInjectionDescriptor(
-            handle=CredentialHandle("opaque"),
-            target_kind=target_kind,
-            store_ref=store_ref,
-            redaction_label="SOPS",
-        )
+    with (
+        pytest.raises(SecretInjectionError),
+        PostgreSQLSecretInjector(resolve, temporary_root=tmp_path).inject(
+            CredentialInjectionDescriptor(
+                handle=CredentialHandle("opaque"),
+                target_kind=target_kind,
+                store_ref=store_ref,
+                redaction_label="SOPS",
+            )
+        ),
     ):
         pytest.fail("unsupported injection must not yield a target")
 

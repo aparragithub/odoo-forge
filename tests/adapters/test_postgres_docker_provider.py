@@ -586,9 +586,9 @@ def test_cleanup_accepts_visible_retirement_after_directory_fsync_failure(
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     assert (
-        DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority).cleanup(
-            receipt
-        ).residual_failures
+        DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority)
+        .cleanup(receipt)
+        .residual_failures
         == ()
     )
 
@@ -855,6 +855,7 @@ def test_lifecycle_rejects_shell_injected_ids_before_docker(resource_id: str) ->
         operation=OperationIdentity(value="postgres-docker:token-42"),
         owned_resource_ids=(resource_id,),
     )
+
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         calls.append(tuple(argv))
         return subprocess.CompletedProcess(argv, 0, "", "")
@@ -1032,9 +1033,7 @@ def test_reconcile_refuses_to_rebuild_a_created_receipt_from_matching_live_label
         DockerPostgresqlDatabaseProvider(
             runner=runner,
             ownership_authority=LocalOwnershipAuthority(tmp_path / "authority"),
-        ).reconcile(
-            OperationIdentity(value="postgres-docker:token-42")
-        )
+        ).reconcile(OperationIdentity(value="postgres-docker:token-42"))
 
 
 def test_delete_and_cleanup_require_local_authority_and_refuse_foreign_resources(
