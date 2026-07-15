@@ -112,7 +112,7 @@ def _load_lock(path: Path) -> Lockfile | None:
         return Lockfile.from_json(raw)
     except json.JSONDecodeError as exc:
         raise LockfileError(f"invalid JSON in lockfile '{path}': {exc}") from exc
-    except ValidationError as exc:
+    except (ValidationError, ValueError) as exc:
         raise LockfileError(f"invalid lockfile '{path}': {exc}") from exc
 
 
