@@ -45,6 +45,6 @@ Chain strategy: feature-branch-chain
 
 ## Phase 4: Integration and Acceptance (PR 4)
 
-- [ ] 4.1 RED: create opt-in real-Docker tests for provisioning/readiness, interrupted reconcile, partial rollback, restore, redaction, foreign survival, and complete cleanup.
-- [ ] 4.2 GREEN: register package/markers in `pyproject.toml`; implement integration evidence with unique labels and `finally` cleanup.
-- [ ] 4.3 REFACTOR: record only DPROV-DB evidence in `docs/specs/platform/portfolio.json`; run `uv run lint-imports`, `uv run mypy`, `uv run ruff check`, and default pytest. Preserve exclusions: WF-DATA-COPY, SP-CONTROL-PLANE-AUTHORITY, sp-data-environments, PublishedLayer/Override, and runtime cutover.
+- [x] 4.1 RED: create opt-in real-Docker tests for provisioning/readiness, interrupted reconcile, partial rollback, restore, redaction, foreign survival, and complete cleanup.
+- [x] 4.2 GREEN: register package/markers in `pyproject.toml`; implement integration evidence with unique labels and `finally` cleanup.
+- [x] 4.3 REFACTOR: record only DPROV-DB evidence in `docs/specs/platform/portfolio.json`; run `uv run lint-imports`, `uv run mypy`, `uv run ruff check`, and default pytest. Preserve exclusions: WF-DATA-COPY, SP-CONTROL-PLANE-AUTHORITY, sp-data-environments, PublishedLayer/Override, and runtime cutover.
