@@ -129,10 +129,7 @@ def test_multiple_git_layers_each_pinned_correctly_no_cross_attribution() -> Non
     assert extras.repos[0].commit == "sha-feature-y"
 
 
-def test_override_not_applied_pins_original_repo_ref() -> None:
-    """A manifest `Override` (fork url + custom ref) must NOT be applied by
-    `build_lock` — override application is deferred past Slice 2b. The
-    original repo's url/ref is resolved and pinned, not the fork's."""
+def test_override_replaces_git_source_and_ref_before_resolution() -> None:
     manifest = _manifest(
         layers=[
             GitLayer(
@@ -146,7 +143,7 @@ def test_override_not_applied_pins_original_repo_ref() -> None:
         overrides=[
             Override(
                 layer="localization",
-                repo="odoo-argentina-ee",
+                repo="https://github.com/ingadhoc/odoo-argentina-ee.git",
                 fork="https://github.com/acme/odoo-argentina-ee.git",
                 ref="custom-fix",
             )
@@ -157,10 +154,93 @@ def test_override_not_applied_pins_original_repo_ref() -> None:
     lock = build_lock(manifest, provider)
 
     localization = next(layer for layer in lock.layers if layer.name == "localization")
-    assert localization.repos[0].url == "https://github.com/ingadhoc/odoo-argentina-ee.git"
-    assert localization.repos[0].ref == "19.0"
-    assert localization.repos[0].commit == "sha-19.0"
-    assert ("https://github.com/acme/odoo-argentina-ee.git", "custom-fix") not in provider.calls
+    assert localization.repos[0].url == "https://github.com/acme/odoo-argentina-ee.git"
+    assert localization.repos[0].ref == "custom-fix"
+    assert localization.repos[0].commit == "sha-custom-fix"
+    assert provider.calls == [
+        (manifest.core.url, "19.0"),
+        ("https://github.com/acme/odoo-argentina-ee.git", "custom-fix"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        [
+            Override(
+                layer="missing",
+                repo="https://example/missing.git",
+                fork="https://acme/fork.git",
+                ref="x",
+            )
+        ],
+        [
+            Override(
+                layer="core",
+                repo="https://github.com/odoo/odoo.git",
+                fork="https://acme/fork.git",
+                ref="x",
+            )
+        ],
+        [
+            Override(
+                layer="extra",
+                repo="https://example/extra.git",
+                fork="https://acme/one.git",
+                ref="one",
+            ),
+            Override(
+                layer="extra",
+                repo="https://example/extra.git",
+                fork="https://acme/two.git",
+                ref="two",
+            ),
+        ],
+    ],
+)
+def test_structurally_invalid_override_never_calls_provider(overrides: list[Override]) -> None:
+    manifest = _manifest(
+        layers=[
+            GitLayer(
+                type="git",
+                name="extra",
+                repos=[GitRepo(url="https://example/extra.git", ref="19.0")],
+            )
+        ],
+        overrides=overrides,
+    )
+    provider = _FakeSourceProvider()
+
+    with pytest.raises(CompositionError):
+        build_lock(manifest, provider)
+
+    assert provider.calls == []
+
+
+def test_core_shadowing_is_rejected_before_any_provider_call() -> None:
+    manifest = _manifest(
+        layers=[
+            GitLayer(
+                type="git",
+                name="core",
+                repos=[GitRepo(url="https://example.com/shadow.git", ref="main")],
+            )
+        ],
+        overrides=[
+            Override(
+                layer="core",
+                repo="https://example.com/shadow.git",
+                fork="https://example.com/fork.git",
+                ref="custom",
+            )
+        ],
+    )
+    provider = _FakeSourceProvider()
+
+    with pytest.raises(CompositionError, match="reserved"):
+        build_lock(manifest, provider)
+
+    assert provider.calls == []
 
 
 def test_published_layers_omitted_from_lock() -> None:

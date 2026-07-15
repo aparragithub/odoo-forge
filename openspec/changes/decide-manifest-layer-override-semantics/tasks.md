@@ -31,7 +31,7 @@ Only tracker/integration merges to main; no size exception. Child diffs exclude 
 
 - [x] 1.1 RED: Add failing `tests/manifest/test_lockfile_format.py` cases for version, key order, v2 round-trip, versionless v1, and unknown-version rejection.
 - [x] 1.2 GREEN: Modify `src/odoo_forge/manifest/lockfile.py` with v2 models/dispatch (`git_layers`, `published_layers`, integer versions); REFACTOR canonical JSON and v1 normalization without fabricated published entries.
-- [ ] 1.3 RED: Add composition/locking failures for missing targets, duplicate/unknown URL, published/core targets, missing digest, and zero resolver calls; GREEN/REFACTOR `composition.py` validation and effective Git locking.
+- [x] 1.3 RED: Add composition/locking failures for missing targets, duplicate/unknown URL, published/core targets, missing digest, and zero resolver calls; GREEN/REFACTOR `composition.py` validation and effective Git locking.
 
 ## Phase 2: RED — Published resolution and dependency injection
 
