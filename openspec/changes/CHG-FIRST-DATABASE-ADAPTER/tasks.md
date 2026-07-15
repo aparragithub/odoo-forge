@@ -33,9 +33,9 @@ Chain strategy: feature-branch-chain
 
 ## Phase 2: Lifecycle (PR 2)
 
-- [ ] 2.1 RED: add tests for created-only provision, bounded `pg_isready`, reverse partial-failure rollback, reconcile, delete, cleanup, foreign-resource survival, and zero owned residuals.
-- [ ] 2.2 GREEN: implement lifecycle methods in `provider.py`; select only through `DPROV-DB`, without local PostgreSQL extraction or cutover.
-- [ ] 2.3 REFACTOR: verify receipt membership plus live labels on destructive paths and typed redacted unavailable/ownership outcomes.
+- [x] 2.1 RED: add tests for created-only provision, bounded `pg_isready`, reverse partial-failure rollback, reconcile, delete, cleanup, foreign-resource survival, and zero owned residuals.
+- [x] 2.2 GREEN: implement lifecycle methods in `provider.py`; select only through `DPROV-DB`, without local PostgreSQL extraction or cutover.
+- [x] 2.3 REFACTOR: verify receipt membership plus live labels on destructive paths and typed redacted unavailable/ownership outcomes.
 
 ## Phase 3: Handoffs and Restore (PR 3)
 
