@@ -156,7 +156,15 @@ def plan_unlock(manifest: Manifest, layer_name: str, repo_url: str) -> UnlockPla
         raise ProjectionError(f"repo does not belong to layer '{layer_name}'")
 
     mount_root = classify_root(matched_layer)
-    repo_name = _repo_name(repo_url)
+    effective_url = next(
+        (
+            override.fork
+            for override in manifest.overrides
+            if override.layer == layer_name and override.repo == repo_url
+        ),
+        repo_url,
+    )
+    repo_name = _repo_name(effective_url)
     return UnlockPlan(
         source=MOUNT_ROOTS[mount_root] / layer_name / repo_name,
         dest=MOUNT_ROOTS["worktrees"] / layer_name / repo_name,

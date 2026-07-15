@@ -67,7 +67,7 @@ def test_canonical_json_is_stable_for_equal_v2_lockfiles() -> None:
                 name="oca",
                 source="registry://oca",
                 version="19.0.1",
-                digest="sha256:abc123",
+                digest="sha256:" + "a" * 64,
             )
         ],
     )
@@ -92,7 +92,7 @@ def test_v1_serialization_rejects_published_layers() -> None:
                 name="oca",
                 source="registry://oca",
                 version="19.0.1",
-                digest="sha256:abc123",
+                digest="sha256:" + "a" * 64,
             )
         ],
     )
@@ -151,7 +151,7 @@ def test_v2_round_trip_preserves_git_and_published_layers() -> None:
                 name="oca",
                 source="registry://oca",
                 version="19.0.1",
-                digest="sha256:abc123",
+                digest="sha256:" + "a" * 64,
             )
         ],
     )
@@ -160,6 +160,37 @@ def test_v2_round_trip_preserves_git_and_published_layers() -> None:
 
     assert restored == lock
     assert restored.to_canonical_json() == lock.to_canonical_json()
+
+
+def test_published_layer_construction_rejects_malformed_digest() -> None:
+    with pytest.raises(ValueError, match="digest"):
+        ResolvedPublishedLayer(
+            name="oca",
+            source="registry://oca",
+            version="19.0.1",
+            digest="sha256:abc123",
+        )
+
+
+def test_v2_read_rejects_malformed_published_digest() -> None:
+    raw = json.dumps(
+        {
+            "schema_version": 2,
+            "generated_from": "abc123",
+            "git_layers": [],
+            "published_layers": [
+                {
+                    "name": "oca",
+                    "source": "registry://oca",
+                    "version": "19.0.1",
+                    "digest": "sha256:" + "A" * 64,
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ValueError, match="digest"):
+        Lockfile.from_json(raw)
 
 
 @pytest.mark.parametrize("schema_version", [0, 3])

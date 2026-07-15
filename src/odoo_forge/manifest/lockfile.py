@@ -47,7 +47,7 @@ class ResolvedPublishedLayer(BaseModel):
     name: str
     source: str
     version: str
-    digest: str
+    digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
 
 
 # Compatibility name for existing Git-only callers. New code should use the

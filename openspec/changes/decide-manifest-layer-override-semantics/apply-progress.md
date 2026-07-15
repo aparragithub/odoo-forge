@@ -123,3 +123,14 @@
 - Exact CI order: `uv run lint-imports` — exit 0, 6 contracts kept; `uv run ruff check .` — exit 0; `uv run ruff format --check .` — exit 0, 113 files already formatted; `uv run mypy` — exit 0, no issues in 110 source files; `uv run pytest` — exit 0, 574 passed and 6 deselected.
 - Task 4.2 is complete. Final task state: 9/9 checked.
 - Final Unit 4 diff against `ce2d165`: 129 additions + 14 deletions = 143 changed lines, below the 400-line hard cap.
+
+## Aggregate Correction `review-4b559e909c27ae07` Generation 1
+| Stage | Evidence |
+|---|---|
+| Safety net | `uv run pytest tests/manifest/test_lockfile_format.py tests/manifest/test_projection.py` — exit 0, 34 passed. |
+| RED | Same command after test edits — exit 1, 3 failed / 34 passed: malformed construction/read accepted and override unlock used the declared basename. |
+| GREEN/REFACTOR | Same command — exit 0, 37 passed; field validation and exact override lookup required no further refactor. |
+| Regression | Lockfile, projection, locking, and relevant lock/project/unlock CLI command — exit 0, 70 passed. |
+| Quality | Targeted Ruff — exit 0; targeted mypy — exit 0, no issues in 4 files. |
+| Runtime harness | Relevant Typer CLI tests passed; pure unlock planning verifies declared identity with effective fork paths. |
+| Rollback | Revert this correction in `lockfile.py`, `projection.py`, and their focused tests; effective-source locking remains unchanged. |
