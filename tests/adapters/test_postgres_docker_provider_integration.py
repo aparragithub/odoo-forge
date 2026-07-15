@@ -28,6 +28,7 @@ from odoo_forge.database.errors import (
     DatabaseOperationError,
     DatabaseReadinessError,
 )
+from odoo_forge.database.readiness import GateReadinessEvidence, evaluate_gate_readiness
 from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.real_docker]
@@ -151,6 +152,34 @@ def test_provision_reconcile_foreign_survival_and_cleanup_against_real_docker() 
         if foreign_created:
             result = _docker(["rm", "-f", foreign_name])
             assert result.returncode == 0, result.stderr
+
+
+def test_runtime_attestation_requires_a_live_ready_docker_container() -> None:
+    _require_real_docker()
+    name = f"attestation-{uuid.uuid4().hex[:12]}"
+    provider = DockerPostgresqlDatabaseProvider(
+        readiness_timeout=30.0, credential_target=lambda _descriptor: _credential_target("existing")
+    )
+    creation: DatabaseCreation | None = None
+
+    try:
+        creation = provider.provision(DatabaseSpec(name=name), CredentialHandle("opaque"))
+        attestation = provider.verify_runtime_ownership(creation)
+        result = evaluate_gate_readiness(
+            GateReadinessEvidence(
+                approved_proposal_id="proposal-42",
+                approved_specification_id="spec-42",
+                approved_design_id="design-42",
+                verification_receipt_id="verification-42",
+                runtime_ownership_evidence=attestation,
+            )
+        )
+
+        assert result.is_ready is True
+        assert name not in repr(attestation)
+    finally:
+        if creation is not None:
+            assert provider.cleanup(creation.receipt).residual_failures == ()
 
 
 def test_provision_requires_the_authorized_credential_target_handoff() -> None:

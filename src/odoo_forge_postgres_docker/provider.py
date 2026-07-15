@@ -28,6 +28,10 @@ from odoo_forge.database.errors import (
     OwnershipRefusedError,
     ResourceUnavailableError,
 )
+from odoo_forge.database.readiness import (
+    RuntimeOwnershipEvidence,
+    _mint_runtime_ownership_evidence,
+)
 from odoo_forge.database.types import (
     CleanupReport,
     CreationReceipt,
@@ -184,6 +188,19 @@ class DockerPostgresqlDatabaseProvider:
         ):
             raise OwnershipRefusedError()
 
+    def verify_runtime_ownership(self, creation: DatabaseCreation) -> RuntimeOwnershipEvidence:
+        """Attest only to a currently receipt-owned and ready Docker container."""
+        if creation.ref.ownership is not ResourceOwnership.CREATED:
+            raise OwnershipRefusedError()
+        self.assert_live_ownership(
+            creation.receipt,
+            creation.ref.identifier,
+            self._inspect_labels(creation.ref.identifier),
+            resource_kind="container",
+        )
+        self._wait_ready(creation.ref.identifier)
+        return _mint_runtime_ownership_evidence()
+
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
         creation: DatabaseCreation | None = None
         credential_file: Path | None = None
@@ -197,6 +214,12 @@ class DockerPostgresqlDatabaseProvider:
                     credential_file.unlink(missing_ok=True)
                 except OSError:
                     cleanup_failures.append("credential-file")
+            rollback_incomplete = self._rollback_incomplete(exc)
+            if rollback_incomplete is not None:
+                rollback_incomplete.cleanup_failures += tuple(cleanup_failures)
+                if rollback_incomplete is exc:
+                    raise
+                raise rollback_incomplete from exc
             if creation is not None:
                 self._raise_after_rollback(
                     exc, creation.receipt, (creation.ref.identifier,), tuple(cleanup_failures)
@@ -384,6 +407,17 @@ class DockerPostgresqlDatabaseProvider:
         residuals = self._rollback(receipt, created)
         if residuals or cleanup_failures:
             raise RollbackIncompleteError(receipt, residuals, cleanup_failures) from original
+
+    @staticmethod
+    def _rollback_incomplete(error: Exception) -> RollbackIncompleteError | None:
+        seen = set()
+        current: BaseException | None = error
+        while current is not None and id(current) not in seen:
+            if isinstance(current, RollbackIncompleteError):
+                return current
+            seen.add(id(current))
+            current = current.__cause__ or current.__context__
+        return None
 
     @staticmethod
     def _validate_identifier(value: str) -> None:
