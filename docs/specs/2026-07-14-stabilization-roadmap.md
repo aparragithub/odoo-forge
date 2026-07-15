@@ -1,6 +1,6 @@
 # Current Stabilization Roadmap
 
-**Status:** current as of 2026-07-14
+**Status:** current as of 2026-07-15
 
 This is the review-facing execution order for stabilizing the implemented platform before larger
 product outcomes. [`portfolio.json`](platform/portfolio.json) remains authoritative for product
@@ -9,36 +9,34 @@ requirements; this roadmap links those artifacts instead of restating them.
 
 ## Next Action
 
-Now that Docker is available, replace the unconditional skip in
-`tests/adapters/test_docker_provider_integration.py` with the smallest disposable real-daemon
-`run -> status -> stop` harness, then run:
+Start a bounded SDD change for Unit 3, **Make Backend Planning Consume Materialized State**. Explore
+how `plan_backend(manifest, state, ...)` should derive mounts from authoritative
+`MaterializedState`, distinguish operations that require a materialized workspace from pure
+instance operations, and reject absent or incoherent state safely. Keep
+`CHG-FIRST-DATABASE-ADAPTER` and `sp-data-environments` outside this change.
 
-```bash
-uv run pytest -m integration tests/adapters/test_docker_provider_integration.py -q
-```
-
-Do this as a bounded stabilization change with ordinary resilience review. The current command
-runs against Docker 29.6.1 but reports `1 skipped`; passing mocked tests are not a substitute for
-this runtime receipt.
+Units 1 and 2 are complete. Do not reopen their archived OpenSpec artifacts or use their historical
+planning text as requirements for Unit 3.
 
 ## Authority and Current State
 
 | Source | Authority now | Evidence |
 | --- | --- | --- |
 | [`portfolio.json`](platform/portfolio.json) | Canonical product status and dependency authority | `meta.live_location` points to itself; its validator reports 0 violations. |
-| This roadmap | Current stabilization sequence | Dated after the completed 2026-07-12 audit remediation and current HEAD `6c41a06`. |
+| This roadmap | Current stabilization sequence | Updated after Units 1 and 2 merged; current `origin/main` is PR #64 at `70293f0`. |
 | [`2026-07-12-codebase-audit-roadmap.md`](../reviews/2026-07-12-codebase-audit-roadmap.md) | Closed review/remediation evidence | Its postscript records completed fixes and says Judgment Day was neither authorized nor performed. |
 | [`2026-07-08-platform-roadmap.md`](2026-07-08-platform-roadmap.md) | Historical/superseded | Its header redirects current status to `portfolio.json`. |
 | [`2026-07-06-phase-2-slices-roadmap.md`](2026-07-06-phase-2-slices-roadmap.md) | Historical/superseded | Its header preserves Phase 2 delivery history and redirects current planning. |
 
 Current baseline evidence:
 
-- `uv run pytest`: 525 passed, 1 integration test deselected, 98% coverage on the configured core
-  source set.
-- `uv run pytest -m integration tests/adapters/test_docker_provider_integration.py -q`: 1 skipped
-  because the only real-daemon test is an unconditional skeleton.
-- Published-layer declarations are accepted by the manifest schema, but source resolution remains
-  deferred; manifest overrides are declared but not applied.
+- Unit 1 is complete through issue #55 and PR #62: the disposable real-Docker lifecycle baseline
+  and readiness/recovery behavior are merged and archived.
+- Unit 2 is complete through PR #64 and archived OpenSpec change
+  `2026-07-14-decide-manifest-layer-override-semantics`: published layers resolve to immutable
+  version/digest lock entries and exact-URL Git overrides are applied before resolution.
+- Final Unit 2 evidence records `uv run pytest`: 574 passed, 6 deselected; import-linter, Ruff,
+  formatting, and mypy passed.
 - `plan_backend(manifest, state, ...)` explicitly discards `MaterializedState`, so backend mounts
   do not yet reflect the materialized workspace.
 - Provider-neutral database, data-artifact, durable-operation, project-catalog, and tenancy
@@ -65,6 +63,9 @@ named lens; it does not mean a full-repository review.
 
 ### 1. Establish Executable and Real-Docker Baselines
 
+**Status: Complete** — merged through issue #55 and PR #62. The archived SDD evidence records the
+disposable real-Docker lifecycle baseline and readiness/recovery corrections. This unit is closed.
+
 | Field | Boundary |
 | --- | --- |
 | Portfolio/OpenSpec mapping | `CAP-LOCAL-BACKEND`; canonical `local-backend` spec. No active change exists, so a small stabilization SDD proposal is required before implementation. |
@@ -75,11 +76,16 @@ named lens; it does not mean a full-repository review.
 
 ### 2. Decide Published-Layer and Override Semantics
 
+**Status: Complete** — merged through PR #64 and archived at
+`openspec/changes/archive/2026-07-14-decide-manifest-layer-override-semantics/`. The accepted
+contract implements both features: published layers use immutable version/digest lock entries;
+Git overrides match exact declared URLs and apply before resolution. This unit is closed.
+
 | Field | Boundary |
 | --- | --- |
-| Portfolio/OpenSpec mapping | `CAP-MANIFEST`; canonical `manifest` spec. No active change owns this ambiguity, so investigation must end in a future SDD proposal or an explicit deprecation/removal decision. |
+| Portfolio/OpenSpec mapping | `CAP-MANIFEST`; canonical `manifest` spec and archived `decide-manifest-layer-override-semantics` change. |
 | Entry | Real-Docker baseline is trusted; current schema accepts `PublishedLayer` and `Override`, while historical roadmaps record deferred resolution/application. |
-| Exit | One authority-backed decision states whether each feature is implemented, deprecated, or removed; accepted examples and migration/compatibility impact are explicit. No runtime work starts from historical Slice 4a text alone. |
+| Exit | Complete: both features are implemented with explicit validation, lock compatibility, migration, projection, drift, and CLI behavior. |
 | Evidence | Focused manifest lock/projection tests plus a real Git/registry runtime scenario only for the selected behavior. |
 | Rollback | Decision and subsequent manifest work remain separate from backend and database changes. |
 | Review | Ordinary architecture review. Use Judgment Day only if the decision changes the public manifest contract or persisted lock compatibility across existing users. |
