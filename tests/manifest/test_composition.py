@@ -134,7 +134,7 @@ def test_override_targeting_git_layer_repo_is_accepted() -> None:
             overrides=[
                 {
                     "layer": "localization",
-                    "repo": "odoo-partner",
+                    "repo": "https://github.com/ingadhoc/odoo-partner.git",
                     "fork": "https://github.com/acme/odoo-partner.git",
                     "ref": "custom",
                 }
@@ -145,6 +145,65 @@ def test_override_targeting_git_layer_repo_is_accepted() -> None:
     chain = compose(manifest)
 
     assert len(chain) == 3
+
+
+def test_override_requires_exact_declared_repository_url() -> None:
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "git",
+                    "name": "localization",
+                    "repos": [
+                        {"url": "https://github.com/ingadhoc/odoo-partner.git", "ref": "19.0"},
+                    ],
+                },
+            ],
+            overrides=[
+                {
+                    "layer": "localization",
+                    "repo": "odoo-partner",
+                    "fork": "https://github.com/acme/odoo-partner.git",
+                    "ref": "custom",
+                }
+            ],
+        )
+    )
+
+    with pytest.raises(CompositionError, match="odoo-partner"):
+        compose(manifest)
+
+
+def test_duplicate_override_target_is_rejected() -> None:
+    repo_url = "https://github.com/ingadhoc/odoo-partner.git"
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "git",
+                    "name": "localization",
+                    "repos": [{"url": repo_url, "ref": "19.0"}],
+                }
+            ],
+            overrides=[
+                {
+                    "layer": "localization",
+                    "repo": repo_url,
+                    "fork": "https://acme/one.git",
+                    "ref": "one",
+                },
+                {
+                    "layer": "localization",
+                    "repo": repo_url,
+                    "fork": "https://acme/two.git",
+                    "ref": "two",
+                },
+            ],
+        )
+    )
+
+    with pytest.raises(CompositionError, match="duplicate"):
+        compose(manifest)
 
 
 def test_override_targeting_published_layer_is_rejected() -> None:
@@ -233,7 +292,7 @@ def test_override_missing_repo_in_existing_layer_raises() -> None:
             overrides=[
                 {
                     "layer": "localization",
-                    "repo": "odoo-nonexistent",
+                    "repo": "https://github.com/ingadhoc/odoo-nonexistent.git",
                     "fork": "https://github.com/acme/fork.git",
                     "ref": "custom",
                 }
@@ -242,6 +301,24 @@ def test_override_missing_repo_in_existing_layer_raises() -> None:
     )
 
     with pytest.raises(CompositionError, match="odoo-nonexistent"):
+        compose(manifest)
+
+
+def test_override_targeting_core_is_rejected() -> None:
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            overrides=[
+                {
+                    "layer": "core",
+                    "repo": "https://github.com/odoo/odoo.git",
+                    "fork": "https://github.com/acme/odoo.git",
+                    "ref": "custom",
+                }
+            ],
+        )
+    )
+
+    with pytest.raises(CompositionError, match="core"):
         compose(manifest)
 
 
@@ -271,8 +348,14 @@ def test_compose_regression_core_ref_stays_none_and_helper_never_called() -> Non
     assert "resolve_default_ref" not in inspect.getsource(composition)
 
 
-def test_odoo_idp_fire_test_composes_cleanly() -> None:
-    raw = yaml.safe_load((FIXTURES_DIR / "odoo-idp.project.yaml").read_text())
+@pytest.mark.parametrize(
+    ("fixture_name", "minimum_repos"),
+    [("valid.project.yaml", 1), ("odoo-idp.project.yaml", 17)],
+)
+def test_tracked_manifest_fixture_composes_with_exact_override_url(
+    fixture_name: str, minimum_repos: int
+) -> None:
+    raw = yaml.safe_load((FIXTURES_DIR / fixture_name).read_text())
     manifest = Manifest.model_validate(raw)
 
     chain = compose(manifest)
@@ -280,4 +363,30 @@ def test_odoo_idp_fire_test_composes_cleanly() -> None:
     assert isinstance(chain[0], CoreLayer)
     assert isinstance(chain[-1], type(manifest.client))
     localization = next(layer for layer in manifest.layers if isinstance(layer, GitLayer))
-    assert len(localization.repos) >= 17
+    assert len(localization.repos) >= minimum_repos
+    assert manifest.overrides[0].repo == localization.repos[0].url
+
+
+def test_additional_layer_named_core_is_rejected_even_with_a_matching_override() -> None:
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "git",
+                    "name": "core",
+                    "repos": [{"url": "https://example.com/shadow.git", "ref": "main"}],
+                }
+            ],
+            overrides=[
+                {
+                    "layer": "core",
+                    "repo": "https://example.com/shadow.git",
+                    "fork": "https://example.com/fork.git",
+                    "ref": "custom",
+                }
+            ],
+        )
+    )
+
+    with pytest.raises(CompositionError, match="reserved"):
+        compose(manifest)

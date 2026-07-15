@@ -3,12 +3,14 @@
 ## Completed Tasks
 - [x] 1.1 RED: lockfile-format contracts
 - [x] 1.2 GREEN/REFACTOR: v1/v2 lockfile models and dispatch
+- [x] 1.3 RED/GREEN/REFACTOR: exact override validation and effective Git locking
 
 ## TDD Cycle Evidence
 | Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
 |---|---|---|---|---|---|---|---|
 | 1.1 | `tests/manifest/test_lockfile_format.py` | Unit | `uv run pytest tests/manifest/test_lockfile_format.py`: 4 passed | Added v2 imports/contracts; exact RED: collection ImportError for missing `ResolvedGitLayer` | Completed with 1.2: 8 passed | v2 Git+published fixture; unknown versions `0`, `3` | Test cases remain focused |
 | 1.2 | `tests/manifest/test_lockfile_format.py` | Unit | Same 4 passed baseline | Used 1.1's failing contracts before production edits | `uv run pytest tests/manifest/test_lockfile_format.py`: 8 passed | v1/v2 dispatch plus two unsupported versions | Extracted explicit v1/v2 input models and compatibility view; 8 passed |
+| 1.3 | `tests/manifest/test_composition.py`, `tests/manifest/test_locking.py` | Unit | `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py`: 22 passed | Exact URL acceptance/rejection, duplicate target, core target, and replacement-before-resolution tests added before production edits; exit 1, 4 failed / 24 passed | `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py`: exit 0, 28 passed | Exact vs basename, three structurally invalid provider-free paths, and effective fork/ref/commit paths | Removed basename matching; extracted effective repo resolution; 28 passed |
 
 ## Work Unit Evidence
 | Evidence | Result |
@@ -40,3 +42,33 @@
 | CLI translation | Existing `_load_lock` `ValueError` translation retained; `uv run pytest tests/cli/test_validate.py` — exit 0, 10 passed. |
 | Regression | 59-test focused command — exit 0, 59 passed; targeted Ruff — exit 0. |
 | Rollback | Revert `Lockfile` overloads; runtime field aliases and v1/v2 serialization remain otherwise unchanged. |
+
+## Work Unit 2 Evidence
+| Evidence | Result |
+|---|---|
+| Focused test | `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py` — RED exit 1: 4 failed, 24 passed; GREEN/REFACTOR exit 0: 28 passed. |
+| Narrow lockfile regression | `uv run pytest tests/manifest/test_lockfile_format.py` — exit 0, 9 passed. |
+| Combined regression | `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py tests/manifest/test_lockfile_format.py` — exit 0, 37 passed. |
+| Targeted quality | `uv run ruff check src/odoo_forge/manifest/composition.py src/odoo_forge/manifest/locking.py tests/manifest/test_composition.py tests/manifest/test_locking.py` — exit 0; `uv run mypy src/odoo_forge/manifest/composition.py src/odoo_forge/manifest/locking.py tests/manifest/test_composition.py tests/manifest/test_locking.py` — exit 0, no issues in 4 files. |
+| Runtime harness | N/A — this is a pure-core boundary; injected fake `SourceProvider` proves that structurally invalid manifests invoke it zero times and that the effective fork/ref is resolved and persisted. |
+| Rollback boundary | Revert only `composition.py`, `locking.py`, and their two manifest test files to restore declared Git URL/ref locking and prior basename validation; lockfile v1/v2 compatibility and all future resolver/adapter/CLI work remain untouched. |
+
+## Delivery: Work Unit 2
+- Mandatory feature-branch chain, PR #2 base: `feat/manifest-lock-v2` at `8c689ad`.
+- Authored implementation/test diff against `8c689ad`: 177 additions + 39 deletions = 216 changed lines before SDD metadata; within the 220–320 forecast once task/progress evidence is included, and below the 400-line hard cap.
+- No commit, push, PR, resolver/registry/DI, projection/drift, or new CLI wiring was created.
+
+## Unit 2 Authorized Scope Expansion
+- Maintainer authorized a new scope after CRITICAL review lineage `review-3d71d166a700e028`; that lineage was not reopened or remediated.
+| Stage | Evidence |
+|---|---|
+| RED | Existing CLI fixture consumers failed with basename targets; after adding tracked-fixture and core-shadowing regressions, `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py tests/cli/test_lock.py tests/cli/test_validate.py` exited 1: 12 failed, 39 passed. |
+| GREEN | Migrated `valid.project.yaml` and `odoo-idp.project.yaml` to exact URLs; rejected reserved `core` additional layers and explicit core overrides before resolution; updated the existing CLI lock assertion to effective fork/ref/commit. |
+| REFACTOR | Removed the in-memory fixture rewrite and parameterized direct tracked-fixture composition coverage; no new abstraction was needed. |
+| Focused tests | `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py` — exit 0, 31 passed. |
+| CLI fixture consumers | `uv run pytest tests/cli/test_lock.py tests/cli/test_validate.py` — exit 0, 20 passed. |
+| Unit 1 regression | `uv run pytest tests/manifest/test_lockfile_format.py` — exit 0, 9 passed. |
+| Quality | `uv run ruff check src/odoo_forge/manifest/composition.py src/odoo_forge/manifest/locking.py tests/manifest/test_composition.py tests/manifest/test_locking.py tests/cli/test_lock.py` — exit 0; targeted mypy for the same Python paths — exit 0, no issues in 5 files. |
+| Runtime harness | N/A — injected fake `SourceProvider` verifies the core-shadowing structure fails before any provider call; CLI tests exercise real Typer lock/validate paths with fixture files. |
+| Rollback | Revert the two fixture URL migrations, reserved-name/core-override validation, and focused regression/CLI expectation changes together; no future-unit behavior is removed. |
+- Current cumulative diff against `8c689ad`: 286 additions + 53 deletions = 339 changed lines, below the 400-line hard cap. |

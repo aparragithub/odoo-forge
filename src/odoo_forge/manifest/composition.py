@@ -10,6 +10,7 @@ from odoo_forge.manifest.schema import Client, CoreLayer, GitLayer, Layer, Manif
 
 
 def compose(manifest: Manifest) -> list[CoreLayer | Layer | Client]:
+    _check_reserved_layer_names(manifest)
     _check_edition_coherence(manifest)
     _check_overrides(manifest)
 
@@ -17,6 +18,11 @@ def compose(manifest: Manifest) -> list[CoreLayer | Layer | Client]:
     chain.extend(manifest.layers)
     chain.append(manifest.client)
     return chain
+
+
+def _check_reserved_layer_names(manifest: Manifest) -> None:
+    if any(layer.name == "core" for layer in manifest.layers):
+        raise CompositionError("layer name 'core' is reserved for the singleton core layer")
 
 
 def _check_edition_coherence(manifest: Manifest) -> None:
@@ -40,19 +46,26 @@ def _check_edition_coherence(manifest: Manifest) -> None:
 
 def _check_overrides(manifest: Manifest) -> None:
     layers_by_name = {layer.name: layer for layer in manifest.layers}
+    targets: set[tuple[str, str]] = set()
 
     for override in manifest.overrides:
+        if override.layer == "core":
+            raise CompositionError("override cannot target the reserved core layer")
+
+        target = (override.layer, override.repo)
+        if target in targets:
+            raise CompositionError(
+                f"duplicate override for repo '{override.repo}' in layer '{override.layer}'"
+            )
+        targets.add(target)
+
         layer = layers_by_name.get(override.layer)
         if layer is None:
             raise CompositionError(f"override references unknown layer '{override.layer}'")
 
-        # Contract: `override.repo` names a repo *within* a git layer. A
-        # non-git (published) layer has no repos, so a repo-level override
-        # against it is meaningless and is rejected rather than silently
-        # ignored.
         if isinstance(layer, GitLayer):
-            repo_names = {_repo_name(repo.url) for repo in layer.repos}
-            if override.repo not in repo_names:
+            repo_urls = {repo.url for repo in layer.repos}
+            if override.repo not in repo_urls:
                 raise CompositionError(
                     f"override references unknown repo '{override.repo}' "
                     f"in layer '{override.layer}'"
@@ -62,22 +75,4 @@ def _check_overrides(manifest: Manifest) -> None:
                 f"override for layer '{override.layer}' specifies repo "
                 f"'{override.repo}', but that layer has no repos (not a git layer)"
             )
-
-
-def _repo_name(url: str) -> str:
-    """Return the repo name used to match `Override.repo` against a git URL.
-
-    Convention: the URL basename with any trailing slash and `.git` suffix
-    removed. For example ``https://github.com/ingadhoc/odoo-partner.git`` ->
-    ``odoo-partner``.
-
-    Edge case: this is a basename, not a fully-qualified path, so two repos
-    from different owners with the same last path segment (e.g.
-    ``acme/odoo-web`` and ``ingadhoc/odoo-web``) collapse to the same name and
-    cannot be distinguished by an override. This is acceptable within a single
-    layer today; disambiguation is deferred to a later slice if needed.
-    """
-    return url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
-
-
 __all__ = ["compose"]

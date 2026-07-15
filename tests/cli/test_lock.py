@@ -136,13 +136,11 @@ def test_lock_then_validate_round_trip_no_drift(
     assert core_layer.repos[0].commit == "sha-19.0"
     localization_layer = lock.layers[1]
     assert [repo.url for repo in localization_layer.repos] == [
-        "https://github.com/ingadhoc/odoo-argentina-ee.git"
+        "https://github.com/acme/odoo-argentina-ee.git"
     ]
-    # The manifest declares an override (fork + custom-fix ref) for this repo,
-    # but override application is deferred past Slice 2b — the original ref's
-    # SHA is pinned, not the fork's.
-    assert localization_layer.repos[0].ref == "19.0"
-    assert localization_layer.repos[0].commit == "sha-19.0"
+    assert localization_layer.repos[0].url == "https://github.com/acme/odoo-argentina-ee.git"
+    assert localization_layer.repos[0].ref == "custom-fix"
+    assert localization_layer.repos[0].commit == "sha-custom-fix"
 
     # `validate` now scans the real mount roots (Slice 3): a fully-projected
     # workspace — simulated here via a fake `WorkspaceProvider.scan` matching
@@ -160,8 +158,8 @@ def test_lock_then_validate_round_trip_no_drift(
                 ),
                 ScannedRepo(
                     path=Path("/mnt/enterprise/localization/odoo-argentina-ee"),
-                    url="https://github.com/ingadhoc/odoo-argentina-ee.git",
-                    commit="sha-19.0",
+                    url="https://github.com/acme/odoo-argentina-ee.git",
+                    commit="sha-custom-fix",
                 ),
             ]
         ),
