@@ -40,19 +40,19 @@ The system MUST require consumers to accept and return only `CredentialHandle` v
 
 ### Requirement: Materialization Boundary and Plaintext Lifetime
 
-The system MUST allow plaintext credential material to exist only inside the credential capability, or inside the final target-native injection step it authorizes, while one resolution or injection operation is active. Plaintext MUST NOT be persisted and MUST be unavailable once that operation completes or fails.
+The system MUST allow plaintext credential material only inside the credential capability or the final target-native injection step while one operation is active. Docker PostgreSQL injection MUST NOT persist plaintext in `Config.Env`, inspect-visible configuration, returned values, or durable state. Plaintext MUST be unavailable after success or failure.
 
-#### Scenario: Resolution completes without persistence
+#### Scenario: Docker injection leaves no environment credential
 
-- GIVEN a valid handle is resolved for one target operation
-- WHEN resolution and injection complete
-- THEN plaintext is not present in any returned or persisted value
+- GIVEN a valid handle targets Docker PostgreSQL
+- WHEN credential materialization and injection complete
+- THEN Docker `Config.Env`, outputs, and durable state contain no plaintext credential
 
 #### Scenario: Failed operation clears temporary plaintext
 
-- GIVEN a resolution or injection attempt fails
+- GIVEN resolution or injection fails
 - WHEN the operation terminates
-- THEN no plaintext remains available through capability outputs or durable state
+- THEN no plaintext remains available through capability outputs, Docker inspection, or durable state
 
 ### Requirement: Redacted Failures and Diagnostics
 
@@ -66,17 +66,17 @@ The system MUST redact plaintext secrets from logs, diagnostics, errors, receipt
 
 ### Requirement: Target-Side Injection Handoff
 
-The system MUST support a handoff where a consumer supplies a `CredentialHandle` and a target context, and the resulting request carries only an opaque injection descriptor or store reference. If a target cannot accept a ref-only handoff, the system MUST fail closed rather than downgrade to consumer-visible plaintext.
+The system MUST support a `CredentialHandle` plus target context producing only an opaque Docker injection descriptor or supported secret/file reference. If the target cannot consume that ref-only mechanism, the system MUST fail closed rather than expose plaintext.
 
-#### Scenario: Ref-only target handoff succeeds
+#### Scenario: Ref-only Docker handoff succeeds
 
-- GIVEN a target can consume an opaque injection reference
+- GIVEN Docker PostgreSQL supports the approved secret/file mechanism
 - WHEN the consumer submits a handle for that target
-- THEN the handoff contains no plaintext credential material
+- THEN the handoff contains no plaintext and `Config.Env` contains no password
 
 #### Scenario: Non-ref-capable target fails closed
 
-- GIVEN a target requires consumer-visible plaintext to proceed
+- GIVEN a target requires consumer-visible plaintext or an unsupported legacy mechanism
 - WHEN injection is requested
 - THEN the request is rejected without exposing plaintext
 
