@@ -1,3 +1,4 @@
 from odoo_forge_registry.provider import GhcrImageRegistryProvider
+from odoo_forge_registry.published_artifact_resolver import PublishedArtifactRegistryResolver
 
-__all__ = ["GhcrImageRegistryProvider"]
+__all__ = ["GhcrImageRegistryProvider", "PublishedArtifactRegistryResolver"]

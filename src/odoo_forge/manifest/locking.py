@@ -11,32 +11,47 @@ from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.lockfile import (
     Lockfile,
     ResolvedLayer,
+    ResolvedPublishedLayer,
     ResolvedRepo,
     compute_manifest_hash,
 )
 from odoo_forge.manifest.resolution import resolve_default_ref
-from odoo_forge.manifest.schema import GitLayer, Manifest, Override
+from odoo_forge.manifest.schema import GitLayer, Manifest, Override, PublishedLayer
+from odoo_forge.ports.published_artifact_resolver import PublishedArtifactResolver
 from odoo_forge.ports.source_provider import SourceProvider
 
 
-def build_lock(manifest: Manifest, provider: SourceProvider) -> Lockfile:
+def build_lock(
+    manifest: Manifest,
+    provider: SourceProvider,
+    artifact_resolver: PublishedArtifactResolver,
+) -> Lockfile:
     # Coherence gate first: an incoherent manifest must never trigger a
     # network/subprocess call before it is rejected.
     compose(manifest)
 
-    layers: list[ResolvedLayer] = [_resolve_core(manifest, provider)]
+    git_layers: list[ResolvedLayer] = [_resolve_core(manifest, provider)]
+    published_layers: list[ResolvedPublishedLayer] = []
 
     overrides = {(override.layer, override.repo): override for override in manifest.overrides}
     for layer in manifest.layers:
         if isinstance(layer, GitLayer):
-            layers.append(_resolve_git_layer(layer, provider, overrides))
-        # `PublishedLayer` has no git repo to pin — omitted from the lock
-        # until registry resolution lands (Slice 4), never recorded as an
-        # empty `ResolvedLayer`.
+            git_layers.append(_resolve_git_layer(layer, provider, overrides))
+        elif isinstance(layer, PublishedLayer):
+            resolution = artifact_resolver.resolve(layer.source, layer.version)
+            published_layers.append(
+                ResolvedPublishedLayer(
+                    name=layer.name,
+                    source=resolution.source,
+                    version=resolution.version,
+                    digest=resolution.digest,
+                )
+            )
 
     return Lockfile(
         generated_from=compute_manifest_hash(manifest),
-        layers=layers,
+        git_layers=git_layers,
+        published_layers=published_layers,
     )
 
 

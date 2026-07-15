@@ -35,8 +35,8 @@ Only tracker/integration merges to main; no size exception. Child diffs exclude 
 
 ## Phase 2: RED — Published resolution and dependency injection
 
-- [ ] 2.1 RED: Add `tests/ports/` and `tests/adapters/` failures for immutable resolution and typed not-found/digest errors; GREEN/REFACTOR `src/odoo_forge/ports/published_artifact_resolver.py`, `src/odoo_forge/manifest/artifacts.py`, and registry adapter.
-- [ ] 2.2 RED: Extend locking tests for the combined published-version/digest plus overridden fork/ref/commit scenario; GREEN/REFACTOR `locking.py` and `src/odoo_forge_cli/main.py` resolver injection.
+- [x] 2.1 RED: Add `tests/ports/` and `tests/adapters/` failures for immutable resolution and typed not-found/digest errors; GREEN/REFACTOR `src/odoo_forge/ports/published_artifact_resolver.py`, `src/odoo_forge/manifest/artifacts.py`, and registry adapter.
+- [x] 2.2 RED: Extend locking tests for the combined published-version/digest plus overridden fork/ref/commit scenario; GREEN/REFACTOR `locking.py` and `src/odoo_forge_cli/main.py` resolver injection.
 
 ## Phase 3: RED — Consumers and CLI safety
 

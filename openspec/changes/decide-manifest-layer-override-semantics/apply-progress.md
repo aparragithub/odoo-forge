@@ -4,6 +4,8 @@
 - [x] 1.1 RED: lockfile-format contracts
 - [x] 1.2 GREEN/REFACTOR: v1/v2 lockfile models and dispatch
 - [x] 1.3 RED/GREEN/REFACTOR: exact override validation and effective Git locking
+- [x] 2.1 RED/GREEN/REFACTOR: published resolver port, frozen value, typed failures, and registry adapter
+- [x] 2.2 RED/GREEN/REFACTOR: injected artifact resolver, published lock entries, and CLI composition
 
 ## TDD Cycle Evidence
 | Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
@@ -11,6 +13,8 @@
 | 1.1 | `tests/manifest/test_lockfile_format.py` | Unit | `uv run pytest tests/manifest/test_lockfile_format.py`: 4 passed | Added v2 imports/contracts; exact RED: collection ImportError for missing `ResolvedGitLayer` | Completed with 1.2: 8 passed | v2 Git+published fixture; unknown versions `0`, `3` | Test cases remain focused |
 | 1.2 | `tests/manifest/test_lockfile_format.py` | Unit | Same 4 passed baseline | Used 1.1's failing contracts before production edits | `uv run pytest tests/manifest/test_lockfile_format.py`: 8 passed | v1/v2 dispatch plus two unsupported versions | Extracted explicit v1/v2 input models and compatibility view; 8 passed |
 | 1.3 | `tests/manifest/test_composition.py`, `tests/manifest/test_locking.py` | Unit | `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py`: 22 passed | Exact URL acceptance/rejection, duplicate target, core target, and replacement-before-resolution tests added before production edits; exit 1, 4 failed / 24 passed | `uv run pytest tests/manifest/test_composition.py tests/manifest/test_locking.py`: exit 0, 28 passed | Exact vs basename, three structurally invalid provider-free paths, and effective fork/ref/commit paths | Removed basename matching; extracted effective repo resolution; 28 passed |
+| 2.1 | `tests/ports/test_published_artifact_resolver.py`, `tests/adapters/test_published_artifact_resolver.py` | Unit | New files | Import RED: exit 2, missing `manifest.artifacts`; GREEN: exit 0, 4 passed | Happy immutable resolution; not-found, missing-digest, and generic registry failures | Extracted adapter-local single-method registry protocol; 4 passed |
+| 2.2 | `tests/manifest/test_locking.py`, `tests/cli/test_lock.py` | Unit | `uv run pytest tests/manifest/test_locking.py tests/cli/test_lock.py`: 53 passed | exit 1: missing CLI factory and `build_lock` third dependency | exit 0, 28 focused tests passed | Published digest plus overridden effective fork/ref/commit; CLI fake DI | Required explicit injected resolver; no service locator; all focused tests stay green |
 
 ## Work Unit Evidence
 | Evidence | Result |
@@ -72,3 +76,16 @@
 | Runtime harness | N/A — injected fake `SourceProvider` verifies the core-shadowing structure fails before any provider call; CLI tests exercise real Typer lock/validate paths with fixture files. |
 | Rollback | Revert the two fixture URL migrations, reserved-name/core-override validation, and focused regression/CLI expectation changes together; no future-unit behavior is removed. |
 - Current cumulative diff against `8c689ad`: 286 additions + 53 deletions = 339 changed lines, below the 400-line hard cap. |
+
+## Work Unit 3 Evidence
+| Evidence | Result |
+|---|---|
+| Focused test | `uv run pytest tests/ports/test_published_artifact_resolver.py tests/adapters/test_published_artifact_resolver.py tests/manifest/test_locking.py tests/cli/test_lock.py` — exit 0, 28 passed. |
+| Unit 1+2 regression | `uv run pytest tests/manifest/test_lockfile_format.py tests/manifest/test_composition.py tests/manifest/test_locking.py` — exit 0, 41 passed. |
+| Quality | Targeted `uv run ruff check ...` — exit 0; `uv run lint-imports` — 6 contracts kept; `uv run mypy` — exit 0, 110 source files. |
+| Runtime harness | N/A — registry interaction is fully exercised through the concrete adapter contract fake: fixture `registry://example/odoo-ee` maps to `ghcr.io/example/odoo-ee:19.0`, and digest/not-found/general failures are translated without network or Docker. |
+| Rollback boundary | Revert only published-artifact port/value/adapter, resolver injection, and their focused tests; Unit 1/2 lockfile and Git override behavior remains intact. |
+
+## Delivery: Work Unit 3
+- Feature-branch-chain PR #3 base: `feat/manifest-git-overrides` / `bb1c229`; no commit, push, PR, review, projection, drift, or CLI safety work was created.
+- Diff against `bb1c229` is within the 400-line hard cap, including OpenSpec metadata.
