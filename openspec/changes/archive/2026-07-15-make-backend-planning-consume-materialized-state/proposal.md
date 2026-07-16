@@ -61,7 +61,7 @@ Rollback by reverting planner, validation, and CLI wiring together to the prior 
 
 ## Delivery and Acceptance Outcomes
 
-- [ ] `run` reaches the provider only with complete, coherent, lock-matching evidence.
-- [ ] Missing, incomplete, malformed, and drifted evidence blocks `run` without partial mounts.
-- [ ] Identity commands remain workspace-independent; `BackendProvider` is unchanged.
-- [ ] Delivery will be force-chained under a 400 changed-line review budget; slices are deferred to planning.
+- [x] `run` reaches the provider only with complete, coherent, lock-matching evidence.
+- [x] Missing, incomplete, malformed, and drifted evidence blocks `run` without partial mounts.
+- [x] Identity commands remain workspace-independent; `BackendProvider` is unchanged.
+- [x] Delivery will be force-chained under a 400 changed-line review budget; slices are deferred to planning.

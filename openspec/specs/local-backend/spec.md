@@ -41,21 +41,9 @@ interface; no adapter lives in core.
 
 ## Capability: backend-planner (New)
 
-### Requirement: plan_backend is a pure function over manifest + MaterializedState
+### Requirement: plan_backend is a pure core boundary over validated mount-planning input
 
-A pure `plan_backend(manifest, state, instance="default") -> BackendPlan` MUST
-live in `odoo_forge` with zero I/O and compute: container/network topology, a
-named persistent Postgres data volume AND a named persistent Odoo-filestore
-volume (`plan.volumes`), one mount per Slice-3 root (`community`, `enterprise`,
-`localization`, `custom`, `worktrees`), the DB env vars that
-`factory/entrypoint.sh:143-159` ACTUALLY consumes, and identifying labels. It
-MUST NOT invoke `docker` or any adapter.
-
-`BackendPlan` carries env and mounts PER container (`plan.postgres` /
-`plan.odoo`, each a `ContainerSpec` with its own `env`/`mounts`), not as
-top-level fields; this is the shape reconciled with the design (design
-"Interfaces / Contracts"). There is no top-level `BackendPlan.env` or
-`BackendPlan.mounts`.
+Backend planning MUST remain a pure core boundary that consumes manifest and instance inputs plus validated evidence-derived mount-planning input. It MUST remain free of I/O and MUST NOT invoke Docker. The design phase owns the concrete function and type signature. Its behavioral contract is to consume manifest data plus a separate, validated mount-planning input produced by the pure core seam; that seam carries mount authority and lock-evidence validation, while `BackendPlan` remains the boundary handed to `BackendProvider`. The planner MUST fail closed when overall evidence is absent, required projected repos are missing, evidence is malformed or incoherent, or any repo commit drifts from `project.lock`. The planner MUST derive mounts only from evidence-backed required/optional roots: required projected repos MUST be present to run; optional/non-required roots MAY be absent; unexpected or incoherent evidence MUST be rejected rather than mounted. The planner MUST NOT create a partial required mount set and MUST NOT use any static or historical fallback. `MaterializedState` is identity/commit evidence only; it does not carry path/root authority.
 
 The env plan is the single source of truth for both containers and MUST match
 the entrypoint exactly (verified against `factory/entrypoint.sh:143-159`):
@@ -73,37 +61,68 @@ the entrypoint exactly (verified against `factory/entrypoint.sh:143-159`):
   deterministic local-dev defaults `odoo`/`odoo`, with the project database name
   derived from the sanitized `manifest.name`.
 
-#### Scenario: Planned DB env matches what the entrypoint consumes
-- GIVEN the entrypoint at `factory/entrypoint.sh:143-159` reads `DB_HOST`,
-  `DB_PORT`, `DB_USER`, `DB_PASSWORD` and `POSTGRES_DB` (never `DB_NAME`)
+#### Scenario: planned DB env matches the entrypoint contract
+- GIVEN the plan is built from complete, lock-consistent evidence
 - WHEN `plan_backend` runs
-- THEN `plan.odoo.env` keys are exactly `{DB_HOST, DB_PORT, DB_USER,
-  DB_PASSWORD, POSTGRES_DB}`, `plan.postgres.env` keys are exactly
-  `{POSTGRES_PASSWORD, POSTGRES_USER, POSTGRES_DB}`, no `DB_NAME` key is present,
-  and the shared user/password/db values are equal across the two containers
+- THEN `plan.odoo.env` and `plan.postgres.env` match the existing entrypoint keys
+- AND no `DB_NAME` key is emitted
 
-#### Scenario: Plan includes all five mount roots
-- GIVEN a `MaterializedState` with repos under all five mount roots
+#### Scenario: valid workspace without promoted overrides runs
+- GIVEN the validated planning input includes all lock-required projected repos and no promoted worktrees
 - WHEN `plan_backend` runs
-- THEN `plan.odoo.mounts` has exactly one entry per root
+- THEN it returns a `BackendPlan`
+- AND it includes only the required evidence-backed mounts
 
-#### Scenario: Plan wires DB_HOST to the planned Postgres service
+#### Scenario: optional roots may be absent
+- GIVEN the validated planning input omits a non-required root
+- WHEN `plan_backend` runs
+- THEN it still returns a `BackendPlan`
+- AND the missing optional root is not mounted
+
+#### Scenario: plan wires DB_HOST to the planned Postgres service
 - GIVEN a manifest with no external Postgres configured
 - WHEN `plan_backend` runs
-- THEN `plan.odoo.env["DB_HOST"]` resolves to the planned Postgres
-  container's network alias, not a literal `localhost`
+- THEN `plan.odoo.env["DB_HOST"]` resolves to the planned Postgres alias
 
-#### Scenario: Plan models named PG data and Odoo-filestore volumes
+#### Scenario: plan models named PG data and Odoo-filestore volumes
 - GIVEN a manifest with no external Postgres configured
 - WHEN `plan_backend` runs
-- THEN `plan.volumes` contains a named persistent Postgres data volume AND a
-  named persistent Odoo-filestore volume (`/var/lib/odoo`), and the Odoo
-  filestore volume is mounted on `plan.odoo`
+- THEN `plan.volumes` contains named persistent Postgres-data and Odoo-filestore volumes
 
-#### Scenario: Plan is deterministic
-- GIVEN the same manifest and materialized state
+#### Scenario: plan is deterministic
+- GIVEN the same manifest and validated planning input
 - WHEN `plan_backend` runs twice
 - THEN both `BackendPlan` results are equal
+
+#### Scenario: complete evidence produces a backend plan
+- GIVEN workspace evidence is complete and lock-consistent
+- WHEN `plan_backend` runs for `run`
+- THEN it returns a `BackendPlan` with the expected evidence-backed mounts
+- AND provider methods are not invoked during planning
+
+#### Scenario: missing required projected repo blocks run
+- GIVEN a required projected repo is absent from the validated planning input
+- WHEN `forge run` starts
+- THEN it exits before provider invocation with a single failure cause
+- AND no partial required mount set is produced
+
+#### Scenario: malformed or incoherent evidence fails once at the boundary
+- GIVEN a scanned path or root/layer pairing is invalid
+- WHEN scan/projection materialization runs
+- THEN it raises `ScanError` once
+- AND the CLI renders one error message with no fallback mount planning
+
+#### Scenario: unexpected evidence is rejected rather than mounted
+- GIVEN evidence includes a root or repo not backed by the lock/projection contract
+- WHEN `plan_backend` runs
+- THEN it rejects that evidence
+- AND it does not mount the unexpected root
+
+#### Scenario: commit drift blocks run
+- GIVEN evidence is complete but one repo commit differs from `project.lock`
+- WHEN `forge run` starts
+- THEN it fails before provider invocation
+- AND it does not reuse any historical mount fallback
 
 ### Requirement: Runtime digest override remains ephemeral
 
@@ -238,60 +257,51 @@ running instances MUST be persisted or consulted.
 
 ### Requirement: run/status/stop/logs/exec commands enforce a resilient boundary
 
-`forge run`, `forge status`, `forge stop`, `forge logs`, `forge exec` MUST
-call `plan_backend` (where applicable) and the injected `BackendProvider`,
-stop on first failure, and translate adapter errors into a typed taxonomy —
-at minimum `DockerNotAvailable`, `ImageNotFound`, `ContainerNotFound` —
-surfaced as a single-line message and `Exit(1)`. No raw subprocess/Docker
-traceback MUST reach the terminal.
-
-`PortConflict` is INTENTIONALLY NOT part of this taxonomy: the design DECIDES an
-ephemeral host-port strategy (`-p 0:8069`/`-p 0:8072`, mapped port reported by
-`status()`), under which host-port collisions are structurally unreachable. This
-supersedes the earlier "at minimum ... `PortConflict`" requirement; the design
-records the same decision so the two documents stay consistent.
-
-`DockerNotAvailable` MUST be raised for BOTH a missing `docker` binary (subprocess
-`FileNotFoundError`) and an unreachable daemon (binary present, non-zero exit with
-a `Cannot connect to the Docker daemon` stderr marker) — a missing binary is not
-the only way Docker can be unavailable.
+`forge run`, `forge status`, `forge stop`, `forge logs`, and `forge exec` MUST call `plan_backend` only where applicable, stop on first failure, and translate adapter errors into a typed taxonomy surfaced as a single-line message and `Exit(1)`. Identity commands MUST remain workspace-independent and MUST NOT scan. `run` MAY scan/materialize workspace evidence, but `status`, `stop`, `logs`, and `exec` MUST use only instance identity and the existing provider calls. `BackendProvider` signatures MUST remain unchanged.
 
 #### Scenario: Docker daemon unavailable fails loud and clean
-- GIVEN the Docker daemon is not running (binary present, `Cannot connect to
-  the Docker daemon` on stderr)
+- GIVEN the Docker daemon is not running
 - WHEN `forge run` executes
 - THEN it exits non-zero with a single-line `DockerNotAvailable` error
 
-#### Scenario: Partial run() failure removes only resources this run created
-- GIVEN a FIRST `run()` created the Postgres container, network and data volume
-  but the Odoo container failed to become healthy (`ContainerRunError`)
+#### Scenario: run fails closed before provider.run
+- GIVEN absent, incomplete, or drifted evidence
+- WHEN `forge run` executes
+- THEN it exits non-zero with a single human-readable error
+- AND `BackendProvider.run` is not called
+
+#### Scenario: partial run failure removes only resources this run created
+- GIVEN `run()` created the network and data volume but the Odoo container failed
 - WHEN the failure occurs
-- THEN rollback removes ONLY the resources this run created — the
-  partially-created containers, network AND the volumes created by this run
-  (`docker rm -f -v` for created containers, `docker volume rm` for created
-  volumes, `docker network rm`) — before exiting non-zero with a single-cause
-  error
+- THEN rollback removes only resources created by this invocation
 
-#### Scenario: Reattach-then-fail preserves the existing data volume
-- GIVEN a prior `run` -> `stop` left a preserved named Postgres data volume (and
-  Odoo-filestore volume), and a new `run` re-attaches to that volume but then the
-  Odoo container fails to become healthy (`ContainerRunError`)
-- WHEN rollback runs
-- THEN rollback removes only the resources THIS invocation created and MUST NOT
-  run `docker volume rm` against the re-attached, pre-existing PG/filestore
-  volume — the preserved database and filestore survive the failed re-run
+#### Scenario: reattach-then-fail preserves the existing data volume
+- GIVEN a prior `run` left a preserved named data volume and a new `run` re-attaches to it
+- WHEN the Odoo container then fails
+- THEN rollback does not remove the pre-existing volume
 
-#### Scenario: stop() on unknown instance fails loud
+#### Scenario: stop on unknown instance fails loud
 - GIVEN an instance id with no matching Docker container
 - WHEN `forge stop` runs
 - THEN it exits non-zero with a single-line `ContainerNotFound` error
 
-#### Scenario: status() vs stop/logs/exec on an absent instance diverge
+#### Scenario: identity commands stay workspace-independent
+- GIVEN no workspace materialization exists
+- WHEN `forge status`, `forge stop`, `forge logs`, or `forge exec` runs
+- THEN none of them scans the workspace
+- AND each command preserves its existing instance-only behavior
+
+#### Scenario: absent instance behavior stays command-specific
 - GIVEN an instance whose containers were removed outside `forge`
-- WHEN `status()` is called AND, separately, `stop`/`logs`/`exec` are called
-- THEN `status()` reports not-running WITHOUT raising, while
-  `stop`/`logs`/`exec` exit non-zero with a single-line `ContainerNotFound`
-  error
+- WHEN `status()` is called and, separately, `stop`/`logs`/`exec` are called
+- THEN `status()` reports not-running without raising
+- AND `stop`/`logs`/`exec` exit non-zero with `ContainerNotFound`
+
+#### Scenario: lock, project, and unlock remain unchanged
+- GIVEN `forge lock`, `forge project`, or `forge unlock`
+- WHEN those commands execute
+- THEN their existing behavior is unchanged
+- AND this change does not introduce workspace scanning into them
 
 ### Requirement: Pull failures surface typed operator diagnostics
 
