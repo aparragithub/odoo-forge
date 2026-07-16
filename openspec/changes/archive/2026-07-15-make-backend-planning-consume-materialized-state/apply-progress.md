@@ -106,7 +106,6 @@
 - PR3 MUST atomically migrate every CLI caller to `MountPlanningView` and remove this compatibility branch in the same slice; final verification MUST reject a surviving branch.
 ### TDD Cycle Evidence
 | Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
-|---|---|---|---|---|---|---|---|
 | PR2 correction | `tests/backend/test_plan.py` | Unit | 36 passed | Legacy caller test failed with `MountPlanningError` | 36 passed | Legacy static roots and evidence-derived per-repo mounts | Formatting only; focused tests remain green |
 ### Work Unit Evidence
 | Evidence | Result |
