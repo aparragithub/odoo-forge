@@ -71,3 +71,27 @@ PR 0 merged on `a44bae9dcdb59752016278a01cf226bed515078b`; Phase 1 now targets
 PR 1 is forced chained, feature-branch-chain; its child branch targets the tracker. Exact temporary-index
 diff count: **207 additions + 168 deletions = 375 changed lines**, within the 400 hard cap.
 No commit, push, PR, review, Phase 2, or Phase 3 work occurred.
+
+## Phase 2 Completion: Current Review-Facing Documentation
+
+- [x] 2.1 Reconciled `README.md` and the Spanish current-implementation guide with the completed
+  Docker PostgreSQL adapter, effective published layers/overrides, and materialized-state planning.
+- [x] 2.2 Ran exact stale-claim, link, focused validator, and diff-hygiene checks. Commit remains
+  deferred to the maintainer.
+
+| Task | RED | GREEN | REFACTOR |
+|---|---|---|---|
+| 2.1 | `rg` surfaced the stale standalone-adapter, incomplete-published-layer, and no-operational-adapter claims before editing. | Exact stale-claim search exits 0 after the documentation update. | Added a concise Spanish source-of-truth section; no wholesale translation. |
+| 2.2 | Pre-edit stale-claim count assertion exited 1 with four matches. | Link check, focused validator, and `git diff --check` exit 0. | None needed. |
+
+| Evidence | Result |
+|---|---|
+| Focused test command | `uv run pytest docs/tools/platform_portfolio/test_validate.py -q` — exit 0; 14 passed in 0.04s (pre-existing coverage no-data warnings). |
+| Exact stale-claim check | `rg` for the four removed stale strings in README/guide — exit 0; 0 matches. |
+| Link check | Markdown-link `uv run python -c` check for README and guide — exit 0; `markdown links: OK`. |
+| Runtime harness | N/A: documentation-only unit; no runtime or derived artifact boundary changed. |
+| Rollback boundary | Revert only `README.md` and `docs/diagrams/odoo-forge-current-implementation-guide.md`; task/progress evidence can be reverted with the unit. |
+| Review budget | Forced feature-branch-chain PR 2, base tracker at `ac4568d`; 75 additions + 34 deletions = 109 authored changed lines. |
+
+No Mermaid, SVG, HTML, validator, portfolio, roadmap, runtime, or archive file changed. PR 3 remains
+unstarted.

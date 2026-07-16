@@ -1,14 +1,25 @@
 # Odoo Forge actual explicado simple
 
-> **Implementation boundary (canonical note).** The Mermaid source is authoritative. Solid adapter
-> paths represent operational implementations. Project catalog, credentials, data artifacts,
-> `DatabaseProvider`, and durable operations are implemented provider-neutral foundations only: no standalone database
-> adapter or durable store is wired into an operational workflow. Tenancy, managed data
-> environments, control-plane services, remote backends, RBAC, and the web UI remain absent target
-> state. The derived SVG is generated from the Mermaid source using the pinned workflow documented
-> in [`README.md`](README.md); it must not be hand-edited.
+> **Límite de implementación (nota canónica).** Mermaid es la fuente autoritativa y el SVG es
+> derivado: se genera con el flujo fijado documentado en el
+> [`README.md`](../../README.md), nunca se edita a mano. Las rutas sólidas representan
+> implementaciones operativas. El adaptador aislado Docker PostgreSQL implementa
+> `DatabaseProvider`; catálogo de proyectos, credenciales, artefactos de datos y operaciones
+> durables siguen siendo fundamentos neutrales sin un flujo operativo administrado conectado.
+> Tenancy, entornos de datos administrados, control plane, backends remotos, RBAC y UI web son
+> estado objetivo, no capacidades actuales.
 
 Este documento explica el diagrama `odoo-forge-current-implementation.mmd` en palabras simples. La idea central es esta: una persona usa el comando `forge`, y `forge` coordina distintas partes del sistema para leer un proyecto Odoo, resolver versiones, preparar el código, levantar contenedores y trabajar con imágenes.
+
+## Estado actual y fuentes
+
+Leé este documento como una guía de lo que está entregado hoy. Para estado, dependencias y evidencia
+de aceptación, la fuente de verdad es el
+[`portfolio.json`](../specs/platform/portfolio.json). La
+[hoja de ruta de estabilización](../specs/2026-07-14-stabilization-roadmap.md) ordena el trabajo
+activo, incluido este [cambio OpenSpec](../../openspec/changes/refresh-platform-roadmap-after-stabilization/proposal.md);
+`sp-data-environments` sigue bloqueado. El diagrama de plataforma completa es una referencia de
+estado objetivo/histórica: no describe componentes desplegados hoy.
 
 ## Resumen rápido
 
@@ -132,7 +143,7 @@ Por ejemplo, el núcleo puede decir: “para este proyecto necesito estos reposi
 | Onion composition | Ordena las capas del proyecto como una cebolla: base, enterprise, OCA, localización y cliente. Sirve para saber qué va primero y qué depende de qué. |
 | Lockfile resolution | Convierte referencias flexibles en versiones exactas. Por ejemplo, transforma una rama o tag en un commit concreto. |
 | Workspace projection | Decide cómo se debe materializar el código en la máquina del developer. Es decir, qué carpetas se crean, qué repositorios se bajan y dónde quedan. |
-| Backend plan | Arma el plan para ejecutar Odoo. Define qué contenedores, volúmenes, puertos e imágenes se necesitan. |
+| Backend plan | Arma el plan para ejecutar Odoo a partir del estado materializado validado. Define contenedores, volúmenes, puertos e imágenes. |
 | Status parsing | Interpreta la información que devuelve Docker para decir si una instancia está corriendo, detenida o no existe. |
 | Image registry refs/errors | Normaliza nombres de imágenes y errores relacionados con imágenes. Ayuda a trabajar con referencias a imágenes de forma consistente. |
 | Drift validation | Compara la intención del proyecto con lo que realmente existe. Sirve para detectar desvíos entre `project.yaml`, `project.lock` y el workspace. |
@@ -150,6 +161,7 @@ Esto es importante porque permite cambiar la implementación sin romper el coraz
 | WorkspaceProvider | Crear o revisar el workspace local. |
 | BackendProvider | Ejecutar, detener, consultar logs o correr comandos en una instancia. |
 | ImageRegistryProvider | Publicar, resolver, verificar o descargar imágenes desde un registry. |
+| DatabaseProvider | Administrar el ciclo de vida de una base de datos mediante un adaptador seleccionado. |
 
 ## Adaptadores implementados
 
@@ -160,6 +172,7 @@ Los adaptadores son las piezas que sí hablan con herramientas reales.
 | `odoo_forge_git` / `GitSourceProvider` | Conecta el puerto de código fuente con `git` y repositorios remotos. |
 | `odoo_forge_workspace` / `GitWorkspaceProvider` | Materializa el workspace usando operaciones de Git y filesystem. |
 | `odoo_forge_docker` / `DockerBackendProvider` | Ejecuta Odoo y PostgreSQL usando Docker local. |
+| `odoo_forge_postgres_docker` / `DockerPostgresqlDatabaseProvider` | Implementa el ciclo de vida aislado de PostgreSQL para `DatabaseProvider`, sin redirigir el backend local. |
 | `odoo_forge_registry` / `GhcrImageRegistryProvider` | Trabaja con imágenes en GHCR usando Docker y `buildx`. |
 
 ## Herramientas externas
@@ -266,14 +279,15 @@ Así, si cambiás de ferretería, no cambiás el plano de la casa.
 Según el diagrama actual, ya existe:
 
 1. Una CLI `forge`.
-2. Un núcleo con manifest, lockfile, composición, proyección, backend local, estado e imágenes.
-3. Puertos para código fuente, workspace, backend e imágenes.
-4. Adaptadores concretos para Git, workspace local, Docker y GHCR.
+2. Un núcleo con manifest, lockfile, composición, proyección, planificación desde estado materializado, backend local, estado e imágenes.
+3. Puertos para código fuente, workspace, backend, imágenes y bases de datos.
+4. Adaptadores concretos para Git, workspace local, Docker, Docker PostgreSQL y GHCR.
 5. Integración con herramientas externas como `git`, Docker, GHCR, filesystem y `project.lock`.
-6. Fundamentos neutrales para catálogo de proyectos, credenciales, artefactos de datos, lifecycle de bases de datos y operaciones durables, todavía sin adaptadores operativos propios.
+6. Fundamentos neutrales para catálogo de proyectos, credenciales, artefactos de datos y operaciones durables; sus consumidores administrados todavía no están conectados.
 
 ## Qué no muestra este diagrama
 
-Este diagrama representa lo desarrollado actualmente. No muestra todavía la visión completa de plataforma con control plane, RBAC, UI web, múltiples backends remotos, un adapter operativo para el lifecycle de bases de datos o CI/CD completo.
+Este diagrama representa lo desarrollado actualmente. No muestra todavía la visión completa de plataforma con control plane, RBAC, UI web, múltiples backends remotos, flujos administrados de datos o CI/CD completo.
 
-Para eso está el diagrama de plataforma completa: `odoo-forge-complete-platform.mmd`.
+Para ese estado objetivo está el diagrama de plataforma completa:
+[`odoo-forge-complete-platform.mmd`](odoo-forge-complete-platform.mmd).
