@@ -3,18 +3,22 @@ from pathlib import Path
 
 import pytest
 
-from odoo_forge.manifest.errors import ProjectionError, ScanError
+from odoo_forge.manifest import projection
+from odoo_forge.manifest.errors import MountPlanningError, ProjectionError, ScanError
 from odoo_forge.manifest.lockfile import (
     Lockfile,
     ResolvedLayer,
     ResolvedPublishedLayer,
     ResolvedRepo,
+    compute_manifest_hash,
 )
 from odoo_forge.manifest.projection import (
     MOUNT_ROOTS,
+    MountPlanningView,
     ScannedRepo,
     WorkspacePlan,
     WorkspacePlanEntry,
+    build_mount_planning_view,
     classify_root,
     materialize_state,
     plan_projection,
@@ -29,6 +33,7 @@ from odoo_forge.manifest.schema import (
     Manifest,
     PublishedLayer,
 )
+from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, MaterializedState
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -345,6 +350,383 @@ class TestMaterializeState:
 
         with pytest.raises(ScanError, match=str(bad_path)):
             materialize_state(scanned, MOUNT_ROOTS)
+
+
+class TestBuildMountPlanningView:
+    def test_rejects_a_lock_missing_a_manifest_required_repo(self) -> None:
+        manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                )
+            ],
+        )
+        scanned = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url=manifest.core.url,
+                commit="sha-core",
+            )
+        ]
+
+        with pytest.raises(MountPlanningError, match="manifest/lock structural mismatch"):
+            build_mount_planning_view(
+                manifest, lock, scanned, materialize_state(scanned, MOUNT_ROOTS), MOUNT_ROOTS
+            )
+
+    @pytest.mark.parametrize(
+        ("url", "expected", "secrets"),
+        [
+            (
+                "https://username:password@example.com/org/repo.git",
+                "repo",
+                ("username", "password"),
+            ),
+            (
+                "https://username:password@example.com",
+                "example.com",
+                ("username", "password"),
+            ),
+            (
+                "https://example.com/org/repo.git?token=query-secret",
+                "repo",
+                ("token", "query-secret"),
+            ),
+            (
+                "https://example.com/org/repo.git#token=fragment-secret",
+                "repo",
+                ("token", "fragment-secret"),
+            ),
+            ("ssh://git@example.com/org/repo.git", "repo", ("git@",)),
+            ("git@example.com:org/repo.git", "repo", ("git@", "example.com")),
+            ("https://example.com/org/repo.git", "repo", ("https://", "example.com")),
+            ("unrestricted-repo.git", "unrestricted-repo", ()),
+            ("https://username:password@[malformed", "repository", ("username", "password")),
+        ],
+    )
+    def test_repo_name_is_credential_safe(
+        self, url: str, expected: str, secrets: tuple[str, ...]
+    ) -> None:
+        result = projection._repo_name(url)
+
+        assert result == expected
+        assert all(secret not in result for secret in secrets)
+
+    @pytest.mark.parametrize(
+        "custom_url",
+        [
+            "https://username:token@github.com/ingadhoc/odoo-partner.git?secret=query-token",
+            "https://username:token@github.com/ingadhoc/odoo-partner.git#secret=fragment-token",
+        ],
+    )
+    def test_rejects_incoherent_credential_bearing_path_without_leaking_url(
+        self, custom_url: str
+    ) -> None:
+        manifest = _manifest(
+            layers=[
+                _git_layer(
+                    name="custom-x",
+                    category="custom",
+                    repos=[GitRepo(url=custom_url, ref="19.0")],
+                )
+            ]
+        )
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+                ResolvedLayer(
+                    name="custom-x",
+                    repos=[ResolvedRepo(url=custom_url, ref="19.0", commit="sha-partner")],
+                ),
+            ],
+        )
+        scanned = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url=manifest.core.url,
+                commit="sha-core",
+            ),
+            ScannedRepo(
+                path=Path("/mnt/custom/custom-x/not-odoo-partner"),
+                url=custom_url,
+                commit="sha-partner",
+            ),
+        ]
+
+        with pytest.raises(MountPlanningError, match="custom-x") as error:
+            build_mount_planning_view(
+                manifest, lock, scanned, materialize_state(scanned, MOUNT_ROOTS), MOUNT_ROOTS
+            )
+
+        assert "odoo-partner" in str(error.value)
+        assert "username" not in str(error.value)
+        assert "token" not in str(error.value)
+        assert "secret" not in str(error.value)
+        assert "query" not in str(error.value)
+        assert "fragment" not in str(error.value)
+        assert "https://" not in str(error.value)
+        assert custom_url not in str(error.value)
+
+    def test_rejects_lock_drift_and_unexpected_evidence(self) -> None:
+        credential_url = "https://username:token@github.com/ingadhoc/odoo-partner.git"
+        unexpected_url = "https://username:token@example.com/unexpected.git"
+        manifest = _manifest(
+            layers=[_git_layer(name="custom-x", repos=[GitRepo(url=credential_url, ref="19.0")])]
+        )
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+                ResolvedLayer(
+                    name="custom-x",
+                    repos=[ResolvedRepo(url=credential_url, ref="19.0", commit="sha-partner")],
+                ),
+            ],
+        )
+        drifted = [
+            ScannedRepo(
+                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                url=credential_url,
+                commit="stale-partner",
+            )
+        ]
+        unexpected = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url=manifest.core.url,
+                commit="sha-core",
+            ),
+            ScannedRepo(
+                path=Path("/mnt/custom/ghost/unexpected"),
+                url=unexpected_url,
+                commit="sha-ghost",
+            ),
+        ]
+
+        with pytest.raises(MountPlanningError, match="commit") as drift_error:
+            build_mount_planning_view(
+                manifest, lock, drifted, materialize_state(drifted, MOUNT_ROOTS), MOUNT_ROOTS
+            )
+        with pytest.raises(MountPlanningError, match="unexpected") as unexpected_error:
+            build_mount_planning_view(
+                manifest,
+                lock,
+                unexpected,
+                materialize_state(unexpected, MOUNT_ROOTS),
+                MOUNT_ROOTS,
+            )
+
+        for error, repo_name, repo_url in (
+            (drift_error, "odoo-partner", credential_url),
+            (unexpected_error, "unexpected", unexpected_url),
+        ):
+            assert repo_name in str(error.value)
+            assert "username" not in str(error.value)
+            assert "token" not in str(error.value)
+            assert repo_url not in str(error.value)
+
+    @pytest.mark.parametrize("source_root", ["custom", "worktrees"])
+    def test_rejects_duplicate_scanned_evidence_without_leaking_url(self, source_root: str) -> None:
+        credential_url = "https://username:token@github.com/ingadhoc/odoo-partner.git"
+        manifest = _manifest(
+            layers=[_git_layer(name="custom-x", repos=[GitRepo(url=credential_url, ref="19.0")])]
+        )
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+                ResolvedLayer(
+                    name="custom-x",
+                    repos=[ResolvedRepo(url=credential_url, ref="19.0", commit="sha-partner")],
+                ),
+            ],
+        )
+        duplicate = ScannedRepo(
+            path=MOUNT_ROOTS[source_root] / "custom-x" / "odoo-partner",
+            url=credential_url,
+            commit="sha-partner",
+        )
+        scanned = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url=manifest.core.url,
+                commit="sha-core",
+            ),
+            duplicate,
+            duplicate,
+        ]
+
+        with pytest.raises(MountPlanningError, match="duplicate") as error:
+            build_mount_planning_view(
+                manifest, lock, scanned, materialize_state(scanned, MOUNT_ROOTS), MOUNT_ROOTS
+            )
+
+        assert "odoo-partner" in str(error.value)
+        assert "username" not in str(error.value)
+        assert "token" not in str(error.value)
+        assert credential_url not in str(error.value)
+
+    def test_rejects_duplicate_materialized_evidence_without_leaking_url(self) -> None:
+        credential_url = "https://username:token@github.com/ingadhoc/odoo-partner.git"
+        manifest = _manifest(
+            layers=[_git_layer(name="custom-x", repos=[GitRepo(url=credential_url, ref="19.0")])]
+        )
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+                ResolvedLayer(
+                    name="custom-x",
+                    repos=[ResolvedRepo(url=credential_url, ref="19.0", commit="sha-partner")],
+                ),
+            ],
+        )
+        scanned = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url=manifest.core.url,
+                commit="sha-core",
+            ),
+            ScannedRepo(
+                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                url=credential_url,
+                commit="sha-partner",
+            ),
+        ]
+        state = materialize_state(scanned, MOUNT_ROOTS)
+        state.layers[1].repos.append(state.layers[1].repos[0])
+
+        with pytest.raises(MountPlanningError, match="duplicate materialized") as error:
+            build_mount_planning_view(manifest, lock, scanned, state, MOUNT_ROOTS)
+
+        assert "odoo-partner" in str(error.value)
+        assert "username" not in str(error.value)
+        assert "token" not in str(error.value)
+        assert credential_url not in str(error.value)
+
+    def test_rejects_materialized_commit_drift_without_leaking_url(self) -> None:
+        credential_url = "https://username:token@github.com/ingadhoc/odoo-partner.git"
+        manifest = _manifest(
+            layers=[_git_layer(name="custom-x", repos=[GitRepo(url=credential_url, ref="19.0")])]
+        )
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+                ResolvedLayer(
+                    name="custom-x",
+                    repos=[ResolvedRepo(url=credential_url, ref="19.0", commit="sha-partner")],
+                ),
+            ],
+        )
+        scanned = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url=manifest.core.url,
+                commit="sha-core",
+            ),
+            ScannedRepo(
+                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                url=credential_url,
+                commit="sha-partner",
+            ),
+        ]
+        state = MaterializedState(
+            layers=[
+                MaterializedLayer(
+                    name="core",
+                    repos=[MaterializedRepo(url=manifest.core.url, commit="sha-core")],
+                ),
+                MaterializedLayer(
+                    name="custom-x",
+                    repos=[MaterializedRepo(url=credential_url, commit="stale-partner")],
+                ),
+            ]
+        )
+
+        with pytest.raises(MountPlanningError, match="materialized commit drift") as error:
+            build_mount_planning_view(manifest, lock, scanned, state, MOUNT_ROOTS)
+
+        assert "odoo-partner" in str(error.value)
+        assert "username" not in str(error.value)
+        assert "token" not in str(error.value)
+        assert credential_url not in str(error.value)
+
+    def test_selects_a_valid_worktree_over_a_stale_read_only_counterpart(self) -> None:
+        custom_url = "https://github.com/ingadhoc/odoo-partner.git"
+        manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+                ResolvedLayer(
+                    name="custom-x",
+                    repos=[ResolvedRepo(url=custom_url, ref="19.0", commit="sha-partner")],
+                ),
+            ],
+        )
+        scanned = [
+            ScannedRepo(
+                path=Path("/mnt/community/core/odoo"),
+                url=manifest.core.url,
+                commit="sha-core",
+            ),
+            ScannedRepo(
+                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                url=custom_url,
+                commit="stale-partner",
+            ),
+            ScannedRepo(
+                path=Path("/mnt/worktrees/custom-x/odoo-partner"),
+                url=custom_url,
+                commit="sha-partner",
+            ),
+        ]
+
+        view = build_mount_planning_view(
+            manifest, lock, scanned, materialize_state(scanned, MOUNT_ROOTS), MOUNT_ROOTS
+        )
+
+        assert isinstance(view, MountPlanningView)
+        assert [
+            (mount.layer, mount.source_path, mount.container_path, mount.read_only)
+            for mount in view.mounts
+        ] == [
+            (
+                "core",
+                Path("/mnt/community/core/odoo"),
+                Path("/mnt/community/core/odoo"),
+                True,
+            ),
+            (
+                "custom-x",
+                Path("/mnt/worktrees/custom-x/odoo-partner"),
+                Path("/mnt/custom/custom-x/odoo-partner"),
+                False,
+            ),
+        ]
 
 
 class TestPlanUnlock:
