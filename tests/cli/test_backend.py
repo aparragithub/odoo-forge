@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import yaml
 from typer.testing import CliRunner
 
 from odoo_forge.backend.errors import (
@@ -15,6 +16,14 @@ from odoo_forge.backend.plan import BackendPlan, ContainerRole
 from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus, RoleStatus
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.manifest.errors import ScanError
+from odoo_forge.manifest.lockfile import (
+    Lockfile,
+    ResolvedGitLayer,
+    ResolvedRepo,
+    compute_manifest_hash,
+)
+from odoo_forge.manifest.projection import ScannedRepo
+from odoo_forge.manifest.schema import Manifest
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 from odoo_forge_cli.main import plan_backend as original_plan_backend  # type: ignore[attr-defined]
@@ -22,6 +31,9 @@ from odoo_forge_docker.credential_injection import SopsCommandResolver
 from odoo_forge_docker.provider import DockerBackendProvider
 
 runner = CliRunner()
+
+_CORE_URL = "https://github.com/odoo/odoo.git"
+_CORE_COMMIT = "a" * 40
 
 _MANIFEST_TEXT = (
     "name: odoo-idp\n"
@@ -40,25 +52,95 @@ _MANIFEST_TEXT = (
 def _write_manifest(tmp_path: Path) -> Path:
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text(_MANIFEST_TEXT)
+    (tmp_path / "project.lock").write_text(
+        Lockfile(
+            generated_from=compute_manifest_hash(
+                Manifest.model_validate(yaml.safe_load(_MANIFEST_TEXT))
+            ),
+            git_layers=[
+                ResolvedGitLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=_CORE_URL, ref="19.0", commit=_CORE_COMMIT)],
+                )
+            ],
+        ).to_canonical_json()
+    )
     return project_yaml
 
 
 class _FakeWorkspaceProvider:
-    """No repos to scan for these tests: `scan` returns an empty list."""
+    """Returns complete core evidence unless a test selects a failure mode."""
 
-    def __init__(self, scan_error: Exception | None = None) -> None:
+    def __init__(
+        self, scan_error: Exception | None = None, scanned: list[ScannedRepo] | None = None
+    ) -> None:
         self._scan_error = scan_error
+        self._scanned = (
+            scanned
+            if scanned is not None
+            else [
+                ScannedRepo(
+                    path=Path("/mnt/community/core/odoo"), url=_CORE_URL, commit=_CORE_COMMIT
+                )
+            ]
+        )
 
     def checkout(self, url: str, commit: str, dest: Path) -> None:
         raise NotImplementedError
 
-    def scan(self, roots: object) -> list[object]:
+    def scan(self, roots: object) -> list[ScannedRepo]:
         if self._scan_error is not None:
             raise self._scan_error
-        return []
+        return self._scanned
 
     def promote(self, source: Path, dest: Path, branch: str) -> None:
         raise NotImplementedError
+
+
+@pytest.mark.parametrize(
+    ("prepare", "workspace"),
+    [
+        (lambda manifest: manifest.with_name("project.lock").unlink(), _FakeWorkspaceProvider()),
+        (lambda _manifest: None, _FakeWorkspaceProvider(scanned=[])),
+        (
+            lambda _manifest: None,
+            _FakeWorkspaceProvider(
+                scan_error=ScanError("cannot read materialized repo state at '/mnt/community/core'")
+            ),
+        ),
+        (
+            lambda _manifest: None,
+            _FakeWorkspaceProvider(
+                scanned=[
+                    ScannedRepo(
+                        path=Path("/mnt/community/core/odoo"),
+                        url=_CORE_URL,
+                        commit="b" * 40,
+                    )
+                ]
+            ),
+        ),
+    ],
+    ids=["missing-lock", "incomplete-evidence", "malformed-evidence", "stale-evidence"],
+)
+def test_run_fails_closed_before_provider_for_invalid_workspace_evidence(
+    prepare: object,
+    workspace: _FakeWorkspaceProvider,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_backend = _FakeBackendProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: workspace)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    project_yaml = _write_manifest(tmp_path)
+
+    prepare(project_yaml)  # type: ignore[operator]
+    result = runner.invoke(app, ["run", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert result.output.count("error:") == 1
+    assert "Traceback" not in result.output
+    assert len(fake_backend.run_calls) == 0
 
 
 class _FakeBackendProvider:

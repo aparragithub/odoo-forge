@@ -7,14 +7,18 @@ needed here — this module performs zero I/O and never raises anything
 except the typed `ProjectionError`.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel
 
-from odoo_forge.manifest.errors import ProjectionError, ScanError
+from odoo_forge.manifest.composition import compose
+from odoo_forge.manifest.drift import detect_drift
+from odoo_forge.manifest.errors import MountPlanningError, ProjectionError, ScanError
 from odoo_forge.manifest.lockfile import Lockfile
+from odoo_forge.manifest.resolution import resolve_default_ref
 from odoo_forge.manifest.schema import CoreLayer, GitLayer, Manifest, PublishedLayer
 from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, MaterializedState
 
@@ -60,6 +64,18 @@ class WorkspacePlanEntry(BaseModel):
 
 class WorkspacePlan(BaseModel):
     steps: list[WorkspacePlanEntry] = []
+
+
+class MountEvidence(BaseModel):
+    layer: str
+    url: str
+    source_path: Path
+    container_path: Path
+    read_only: bool
+
+
+class MountPlanningView(BaseModel):
+    mounts: tuple[MountEvidence, ...]
 
 
 class UnlockPlan(BaseModel):
@@ -233,6 +249,142 @@ def materialize_state(
     )
 
 
+def build_mount_planning_view(
+    manifest: Manifest,
+    lock: Lockfile | None,
+    scanned: Sequence[ScannedRepo],
+    state: MaterializedState,
+    roots: Mapping[str, Path],
+) -> MountPlanningView:
+    """Validate scan facts and select one authoritative bind per locked repository."""
+    if lock is None:
+        raise MountPlanningError("mount planning requires a project lock")
+    if detect_drift(manifest, lock, None).manifest_lock_drift:
+        raise MountPlanningError("manifest/lock drift")
+    _validate_lock_structure(manifest, lock)
+
+    plan = plan_projection(manifest, lock)
+    expected = {(step.layer, step.url): step for step in plan.steps}
+    if len(expected) != len(plan.steps):
+        raise MountPlanningError("lock contains duplicate repository identities")
+    container_paths = [
+        roots[step.mount_root] / step.layer / _repo_name(step.url) for step in plan.steps
+    ]
+    if len(set(container_paths)) != len(container_paths):
+        raise MountPlanningError("lock contains conflicting projected container paths")
+    sources: dict[tuple[str, str], dict[str, ScannedRepo]] = {}
+
+    for repo in scanned:
+        match = _match_root_and_layer(repo.path, roots)
+        if match is None:
+            raise ScanError(
+                f"scanned path does not match the /mnt/<root>/<layer>/... layout: {repo.path}"
+            )
+
+        root_name, layer = match
+        identity = (layer, repo.url)
+        step = expected.get(identity)
+        if step is None:
+            raise MountPlanningError(
+                f"unexpected scanned evidence for '{layer}' / '{_repo_name(repo.url)}'"
+            )
+        source_kind = "worktree" if root_name == "worktrees" else "read_only"
+        expected_path = (
+            roots["worktrees"] / layer / _repo_name(repo.url)
+            if source_kind == "worktree"
+            else roots[step.mount_root] / layer / _repo_name(repo.url)
+        )
+        if repo.path != expected_path:
+            raise MountPlanningError(f"incoherent path for '{layer}' / '{_repo_name(repo.url)}'")
+
+        by_source = sources.setdefault(identity, {})
+        if source_kind in by_source:
+            raise MountPlanningError(
+                f"duplicate {source_kind} evidence for '{layer}' / '{_repo_name(repo.url)}'"
+            )
+        by_source[source_kind] = repo
+
+    for identity, by_source in sources.items():
+        selected = by_source.get("worktree") or by_source["read_only"]
+        step = expected[identity]
+        if selected.commit != step.commit:
+            raise MountPlanningError(f"commit drift for '{step.layer}' / '{_repo_name(step.url)}'")
+
+    mounts: list[MountEvidence] = []
+    for identity, step in sorted(expected.items()):
+        by_source = sources.get(identity, {})
+        evidence = by_source.get("worktree") or by_source.get("read_only")
+        if evidence is None:
+            raise MountPlanningError(
+                f"missing required evidence for '{step.layer}' / '{_repo_name(step.url)}'"
+            )
+
+        mounts.append(
+            MountEvidence(
+                layer=step.layer,
+                url=step.url,
+                source_path=evidence.path,
+                container_path=roots[step.mount_root] / step.layer / _repo_name(step.url),
+                read_only="worktree" not in by_source,
+            )
+        )
+
+    _validate_materialized_state(
+        state, {identity: step.commit for identity, step in expected.items()}
+    )
+    return MountPlanningView(mounts=tuple(mounts))
+
+
+def _validate_lock_structure(manifest: Manifest, lock: Lockfile) -> None:
+    compose(manifest)
+    overrides = {(item.layer, item.repo): item for item in manifest.overrides}
+    expected_git: list[tuple[str, tuple[tuple[str, str], ...]]] = [
+        ("core", ((manifest.core.url, resolve_default_ref(manifest.core, manifest.odoo_version)),))
+    ]
+    expected_published: list[tuple[str, str, str]] = []
+    for layer in manifest.layers:
+        if isinstance(layer, GitLayer):
+            repos = []
+            for repo in layer.repos:
+                override = overrides.get((layer.name, repo.url))
+                repos.append((override.fork, override.ref) if override else (repo.url, repo.ref))
+            expected_git.append((layer.name, tuple(repos)))
+        else:
+            expected_published.append((layer.name, layer.source, layer.version))
+
+    actual_git = [
+        (layer.name, tuple((repo.url, repo.ref) for repo in layer.repos))
+        for layer in lock.git_layers
+    ]
+    actual_published = [
+        (layer.name, layer.source, layer.version) for layer in lock.published_layers
+    ]
+    if expected_git != actual_git or expected_published != actual_published:
+        raise MountPlanningError("manifest/lock structural mismatch")
+
+
+def _validate_materialized_state(
+    state: MaterializedState, expected: Mapping[tuple[str, str], str]
+) -> None:
+    actual: dict[tuple[str, str], str] = {}
+    for layer in state.layers:
+        for repo in layer.repos:
+            identity = (layer.name, repo.url)
+            if identity in actual:
+                raise MountPlanningError(
+                    f"duplicate materialized evidence for '{layer.name}' / '{_repo_name(repo.url)}'"
+                )
+            actual[identity] = repo.commit
+
+    if set(actual) != set(expected):
+        raise MountPlanningError("materialized evidence does not match required mount evidence")
+    for identity, expected_commit in expected.items():
+        if actual[identity] != expected_commit:
+            raise MountPlanningError(
+                f"materialized commit drift for '{identity[0]}' / '{_repo_name(identity[1])}'"
+            )
+
+
 def _match_root_and_layer(path: Path, roots: Mapping[str, Path]) -> tuple[str, str] | None:
     """Match `path` against a known mount root and return `(root_name, layer)`.
 
@@ -255,12 +407,23 @@ def _match_root_and_layer(path: Path, roots: Mapping[str, Path]) -> tuple[str, s
 
 
 def _repo_name(url: str) -> str:
-    """Return the repo directory name derived from a git URL.
+    """Return a credential-safe repository identity derived from a git URL.
 
-    Convention mirrors `composition._repo_name`: URL basename with any
-    trailing slash and `.git` suffix removed.
+    Prefer the path basename, then a URL hostname, without exposing URL metadata.
     """
-    return url.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
+    clean_url = url.split("#", 1)[0].split("?", 1)[0]
+    try:
+        parsed = urlsplit(clean_url)
+        if parsed.path.strip("/"):
+            candidate = parsed.path.rstrip("/").rsplit("/", 1)[-1]
+        elif parsed.hostname:
+            candidate = parsed.hostname
+        else:
+            candidate = clean_url.rstrip("/").rsplit("/", 1)[-1]
+            candidate = candidate.rsplit(":", 1)[-1].rsplit("@", 1)[-1]
+    except ValueError:
+        candidate = "repository"
+    return candidate.removesuffix(".git") or "repository"
 
 
 __all__ = [
@@ -269,10 +432,13 @@ __all__ = [
     "ScannedRepo",
     "WorkspacePlanEntry",
     "WorkspacePlan",
+    "MountEvidence",
+    "MountPlanningView",
     "UnlockPlan",
     "classify_root",
     "plan_projection",
     "plan_unlock",
     "project_workspace",
     "materialize_state",
+    "build_mount_planning_view",
 ]
