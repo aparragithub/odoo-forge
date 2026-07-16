@@ -40,8 +40,8 @@ Generated-line accounting: count SVG in complete diff, byte identity, and eviden
 
 ## Phase 2: Current Review-Facing Documentation (PR 2)
 
-- [ ] 2.1 Reconcile `README.md` and `docs/diagrams/odoo-forge-current-implementation-guide.md` against Unit 1; preserve Spanish and label target/history content.
-- [ ] 2.2 Run `git diff --check` and exact stale-claim/link searches; commit Unit 2 as `docs(platform): reconcile current guidance`.
+- [x] 2.1 Reconcile `README.md` and `docs/diagrams/odoo-forge-current-implementation-guide.md` against Unit 1; preserve Spanish and label target/history content.
+- [x] 2.2 Run `git diff --check` and exact stale-claim/link searches; commit Unit 2 as `docs(platform): reconcile current guidance` is deferred to the maintainer.
 
 ## Phase 3: Mermaid, SVG, HTML, Validation, and Evidence (PR 3)
 
