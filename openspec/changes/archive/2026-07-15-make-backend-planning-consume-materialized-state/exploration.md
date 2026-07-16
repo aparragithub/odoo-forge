@@ -15,7 +15,7 @@ Roadmap evidence is aligned: Unit 3 is the next bounded change, `portfolio.json`
 | Incoherent | path outside `/mnt/<root>/<layer>/...`; missing layer segment; impossible root/layer pairing | `materialize_state()` raises `ScanError` naming the bad path | reject before planning; this is a scan/projection contract violation, not a backend failure | workspace scan/materialization boundary | none; this boundary is already clear |
 | Stale | valid path/root but commit differs from lock; worktree promotion supersedes read-only entry | drift reports `commit_mismatch`; state itself is not rejected | mount planning may still include the repo only if the path/root evidence is valid, but stale content should not be silently trusted for release semantics | drift/reporting or planner policy boundary | Does stale materialization block `run`, or only warn? |
 
-#### What “authoritative for mounts” can mean today
+#### What "authoritative for mounts" can mean today
 `MaterializedState` cannot be the full authority for mount placement because it no longer remembers filesystem paths. The strongest meaning it can support today is: **repo identity/commit facts may gate inclusion of a predeclared mount root, but the root/path table itself still comes from the scan/projection layer**.
 
 | Current root | What evidence is needed to include it | What excludes it | What rejects it | Identity vs path authority |
@@ -41,7 +41,7 @@ Roadmap evidence is aligned: Unit 3 is the next bounded change, `portfolio.json`
 - `unlock` → `plan_unlock()` then `provider.promote()`; uses lock/projection, not materialized state.
 
 ### Affected Areas
-- `src/odoo_forge/backend/plan.py` — today’s mount construction ignores `state`; any mount authority change lands here or in a new planning view.
+- `src/odoo_forge/backend/plan.py` — today's mount construction ignores `state`; any mount authority change lands here or in a new planning view.
 - `src/odoo_forge_cli/main.py` — `run`/`validate` are the state-consuming entry points; identity commands must stay empty-state paths.
 - `src/odoo_forge/manifest/state.py` — current shape is too thin for path/root authority.
 - `src/odoo_forge/manifest/projection.py` — defines the scan-path contract, `MOUNT_ROOTS`, and worktree precedence.
