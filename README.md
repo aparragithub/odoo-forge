@@ -6,28 +6,31 @@ An Odoo project (core + enterprise + OCA + localization + custom addons) is a **
 
 ## Status
 
-The operational implementation includes manifest and lockfile handling, Git-backed workspace
-materialization, the local Docker Odoo/PostgreSQL backend, GHCR image operations, and the image
-factory. The repository also contains accepted provider-neutral foundations for credentials, data
-artifacts, database providers, project catalog resolution, and durable operations.
+The operational implementation includes manifest and lockfile handling, effective published-layer
+and override resolution, Git-backed workspace materialization, materialized-state-aware backend
+planning, the local Docker Odoo/PostgreSQL backend, the isolated Docker PostgreSQL
+`DatabaseProvider` adapter, GHCR image operations, and the image factory.
 
-Those foundations are contracts and domain behavior, not operational adapters. In particular, the
-repository does not yet contain a standalone database adapter, managed data-environment workflow,
-tenancy implementation, control plane, remote backend, RBAC service, or web UI. The authoritative
-status and acceptance evidence are in
-[`docs/specs/platform/portfolio.json`](docs/specs/platform/portfolio.json). See the
-[current implementation guide](docs/diagrams/odoo-forge-current-implementation-guide.md) for the
-shipped boundary and the [complete-platform diagram](docs/diagrams/odoo-forge-complete-platform.mmd)
-for target state.
+Provider-neutral credentials, data artifacts, project-catalog resolution, and durable operations
+are implemented foundations. They are not yet wired into a managed data-environment workflow.
+Tenancy, a control plane, remote backends, RBAC, and a web UI remain target state. The authoritative
+product status, dependencies, and acceptance evidence are in
+[`docs/specs/platform/portfolio.json`](docs/specs/platform/portfolio.json); the
+[current stabilization roadmap](docs/specs/2026-07-14-stabilization-roadmap.md) orders the active
+work. See the [current implementation guide](docs/diagrams/odoo-forge-current-implementation-guide.md)
+for the shipped boundary. The [complete-platform diagram](docs/diagrams/odoo-forge-complete-platform.mmd)
+is target-state context, not a statement of current implementation.
 
 ## Roadmap
 
 The [current stabilization roadmap](docs/specs/2026-07-14-stabilization-roadmap.md) orders the next
-reviewable work. `docs/specs/platform/portfolio.json` remains authoritative for product status and
+reviewable work. The [active OpenSpec change](openspec/changes/refresh-platform-roadmap-after-stabilization/proposal.md)
+tracks this reconciliation; [`sp-data-environments`](openspec/changes/sp-data-environments/proposal.md)
+remains blocked. `docs/specs/platform/portfolio.json` remains authoritative for product status and
 dependencies.
 
-1. **Operational foundation** — image factory, CLI core, workspace materialization, local Docker backend, and GHCR adapter. Implemented.
-2. **Provider-neutral foundations** — credentials, data artifacts, database-provider contract, project catalog, and durable operations. Implemented as contracts/domain behavior; concrete consumers remain separate work.
-3. **Published layers** — schema support exists, but registry resolution and override application remain incomplete.
-4. **Platform workflows** — standalone database adapter, managed data environments, tenancy, control plane, governance, and actor journeys. Planned or absent as recorded in the portfolio.
+1. **Operational foundation** — image factory, CLI core, workspace materialization, local Docker backend, Docker PostgreSQL adapter, and GHCR adapter. Implemented.
+2. **Provider-neutral foundations** — credentials, data artifacts, `DatabaseProvider`, project catalog, and durable operations. Implemented; managed consumers remain separate work.
+3. **Published layers** — version/digest resolution and Git overrides are implemented.
+4. **Platform workflows** — managed data environments, tenancy, control plane, governance, and actor journeys. Blocked, planned, or absent as recorded in the portfolio.
 5. **Remote backends and interfaces** — EC2, Kubernetes, Fargate, RBAC, and web UI. Target state only.
