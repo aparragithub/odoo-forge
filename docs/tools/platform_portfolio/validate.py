@@ -16,15 +16,17 @@ Usage:
     python docs/tools/platform_portfolio/validate.py --plan path/to/portfolio-plan.json
 
 Exit codes:
-    0  no BLOCKER violations (CRITICAL/WARNING may still be reported)
-    1  at least one BLOCKER violation
+    0  no CRITICAL or BLOCKER violations
+    1  at least one CRITICAL or BLOCKER violation
     2  usage / load error
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+from pathlib import Path
 import re
 import sys
 from collections import defaultdict
@@ -232,6 +234,49 @@ def validate_plan(d: dict) -> list[Violation]:
     return v
 
 
+def file_sha256(path: Path) -> str:
+    """Return the stable byte digest used for protected-history checks."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def validate_repository(root: Path, plan: dict) -> list[Violation]:
+    """Validate repository-bound roadmap evidence without mutating any artifact."""
+    violations: list[Violation] = []
+    meta = plan["meta"]
+
+    def add(code: str, detail: str) -> None:
+        violations.append(Violation("CRITICAL", code, detail))
+
+    s62 = meta.get("evidence_catalog", {}).get("S62", "")
+    evidence_path = root / s62.split("#", 1)[0]
+    if not s62.startswith("openspec/changes/archive/") or not evidence_path.is_file():
+        add("missing-evidence", f"S62:{s62}")
+
+    changes = root / "openspec/changes"
+    active = {path.name for path in changes.iterdir() if path.is_dir() and path.name != "archive"}
+    expected_active = {"refresh-platform-roadmap-after-stabilization", "sp-data-environments"}
+    if active != expected_active:
+        add("active-inventory", f"expected={sorted(expected_active)} actual={sorted(active)}")
+
+    roadmap = root / "docs/specs/2026-07-14-stabilization-roadmap.md"
+    roadmap_text = roadmap.read_text(encoding="utf-8") if roadmap.is_file() else ""
+    required = (
+        "CHG-FIRST-DATABASE-ADAPTER",
+        "archived as superseded",
+        "refresh-platform-roadmap-after-stabilization",
+        "sp-data-environments (blocked)",
+    )
+    if any(marker not in roadmap_text for marker in required) or "PR #64" in roadmap_text or "Unit 3 is next" in roadmap_text:
+        add("stale-roadmap", str(roadmap.relative_to(root)))
+
+    for relative, expected_hash in meta.get("protected_history_sha256", {}).items():
+        path = root / relative
+        if not path.is_file() or file_sha256(path) != expected_hash:
+            add("protected-history", relative)
+
+    return violations
+
+
 def _load(path: str) -> dict:
     with open(path, encoding="utf-8") as fh:
         return json.load(fh)
@@ -250,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"validate.py: cannot load {plan_path}: {exc}", file=sys.stderr)
         return 2
 
-    violations = validate_plan(plan)
+    violations = validate_plan(plan) + validate_repository(Path(args.root), plan)
     order = {"BLOCKER": 0, "CRITICAL": 1, "WARNING": 2}
     violations.sort(key=lambda z: order.get(z.severity, 9))
     if not violations:
@@ -259,7 +304,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"VALIDATOR: {len(violations)} violations")
     for viol in violations:
         print(f"  {viol}")
-    return 1 if any(x.severity == "BLOCKER" for x in violations) else 0
+    return 1 if any(x.severity in {"BLOCKER", "CRITICAL"} for x in violations) else 0
 
 
 if __name__ == "__main__":
