@@ -21,8 +21,8 @@ from odoo_forge.backend.plan import (
     plan_backend,
 )
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
+from odoo_forge.manifest.projection import MountPlanningView
 from odoo_forge.manifest.schema import Client, Manifest
-from odoo_forge.manifest.state import MaterializedState
 from odoo_forge_docker.credential_injection import SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
 
@@ -216,7 +216,7 @@ def _plan(tmp_path: Path, image: str, secret: str) -> BackendPlan:
     )
     plan = plan_backend(
         manifest,
-        MaterializedState(),
+        MountPlanningView(mounts=()),
         instance=identity,
         odoo_image=image,
         credentials=credentials,

@@ -6,11 +6,23 @@ inspect` JSON (a Python list/dict handed to it by the adapter, which owns the
 actual `subprocess` call and JSON decoding); it never touches the wire.
 """
 
-from typing import Any, Literal
+from __future__ import annotations
+
+import hashlib
+import re
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel
 
-from odoo_forge.backend.plan import BackendPlan, ContainerRole
+from odoo_forge.manifest.schema import Manifest
+
+if TYPE_CHECKING:
+    from odoo_forge.backend.plan import BackendPlan, ContainerRole
+
+
+_VALID_CHAR = re.compile(r"[a-z0-9_.-]")
+_VALID_FIRST_CHAR = re.compile(r"[a-z0-9]")
+_HASH_LEN = 8
 
 RoleState = Literal["exited", "starting", "unhealthy", "healthy", "no_healthcheck", "unknown"]
 
@@ -38,6 +50,42 @@ class RoleStatus(BaseModel):
 class InstanceStatus(BaseModel):
     odoo: RoleStatus
     postgres: RoleStatus
+
+
+def sanitize_name(raw: str) -> str:
+    """Map a free-form name to a deterministic Docker-safe token."""
+    lowered = raw.lower()
+    lossy = lowered != raw
+    cleaned_chars: list[str] = []
+    for char in lowered:
+        if _VALID_CHAR.fullmatch(char):
+            cleaned_chars.append(char)
+        else:
+            lossy = True
+    cleaned = "".join(cleaned_chars)
+    if not cleaned:
+        lossy = True
+    elif not _VALID_FIRST_CHAR.fullmatch(cleaned[0]):
+        cleaned = f"x{cleaned}"
+        lossy = True
+    if not lossy:
+        return cleaned
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:_HASH_LEN]
+    return f"{cleaned or 'x'}-{digest}"
+
+
+def derive_instance_ref(manifest: Manifest, instance: str = "default") -> InstanceRef:
+    """Derive a provider identity without workspace evidence or a backend plan."""
+    project = sanitize_name(manifest.name)
+    normalized_instance = sanitize_name(instance)
+    network = f"odoo-forge-{project}-{normalized_instance}"
+    return InstanceRef(
+        project=project,
+        instance=normalized_instance,
+        network=network,
+        postgres_container=f"{network}-db",
+        odoo_container=f"{network}-odoo",
+    )
 
 
 def instance_ref(plan: BackendPlan) -> InstanceRef:
@@ -127,6 +175,8 @@ __all__ = [
     "InstanceRef",
     "RoleStatus",
     "InstanceStatus",
+    "sanitize_name",
+    "derive_instance_ref",
     "instance_ref",
     "parse_status",
 ]
