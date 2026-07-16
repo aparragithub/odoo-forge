@@ -1,16 +1,14 @@
 from pathlib import Path
 
-from odoo_forge.backend.plan import BackendPlan, plan_backend
 from odoo_forge.backend.status import (
     ExecResult,
     InstanceRef,
     InstanceStatus,
     RoleStatus,
-    instance_ref,
+    derive_instance_ref,
     parse_status,
 )
 from odoo_forge.manifest.schema import Client, Manifest
-from odoo_forge.manifest.state import MaterializedState
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -22,10 +20,6 @@ def _manifest(**overrides: object) -> Manifest:
     }
     defaults.update(overrides)
     return Manifest(**defaults)  # type: ignore[arg-type]
-
-
-def _plan() -> BackendPlan:
-    return plan_backend(_manifest(), MaterializedState())
 
 
 def _container(
@@ -41,17 +35,28 @@ def _container(
 
 
 class TestInstanceRef:
-    def test_instance_ref_from_plan(self) -> None:
-        plan = _plan()
-
-        ref = instance_ref(plan)
+    def test_derive_instance_ref_uses_canonical_default_identity(self) -> None:
+        ref = derive_instance_ref(_manifest(), "default")
 
         assert isinstance(ref, InstanceRef)
-        assert ref.network == plan.network.name
-        assert ref.postgres_container == plan.postgres.name
-        assert ref.odoo_container == plan.odoo.name
-        assert ref.project == plan.network.labels["com.odoo-forge.project"]
-        assert ref.instance == plan.network.labels["com.odoo-forge.instance"]
+        assert ref == InstanceRef(
+            project="odoo-idp",
+            instance="default",
+            network="odoo-forge-odoo-idp-default",
+            postgres_container="odoo-forge-odoo-idp-default-db",
+            odoo_container="odoo-forge-odoo-idp-default-odoo",
+        )
+
+    def test_derive_instance_ref_is_scan_free_and_matches_plan_identity(self) -> None:
+        ref = derive_instance_ref(_manifest(), "My Inst/2")
+
+        assert ref == InstanceRef(
+            project="odoo-idp",
+            instance="myinst2-b80042ab",
+            network="odoo-forge-odoo-idp-myinst2-b80042ab",
+            postgres_container="odoo-forge-odoo-idp-myinst2-b80042ab-db",
+            odoo_container="odoo-forge-odoo-idp-myinst2-b80042ab-odoo",
+        )
 
 
 class TestParseStatusRunningStateFirst:

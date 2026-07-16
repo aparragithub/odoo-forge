@@ -80,6 +80,10 @@ class ProjectionError(WorkspaceError):
     """Raised when `plan_projection` cannot resolve a locked layer against the manifest."""
 
 
+class MountPlanningError(WorkspaceError):
+    """Raised when mount-planning evidence is incomplete or incoherent."""
+
+
 class CheckoutError(WorkspaceError):
     """Raised when a `WorkspaceProvider` cannot check out a repo cleanly."""
 
@@ -107,6 +111,7 @@ __all__ = [
     "NetworkError",
     "WorkspaceError",
     "ProjectionError",
+    "MountPlanningError",
     "CheckoutError",
     "ScanError",
     "PromotionError",

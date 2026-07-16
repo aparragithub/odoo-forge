@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole, plan_backend
-from odoo_forge.backend.status import InstanceRef, instance_ref
+from odoo_forge.backend.status import InstanceRef, derive_instance_ref
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError
 from odoo_forge.image_registry.reference import (
@@ -37,13 +37,13 @@ from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.projection import (
     MOUNT_ROOTS,
+    build_mount_planning_view,
     materialize_state,
     plan_projection,
     plan_unlock,
     project_workspace,
 )
 from odoo_forge.manifest.schema import Manifest
-from odoo_forge.manifest.state import MaterializedState
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.published_artifact_resolver import PublishedArtifactResolver
 from odoo_forge.ports.source_provider import SourceProvider
@@ -442,9 +442,16 @@ def run(
         workspace_provider = _make_workspace_provider()
         scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
         materialized = materialize_state(scanned, MOUNT_ROOTS)
+        mount_view = build_mount_planning_view(
+            parsed,
+            _load_lock(manifest.parent / "project.lock"),
+            scanned,
+            materialized,
+            MOUNT_ROOTS,
+        )
         plan = plan_backend(
             parsed,
-            materialized,
+            mount_view,
             instance=instance,
             odoo_image=odoo_image,
             credentials=BackendCredentialBindings(
@@ -488,12 +495,10 @@ def status(
         _render_validation_errors(exc)
         raise typer.Exit(code=1) from exc
 
-    # No registry is persisted: identity is recomputed purely from the
-    # manifest/instance name, then handed to the provider's `status`, which
-    # itself never raises for an absent instance (design "Absent/empty inspect").
+    # No registry or workspace evidence is needed: identity is derived purely
+    # from manifest/instance name, then handed to the provider's `status`.
     try:
-        plan = plan_backend(parsed, MaterializedState(), instance=instance)
-        ref = instance_ref(plan)
+        ref = derive_instance_ref(parsed, instance)
         backend_provider = _make_backend_provider()
         report = backend_provider.status(ref)
     except (ManifestError, BackendError) as exc:
@@ -508,13 +513,9 @@ def status(
 
 
 def _derive_ref(manifest: Path, instance: str) -> InstanceRef:
-    """Shared identity derivation for `stop`/`logs`/`exec`: same no-registry
-    `plan_backend` -> `instance_ref` path `status` uses (manifest already
-    parsed by the caller), so independent invocations agree on the same
-    names without any persisted state."""
+    """Derive an identity for state-independent instance commands."""
     parsed = Manifest.model_validate(_read_manifest_data(manifest))
-    plan = plan_backend(parsed, MaterializedState(), instance=instance)
-    return instance_ref(plan)
+    return derive_instance_ref(parsed, instance)
 
 
 @app.command(name="stop")
