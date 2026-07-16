@@ -9,8 +9,11 @@ dangling references, unresolved transfer destinations, and dependency cycles.
 """
 
 import copy
+import contextlib
+import io
 import json
 import pathlib
+import tempfile
 import unittest
 
 import validate
@@ -149,6 +152,81 @@ class TestValidator(unittest.TestCase):
             }
         )
         self.assertIn("edge-cycle", _codes(validate.validate_plan(broken)))
+
+
+class TestRepositoryValidation(unittest.TestCase):
+    def _repository(self):
+        temporary = tempfile.TemporaryDirectory()
+        root = pathlib.Path(temporary.name)
+        evidence = (
+            root
+            / "openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/apply-progress.md"
+        )
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text("real Docker receipt\n", encoding="utf-8")
+        for change in (
+            "refresh-platform-roadmap-after-stabilization",
+            "sp-data-environments",
+        ):
+            (root / "openspec/changes" / change).mkdir(parents=True)
+        (root / "docs/specs/platform").mkdir(parents=True)
+        (root / "docs/specs/2026-07-14-stabilization-roadmap.md").write_text(
+            "# Current Stabilization Roadmap\n"
+            "CHG-FIRST-DATABASE-ADAPTER is archived as superseded.\n"
+            "Active: refresh-platform-roadmap-after-stabilization and sp-data-environments (blocked).\n",
+            encoding="utf-8",
+        )
+        protected = root / "docs/specs/protected.md"
+        protected.write_text("immutable\n", encoding="utf-8")
+        plan = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        plan["meta"].update(
+            {
+                "evidence_catalog": {
+                    "S62": "openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/apply-progress.md"
+                },
+                "protected_history_paths": ["docs/specs/protected.md"],
+                "protected_history_sha256": {
+                    "docs/specs/protected.md": validate.file_sha256(protected)
+                },
+            }
+        )
+        return temporary, root, plan
+
+    def test_s62_requires_an_archived_existing_evidence_pointer(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            self.assertEqual(validate.validate_repository(root, plan), [])
+            plan["meta"]["evidence_catalog"]["S62"] = "missing.md"
+            self.assertIn("missing-evidence", _codes(validate.validate_repository(root, plan)))
+
+    def test_active_inventory_is_exact(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            (root / "openspec/changes/unplanned-work").mkdir()
+            self.assertIn("active-inventory", _codes(validate.validate_repository(root, plan)))
+
+    def test_current_roadmap_rejects_stale_claims(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            roadmap = root / "docs/specs/2026-07-14-stabilization-roadmap.md"
+            roadmap.write_text("PR #64 is current; Unit 3 is next.\n", encoding="utf-8")
+            self.assertIn("stale-roadmap", _codes(validate.validate_repository(root, plan)))
+
+    def test_protected_history_hash_mismatch_is_critical(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            (root / "docs/specs/protected.md").write_text("rewritten\n", encoding="utf-8")
+            self.assertIn("protected-history", _codes(validate.validate_repository(root, plan)))
+
+    def test_cli_exits_nonzero_for_critical_repository_violations(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            plan_path = root / "docs/specs/platform/portfolio.json"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            plan["meta"]["evidence_catalog"]["S62"] = "missing.md"
+            plan_path.write_text(json.dumps(plan), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(validate.main(["--root", str(root)]), 1)
 
 
 if __name__ == "__main__":

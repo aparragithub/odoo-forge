@@ -35,8 +35,8 @@ Generated-line accounting: count SVG in complete diff, byte identity, and eviden
 
 ## Phase 1: Authority, Inventory, Portfolio, Roadmap (PR 1)
 
-- [ ] 1.1 Archive unchanged `openspec/changes/CHG-FIRST-DATABASE-ADAPTER/`; update portfolio/roadmap authority, inventory, and S62 from HEAD.
-- [ ] 1.2 Verify protected bytes and exact active inventory; commit PR 1 as `docs(platform): reconcile authority and active inventory`.
+- [x] 1.1 Archive unchanged `openspec/changes/CHG-FIRST-DATABASE-ADAPTER/`; update portfolio/roadmap authority, inventory, and S62 from HEAD; add RED/GREEN repository validator coverage.
+- [x] 1.2 Verify protected bytes and exact active inventory; run the validator CLI and diff checks. Commit PR 1 as `docs(platform): reconcile authority and active inventory` is deferred to the maintainer.
 
 ## Phase 2: Current Review-Facing Documentation (PR 2)
 
