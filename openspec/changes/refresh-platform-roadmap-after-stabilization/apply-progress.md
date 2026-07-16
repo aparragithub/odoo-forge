@@ -46,3 +46,28 @@ code, commit, push, PR, review, or Phase 2 work was retained.
 | Focused test command | Baseline only: `uv run pytest docs/tools/platform_portfolio/test_validate.py -q` — exit 0, 9 passed. |
 | Runtime harness | Baseline only: validator reported two CRITICAL S62 violations but exited 0. |
 | Rollback boundary | This progress record only; no implementation retained. |
+
+## Phase 1 Completion After PR 0 Retention
+
+PR 0 merged on `a44bae9dcdb59752016278a01cf226bed515078b`; Phase 1 now targets
+`feature/refresh-platform-roadmap-after-stabilization` and does not start PR 2 or PR 3.
+
+- [x] 1.1 Archived unchanged `CHG-FIRST-DATABASE-ADAPTER`; resolved `S62` to its preserved
+  real-Docker receipt; reconciled portfolio, roadmap, and exact inventory.
+- [x] 1.2 Verified protected bytes, validator CLI exit semantics, exact inventory, and diff hygiene.
+
+| Task | Test File | Layer | Safety Net | RED | GREEN | TRIANGULATE | REFACTOR |
+|---|---|---|---|---|---|---|---|
+| 1.1 | `test_validate.py` | Unit/CLI | 9 passed | ✅ 5 contract tests failed: missing `file_sha256` | ✅ 14 passed | ✅ S62, inventory, stale roadmap, protected bytes, CLI exit | ✅ Pure repository helpers |
+| 1.2 | `test_validate.py` | Unit/CLI | 9 passed | ✅ CRITICAL exit covered before gate change | ✅ 14 passed; CLI clean | ✅ valid/invalid repository fixtures | ➖ None needed |
+
+| Evidence | Result |
+|---|---|
+| Focused test | `uv run pytest docs/tools/platform_portfolio/test_validate.py -q` — exit 0; 14 passed in 0.05s. |
+| Runtime harness | `python docs/tools/platform_portfolio/validate.py --root .` — exit 0; `VALIDATOR: CLEAN — 0 violations`. |
+| Protected bytes | Six archived adapter SHA-256 values match the pre-move manifest; source directory is absent. |
+| Rollback boundary | Revert portfolio/roadmap/validator/test files and restore the adapter directory; no runtime, Unit 4, README, guide, Mermaid, SVG, or HTML change. |
+
+PR 1 is forced chained, feature-branch-chain; its child branch targets the tracker. Exact temporary-index
+diff count: **207 additions + 168 deletions = 375 changed lines**, within the 400 hard cap.
+No commit, push, PR, review, Phase 2, or Phase 3 work occurred.
