@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="es">
+<html lang="es" data-ownership="hand-authored" data-ownership-verified="true">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -105,14 +105,22 @@
 <body>
 <div class="wrap">
   <header>
-    <p class="eyebrow">odoo-forge · plataforma interna (borrador v3 · alineado con el roadmap)</p>
-    <h1>Actores, control plane y flujos</h1>
-    <p class="sub">Un PaaS interno para Odoo: un control plane central sirve a tres perfiles, orquesta build/deploy multi-target y administra el ciclo de vida de las BDs.</p>
+    <p class="eyebrow">odoo-forge · visión objetivo e historial de plataforma</p>
+    <h1>Actores, control plane y flujos objetivo</h1>
+    <p class="sub">Esta página conserva la visión de plataforma y su contexto histórico; no describe componentes desplegados hoy.</p>
     <div class="legend">
       <span class="tag t-exists">Existe / con base hoy</span>
       <span class="tag t-new">Nuevo — a construir</span>
     </div>
   </header>
+
+  <section data-state="current" aria-labelledby="current-state">
+    <h2 id="current-state" class="band-label">Estado actual implementado</h2>
+    <p class="sub">Hoy existen la CLI <code>forge</code>, el núcleo puro, puertos de código, workspace, backend, imágenes y base de datos; adaptadores para Git, workspace, Docker local, GHCR y PostgreSQL Docker aislado. La fuente actual es la <a href="../../diagrams/odoo-forge-current-implementation-guide.md">guía de implementación actual</a>.</p>
+  </section>
+
+  <section data-state="target" aria-labelledby="target-state">
+  <h2 id="target-state" class="band-label">Estado objetivo e histórico — no implementado</h2>
 
   <div class="rule">
     <span class="k">Regla dura</span>
@@ -175,7 +183,7 @@
   <div class="row cols-3">
     <div class="card"><span class="badge b-exists">git ✓</span><h3><code>SourceProvider</code></h3><p>Código de módulos/Odoo.</p><p class="adapters">GitHub · GitLab · repos externos</p></div>
     <div class="card"><span class="badge b-exists">SP-1 ✓</span><h3><code>ImageRegistryProvider</code></h3><p>Imágenes Docker por digest.</p><p class="adapters">GHCR · GitLab · ECR · DockerHub</p></div>
-    <div class="card"><span class="badge b-new">SP-2</span><h3><code>DatabaseProvider</code></h3><p>BDs (PG dockerizado ya hecho en 4b).</p><p class="adapters">PG dockerizado · RDS · VPS PG</p></div>
+    <div class="card"><span class="badge b-new">SP-2</span><h3><code>DatabaseProvider</code></h3><p>El adaptador PostgreSQL Docker aislado ya existe; RDS y VPS PG siguen como objetivo.</p><p class="adapters">PostgreSQL Docker · RDS · VPS PG</p></div>
     <div class="card"><span class="badge b-exists">4b ✓</span><h3><code>BackendProvider</code></h3><p>Puerto existe (docker local, 4b); adaptadores remotos = SP-3.</p><p class="adapters">Docker local · EC2/VPS · Fargate · K8s</p></div>
     <div class="card"><span class="badge b-new">SP-5</span><h3><code>IdentityProvider</code></h3><p>Auth/RBAC (reusado, no se construye).</p><p class="adapters">GitHub · GitLab · Google (OIDC)</p></div>
     <div class="card"><span class="badge b-new">SP-6</span><h3><code>PipelineProvider</code></h3><p>CI/CD (reusado, no se construye).</p><p class="adapters">GitHub Actions · GitLab CI</p></div>
@@ -190,7 +198,7 @@
       <div class="card"><span class="badge b-new">SP-5</span><h3>API + permisología (RBAC)</h3><p>Vía <code>IdentityProvider</code> (OIDC/SSO). Quién puede pedir qué.</p></div>
       <div class="card"><span class="badge b-new">SP-6</span><h3>Integración CI/CD</h3><p>Dispara/lee <code>PipelineProvider</code>; push→CI→build→CD.</p></div>
       <div class="card"><span class="badge b-exists">SP-1 ✓</span><h3>Fábrica + registry de imágenes</h3><p>Build por capa, pinneado por digest. Supersede el <code>PublishedLayer</code> deprecado (§8).</p></div>
-      <div class="card"><span class="badge b-new">SP-3</span><h3>Orquestador de deploy multi-target</h3><p>Sobre <code>BackendProvider</code>; solo docker local (4b) existe hoy.</p></div>
+      <div class="card"><span class="badge b-new">SP-3</span><h3>Orquestador de deploy multi-target</h3><p>Sobre <code>BackendProvider</code>; Docker local existe y los destinos remotos siguen como objetivo.</p></div>
       <div class="card"><span class="badge b-new">SP-2</span><h3>Ciclo de vida de BDs</h3><p>Provisión, clonado, randomización, copias pre-prod.</p></div>
       <div class="card"><span class="badge b-new">SP-7</span><h3>Entrega de código fuente</h3><p>Servida a devs. Base: <code>SourceProvider</code>+git (2b) + workspace projection (3).</p></div>
       <div class="card"><span class="badge b-new">SP-10</span><h3>Gobernanza &amp; ciclo de vida</h3><p>Audit trail append-only · guardrails PROD · GC/retención · orquestación de backups.</p></div>
@@ -218,6 +226,7 @@
   </div>
 
   <p class="sub" style="margin-top:26px;">Multi-fase. Descomposición completa (SP-1..SP-10) en el roadmap maestro: <code>docs/specs/2026-07-08-platform-roadmap.md</code>.</p>
+  </section>
 </div>
 </body>
 </html>
