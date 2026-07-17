@@ -22,7 +22,7 @@ flowchart LR
         durableStore[Durable operation store contract only]
     end
 
-    subgraph foundations[Implemented Domain Foundations - No Operational Adapter]
+    subgraph foundations[Implemented Domain Foundations - No Managed Consumer]
         projectCatalog[Project catalog resolution/validation]
         credentials[Credential materialization]
         artifacts[Opaque data artifacts]
@@ -34,6 +34,7 @@ flowchart LR
         git[odoo_forge_git\nGitSourceProvider]
         workspaceAdapter[odoo_forge_workspace\nGitWorkspaceProvider]
         docker[odoo_forge_docker\nDockerBackendProvider]
+        postgres[odoo_forge_postgres_docker\nDockerPostgresqlDatabaseProvider]
         registry[odoo_forge_registry\nGhcrImageRegistryProvider]
     end
 
@@ -61,6 +62,7 @@ flowchart LR
     docker --> fs
     statusParse --> docker
     databaseTypes --> databasePort
+    databasePort --> postgres --> dockerCli
     credentials --> databasePort
     artifacts --> databasePort
     durable --> durableStore
@@ -74,6 +76,6 @@ flowchart LR
     class developer,cli cli
     class manifest,composition,locking,projection,backendPlan,statusParse,registryTypes,drift core
     class sourcePort,workspacePort,backendPort,imagePort,databasePort,durableStore port
-    class git,workspaceAdapter,docker,registry adapter
+    class git,workspaceAdapter,docker,postgres,registry adapter
     class gitCli,dockerCli,ghcr,fs,lock external
     class projectCatalog,credentials,artifacts,databaseTypes,durable foundation
