@@ -1,0 +1,167 @@
+{
+  "schema": "gentle-ai.review-transport/v2",
+  "record": {
+    "schema": "gentle-ai.review-state-record/v2",
+    "revision": "sha256:666b50676f59e36626074bba558a46f111859a484dab41b10328ae106140a067",
+    "state": {
+      "schema": "gentle-ai.review-state/v2",
+      "lineage_id": "review-b5ad473e370d56c2",
+      "generation": 1,
+      "state": "approved",
+      "initial_snapshot": {
+        "kind": "current-changes",
+        "base_tree": "f9fbb401840ed6fb687a5a5146bed77416ad6805",
+        "candidate_tree": "daf3ce41de838ece03c2ea2cd547704cf238a819",
+        "paths_digest": "sha256:12f816889545d4fce5728ffc888a28ad5df5ef052213de82dd5258b030aac8d4",
+        "intended_untracked": [],
+        "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+        "paths": [
+          "docs/diagrams/odoo-forge-current-implementation.mmd",
+          "docs/diagrams/odoo-forge-current-implementation.mmd.svg",
+          "docs/specs/platform/platform-architecture.html",
+          "docs/tools/platform_portfolio/test_validate.py",
+          "docs/tools/platform_portfolio/validate.py",
+          "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md",
+          "openspec/changes/refresh-platform-roadmap-after-stabilization/tasks.md"
+        ],
+        "identity": "sha256:b5ad473e370d56c27861c995b94bed50b8d0e7ce1403be608169b13d84298f35"
+      },
+      "current_snapshot": {
+        "kind": "current-changes",
+        "base_tree": "f9fbb401840ed6fb687a5a5146bed77416ad6805",
+        "candidate_tree": "daf3ce41de838ece03c2ea2cd547704cf238a819",
+        "paths_digest": "sha256:12f816889545d4fce5728ffc888a28ad5df5ef052213de82dd5258b030aac8d4",
+        "intended_untracked": [],
+        "intended_untracked_proof": "sha256:b97229718d4c7fe50a8892eb474ae5aa6491697bccb400e3e31dbaca4894d2f3",
+        "paths": [
+          "docs/diagrams/odoo-forge-current-implementation.mmd",
+          "docs/diagrams/odoo-forge-current-implementation.mmd.svg",
+          "docs/specs/platform/platform-architecture.html",
+          "docs/tools/platform_portfolio/test_validate.py",
+          "docs/tools/platform_portfolio/validate.py",
+          "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md",
+          "openspec/changes/refresh-platform-roadmap-after-stabilization/tasks.md"
+        ],
+        "identity": "sha256:b5ad473e370d56c27861c995b94bed50b8d0e7ce1403be608169b13d84298f35"
+      },
+      "genesis_paths": [
+        "docs/diagrams/odoo-forge-current-implementation.mmd",
+        "docs/diagrams/odoo-forge-current-implementation.mmd.svg",
+        "docs/specs/platform/platform-architecture.html",
+        "docs/tools/platform_portfolio/test_validate.py",
+        "docs/tools/platform_portfolio/validate.py",
+        "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md",
+        "openspec/changes/refresh-platform-roadmap-after-stabilization/tasks.md"
+      ],
+      "policy_hash": "sha256:34fb63d7f29f8613cd4431382b1057398a4816f8a4c20fc34677fffc80a184f6",
+      "risk_level": "medium",
+      "selected_lenses": [
+        "review-reliability"
+      ],
+      "original_changed_lines": 247,
+      "correction_budget": 124,
+      "lens_results": [
+        {
+          "lens": "review-reliability",
+          "findings": [
+            {
+              "id": "R3-001",
+              "lens": "reliability",
+              "location": "docs/tools/platform_portfolio/validate.py:285",
+              "severity": "WARNING",
+              "claim": "Repository validation reports clean when Mermaid and SVG exist but SVG is stale/unrelated.",
+              "proof_refs": [
+                "Validator checks existence only; renderer has separate cmp; tests miss byte coherence."
+              ]
+            },
+            {
+              "id": "R3-002",
+              "lens": "reliability",
+              "location": "docs/tools/platform_portfolio/validate.py:297",
+              "severity": "WARNING",
+              "claim": "Required current-guide link can be broken while validation passes when any other HTML link resolves, including outside repository.",
+              "proof_refs": [
+                "Validator uses any resolved file without required target/containment; tests cover no links only."
+              ]
+            },
+            {
+              "id": "R3-003",
+              "lens": "reliability",
+              "location": "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md:134",
+              "severity": "WARNING",
+              "claim": "Handoff references prior review receipt for a different candidate tree.",
+              "proof_refs": [
+                "Current candidate tree differs from review-fd6 receipt after administrative reconciliation."
+              ]
+            }
+          ],
+          "evidence": [
+            "Inspected frozen seven paths, base, tests, renderer, apply/tasks and prior receipt."
+          ],
+          "result_hash": "sha256:50a40917d6d1b6b138d5fe13500e985089006c2e53e2af45559e1fcd171c5449"
+        }
+      ],
+      "findings": [
+        {
+          "id": "R3-001",
+          "lens": "reliability",
+          "location": "docs/tools/platform_portfolio/validate.py:285",
+          "severity": "WARNING",
+          "claim": "Repository validation reports clean when Mermaid and SVG exist but SVG is stale/unrelated.",
+          "proof_refs": [
+            "Validator checks existence only; renderer has separate cmp; tests miss byte coherence."
+          ]
+        },
+        {
+          "id": "R3-002",
+          "lens": "reliability",
+          "location": "docs/tools/platform_portfolio/validate.py:297",
+          "severity": "WARNING",
+          "claim": "Required current-guide link can be broken while validation passes when any other HTML link resolves, including outside repository.",
+          "proof_refs": [
+            "Validator uses any resolved file without required target/containment; tests cover no links only."
+          ]
+        },
+        {
+          "id": "R3-003",
+          "lens": "reliability",
+          "location": "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md:134",
+          "severity": "WARNING",
+          "claim": "Handoff references prior review receipt for a different candidate tree.",
+          "proof_refs": [
+            "Current candidate tree differs from review-fd6 receipt after administrative reconciliation."
+          ]
+        }
+      ],
+      "classifications": {},
+      "outcomes": {
+        "R3-001": "info",
+        "R3-002": "info",
+        "R3-003": "info"
+      },
+      "fix_finding_ids": [],
+      "follow_ups": [],
+      "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "evidence_hash": "sha256:9a87ecb87f766838046d4f7b90db2f5bb7dd68d3d2f8734969a805fce8482b98"
+    }
+  },
+  "receipt": {
+    "schema": "gentle-ai.review-receipt/v2",
+    "lineage_id": "review-b5ad473e370d56c2",
+    "generation": 1,
+    "base_tree": "f9fbb401840ed6fb687a5a5146bed77416ad6805",
+    "initial_review_tree": "daf3ce41de838ece03c2ea2cd547704cf238a819",
+    "final_candidate_tree": "daf3ce41de838ece03c2ea2cd547704cf238a819",
+    "paths_digest": "sha256:12f816889545d4fce5728ffc888a28ad5df5ef052213de82dd5258b030aac8d4",
+    "fix_delta_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "policy_hash": "sha256:34fb63d7f29f8613cd4431382b1057398a4816f8a4c20fc34677fffc80a184f6",
+    "evidence_hash": "sha256:9a87ecb87f766838046d4f7b90db2f5bb7dd68d3d2f8734969a805fce8482b98",
+    "risk_level": "medium",
+    "selected_lenses": [
+      "review-reliability"
+    ],
+    "resolved_finding_ids": null,
+    "terminal_state": "approved"
+  },
+  "bundle_digest": "sha256:2facbf335e94d6ace663b3781350d10e4b2c5cb11c979e76679830a685fb5dca"
+}
