@@ -8,11 +8,14 @@ validator catches the defect classes that matter for portfolio integrity:
 dangling references, unresolved transfer destinations, and dependency cycles.
 """
 
-import copy
 import contextlib
+import copy
 import io
 import json
+import os
 import pathlib
+import re
+import subprocess
 import tempfile
 import unittest
 
@@ -173,16 +176,47 @@ class TestRepositoryValidation(unittest.TestCase):
         (root / "docs/specs/2026-07-14-stabilization-roadmap.md").write_text(
             "# Current Stabilization Roadmap\n"
             "CHG-FIRST-DATABASE-ADAPTER is archived as superseded.\n"
-            "Active: refresh-platform-roadmap-after-stabilization and sp-data-environments (blocked).\n",
+            "Active: refresh-platform-roadmap-after-stabilization and "
+            "sp-data-environments (blocked).\n",
             encoding="utf-8",
         )
         protected = root / "docs/specs/protected.md"
         protected.write_text("immutable\n", encoding="utf-8")
+        (root / "docs/diagrams").mkdir()
+        (root / "docs/diagrams/odoo-forge-current-implementation.mmd").write_text(
+            "flowchart LR\n    database[Database lifecycle]\n", encoding="utf-8"
+        )
+        (root / "docs/diagrams/odoo-forge-current-implementation.mmd.svg").write_text(
+            "<svg/>\n", encoding="utf-8"
+        )
+        (root / "docs/diagrams/render-current-implementation.sh").write_bytes(
+            (REPO_ROOT / "docs/diagrams/render-current-implementation.sh").read_bytes()
+        )
+        (root / "docs/diagrams/render-current-implementation.sh").chmod(0o755)
+        (root / "docs/diagrams/odoo-forge-current-implementation-guide.md").write_text(
+            "# Guía actual\n", encoding="utf-8"
+        )
+        (root / "docs/specs/platform/platform-architecture.html").write_text(
+            '<html lang="es" data-ownership="hand-authored" '
+            'data-ownership-verified="true"><body><section data-state="current">'
+            "Implementado hoy: adaptador PostgreSQL Docker.</section>"
+            '<section data-state="target">Objetivo futuro.</section>'
+            '<a href="../../diagrams/odoo-forge-current-implementation-guide.md">Guía actual</a>'
+            "</body></html>",
+            encoding="utf-8",
+        )
+        (
+            root / "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md"
+        ).write_text(
+            "# Apply Progress\n\n## Status: Apply Complete — Ready for sdd-verify\n",
+            encoding="utf-8",
+        )
         plan = json.loads(FIXTURE.read_text(encoding="utf-8"))
         plan["meta"].update(
             {
                 "evidence_catalog": {
-                    "S62": "openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/apply-progress.md"
+                    "S62": "openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/"
+                    "apply-progress.md"
                 },
                 "protected_history_paths": ["docs/specs/protected.md"],
                 "protected_history_sha256": {
@@ -195,9 +229,172 @@ class TestRepositoryValidation(unittest.TestCase):
     def test_s62_requires_an_archived_existing_evidence_pointer(self):
         temporary, root, plan = self._repository()
         with temporary:
-            self.assertEqual(validate.validate_repository(root, plan), [])
+            self.assertEqual(validate.validate_evidence_claims(plan, root), [])
             plan["meta"]["evidence_catalog"]["S62"] = "missing.md"
             self.assertIn("missing-evidence", _codes(validate.validate_repository(root, plan)))
+
+    def test_repository_validation_is_root_path_invariant(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            relative = pathlib.Path(os.path.relpath(root, pathlib.Path.cwd()))
+            self.assertEqual(
+                _codes(validate.validate_repository(root, plan)),
+                _codes(validate.validate_repository(relative, plan)),
+            )
+
+    def test_s62_rejects_parent_traversal_even_when_it_reaches_a_file(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            (root / "outside.md").write_text("not archived evidence\n", encoding="utf-8")
+            plan["meta"]["evidence_catalog"]["S62"] = "openspec/changes/archive/../../outside.md"
+            self.assertIn("invalid-evidence-path", _codes(validate.validate_repository(root, plan)))
+
+    def test_missing_changes_root_reports_inventory_instead_of_crashing(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            import shutil
+
+            shutil.rmtree(root / "openspec/changes")
+            self.assertIn("active-inventory", _codes(validate.validate_repository(root, plan)))
+
+    def test_parent_status_contract_is_pure_and_not_a_child_gate(self):
+        canonical = "## Status: Apply Complete — Ready for sdd-verify\n"
+        self.assertEqual(validate.validate_parent_apply_status(canonical), [])
+        for text in (
+            "## Status: Blocked\n",
+            "## Status: Phase 3 Complete\n",
+            "## Status: Apply Complete — Ready for sdd-verify\n## Status: Blocked\n",
+            "## Evidence\n" + canonical,
+        ):
+            self.assertIn(
+                "apply-progress-status", _codes(validate.validate_parent_apply_status(text))
+            )
+        temporary, root, plan = self._repository()
+        with temporary:
+            progress = (
+                root
+                / "openspec/changes"
+                / "refresh-platform-roadmap-after-stabilization/apply-progress.md"
+            )
+            baseline = _codes(validate.validate_repository(root, plan))
+            progress.write_text("## Status: Blocked\n", encoding="utf-8")
+            self.assertEqual(_codes(validate.validate_repository(root, plan)), baseline)
+
+    def test_slice_five_target_lists_thirteen_child_paths(self):
+        active_progress = (
+            REPO_ROOT
+            / "openspec/changes"
+            / "fix-roadmap-refresh-verification-closure/apply-progress.md"
+        )
+        if active_progress.exists():
+            progress_path = active_progress
+        else:
+            archive_root = REPO_ROOT / "openspec/changes/archive"
+            archived_progress = [
+                path
+                for path in archive_root.glob(
+                    "*-fix-roadmap-refresh-verification-closure/apply-progress.md"
+                )
+                if re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}-fix-roadmap-refresh-verification-closure",
+                    path.parent.name,
+                )
+            ]
+            self.assertEqual(len(archived_progress), 1, archived_progress)
+            progress_path = archived_progress[0]
+
+        progress = progress_path.read_text()
+        block = progress.split("### Intended Native Staged Target (13 paths)", 1)[1].split(
+            "This is planning", 1
+        )[0]
+        paths = re.findall(r"`([^`]+)`", block)
+        expected = {
+            "docs/specs/platform/platform-architecture.html",
+            "docs/tools/platform_portfolio/test_validate.py",
+            "docs/tools/platform_portfolio/validate.py",
+            "docs/diagrams/odoo-forge-current-implementation.mmd",
+            "docs/diagrams/odoo-forge-current-implementation.mmd.svg",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/apply-progress.md",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/design.md",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/evidence/parent-verify-fail.md",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/evidence/parent-verify-fail.sha256",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/exploration.md",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/proposal.md",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/specs/platform-portfolio-documentation-integrity/spec.md",
+            "openspec/changes/fix-roadmap-refresh-verification-closure/tasks.md",
+        }
+        self.assertEqual(set(paths), expected)
+        self.assertNotEqual(
+            set(re.findall(r"`([^`]+)`", block.replace("proposal.md", "exploration.md"))), expected
+        )
+
+    def test_isolated_staged_mermaid_cannot_be_masked_by_clean_bytes(self):
+        clean_temporary, clean_root, _ = self._repository()
+        staged_temporary, staged_root, _ = self._repository()
+        with clean_temporary, staged_temporary:
+
+            def renderer(_):
+                return validate.RendererResult(0, "")
+
+            self.assertNotIn(
+                "stale-claim", _codes(validate.validate_documentation(clean_root, renderer))
+            )
+            (staged_root / "docs/diagrams/odoo-forge-current-implementation.mmd").write_text(
+                "No Operational Adapter\n", encoding="utf-8"
+            )
+            self.assertIn(
+                "stale-claim", _codes(validate.validate_documentation(staged_root, renderer))
+            )
+
+    def test_documentation_checks_require_current_target_labels_links_and_fresh_claims(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            html = root / "docs/specs/platform/platform-architecture.html"
+            html.write_text(
+                '<html lang="en"><body>No Operational Adapter</body></html>', encoding="utf-8"
+            )
+            codes = _codes(validate.validate_repository(root, plan))
+            self.assertTrue(
+                {
+                    "html-language",
+                    "html-current-label",
+                    "html-target-label",
+                    "html-guide-link",
+                    "stale-claim",
+                }.issubset(codes)
+            )
+
+    def test_renderer_check_requires_a_pinned_fixed_argv_script_and_derived_svg(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            renderer = root / "docs/diagrams/render-current-implementation.sh"
+            renderer.write_text(
+                "# @sha256:\nif false; then\n"
+                '"$runtime" run --rm --input "$SOURCE" --output "$container_output"\n'
+                "fi\nexit 0\n",
+                encoding="utf-8",
+            )
+            (root / "docs/diagrams/odoo-forge-current-implementation.mmd.svg").unlink()
+            self.assertIn("fixed-renderer", _codes(validate.validate_repository(root, plan)))
+            self.assertIn(
+                "missing-derived-output", _codes(validate.validate_repository(root, plan))
+            )
+
+    def test_invalid_renderer_is_rejected_before_execution(self):
+        temporary, root, _ = self._repository()
+        with temporary:
+            renderer = root / "docs/diagrams/render-current-implementation.sh"
+            renderer.write_text('"$runtime" run --rm "$@"\n', encoding="utf-8")
+            called = False
+
+            def run_renderer(_):
+                nonlocal called
+                called = True
+                return validate.RendererResult(0, "")
+
+            codes = _codes(validate.validate_documentation(root, run_renderer=run_renderer))
+            self.assertIn("fixed-renderer", codes)
+            self.assertFalse(called)
 
     def test_active_inventory_is_exact(self):
         temporary, root, plan = self._repository()
