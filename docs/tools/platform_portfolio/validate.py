@@ -26,12 +26,23 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-from pathlib import Path
 import re
+import subprocess
 import sys
 from collections import defaultdict
+from html.parser import HTMLParser
+from pathlib import Path
 
 DEFAULT_PLAN = "docs/specs/platform/portfolio.json"
+PARENT_VERIFY_SHA256 = "0fbb60e3b0aba12a46cc26a69c57b40ffb26fa1c60adde5946c0ee9018d084c4"
+RENDERER_SHA256 = "526e20a35ace9f4d198a157ddc7e4e0315fe7b208c021099b7a3898c8ee662ed"
+CANDIDATE_PATHS = {
+    "docs/specs/platform/platform-architecture.html",
+    "docs/tools/platform_portfolio/test_validate.py",
+    "docs/tools/platform_portfolio/validate.py",
+    "openspec/changes/fix-roadmap-refresh-verification-closure/apply-progress.md",
+    "openspec/changes/fix-roadmap-refresh-verification-closure/tasks.md",
+}
 ITEM_KINDS = {
     "sp",
     "prerequisite",
@@ -64,6 +75,12 @@ class CredentialReadiness:
     def __init__(self, missing_requirements: tuple[str, ...]) -> None:
         self.missing_requirements = missing_requirements
         self.is_ready = not missing_requirements
+
+
+class RendererResult:
+    def __init__(self, returncode: int, detail: str) -> None:
+        self.returncode = returncode
+        self.detail = detail
 
 
 def evaluate_credential_readiness(plan: dict) -> CredentialReadiness:
@@ -239,8 +256,267 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+class _ArchitectureHtml(HTMLParser):
+    """Collect only the ownership markers needed by the documentation gate."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.language = ""
+        self.states: list[str] = []
+        self.links: list[str] = []
+        self.ownership = ""
+        self.ownership_verified = ""
+        self.ownership_markers = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "html":
+            self.ownership_markers += 1
+            self.language = values.get("lang") or ""
+            self.ownership = values.get("data-ownership") or ""
+            self.ownership_verified = values.get("data-ownership-verified") or ""
+        if tag == "section" and values.get("data-state"):
+            self.states.append(values["data-state"] or "")
+        if tag == "a" and values.get("href"):
+            self.links.append(values["href"] or "")
+
+
+def _is_archived_evidence_path(root: Path, value: str) -> bool:
+    relative = value.split("#", 1)[0]
+    path = Path(relative)
+    if (
+        not relative.startswith("openspec/changes/archive/")
+        or path.is_absolute()
+        or ".." in path.parts
+    ):
+        return False
+    return (root / path).resolve().is_relative_to(root.resolve())
+
+
+def run_fixed_renderer(root: Path, run_process=subprocess.run) -> RendererResult:
+    renderer = root / "docs/diagrams/render-current-implementation.sh"
+    if not renderer.is_file():
+        return RendererResult(1, "renderer missing")
+    try:
+        result = run_process(
+            [renderer, "--check"], cwd=root, shell=False, capture_output=True, text=True, timeout=30
+        )
+    except subprocess.TimeoutExpired:
+        return RendererResult(1, "renderer timeout")
+    except OSError as exc:
+        return RendererResult(1, f"renderer execution: {exc}")
+    return RendererResult(result.returncode, (result.stdout + result.stderr).strip())
+
+
+def _violation(code: str, detail: str) -> Violation:
+    return Violation("CRITICAL", code, detail)
+
+
+def validate_parent_apply_status(text: str) -> list[Violation]:
+    canonical = "## Status: Apply Complete — Ready for sdd-verify"
+    headings = re.findall(r"^## .*", text, re.MULTILINE)
+    statuses = re.findall(r"^## Status:.*", text, re.MULTILINE)
+    if headings and headings[0] == canonical and statuses == [canonical]:
+        return []
+    return [_violation("apply-progress-status", "parent apply progress")]
+
+
+def resolve_repo_path(root: Path, raw: str) -> Path | None:
+    path = Path(raw)
+    if not raw or "\\" in raw or path.is_absolute() or "." in path.parts or ".." in path.parts:
+        return None
+    resolved = (root / path).resolve()
+    return resolved if resolved.is_relative_to(root) else None
+
+
+def parse_candidate_paths(text: str) -> tuple[tuple[str, ...], list[Violation]]:
+    blocks = re.findall(r"^## Candidate Paths$([\s\S]*?)(?=^## |\Z)", text, re.MULTILINE)
+    if len(blocks) != 1:
+        return (), [_violation("candidate-paths", "one block required")]
+    lines = [line for line in blocks[0].splitlines() if line]
+    paths = tuple(line.removeprefix("- path: ") for line in lines[1:])
+    invalid = not lines or lines[0] != "schema: odoo-forge.changed-paths/v1" or not paths
+    invalid |= any(not line.startswith("- path: ") for line in lines[1:])
+    for path in paths:
+        parsed = Path(path)
+        invalid |= path not in CANDIDATE_PATHS or path != parsed.as_posix() or parsed.is_absolute()
+        invalid |= "\\" in path or "." in parsed.parts or ".." in parsed.parts
+    if invalid or len(set(paths)) != len(paths):
+        return paths, [_violation("candidate-paths", "invalid candidate path block")]
+    return paths, []
+
+
+def validate_evidence_claims(plan: dict, root: Path) -> list[Violation]:
+    root = root.resolve()
+    catalog = plan["meta"].get("evidence_catalog", {})
+    gaps = plan["meta"].get("gap_catalog", {})
+
+    def collect(value: object) -> set[str]:
+        if isinstance(value, dict):
+            nested = set().union(*(collect(v) for v in value.values()))
+            return set(value.get("evidence", [])) | nested
+        if isinstance(value, list):
+            return set().union(*(collect(v) for v in value)) if value else set()
+        return set()
+
+    active = collect(
+        {key: plan.get(key, []) for key in ("items", "transfers", "edges", "decisions")}
+    )
+    violations: list[Violation] = []
+    for evidence_id, location in catalog.items():
+        relative = Path(str(location).split("#", 1)[0])
+        path = root / relative
+        valid = _is_archived_evidence_path(root, str(location)) and path.is_file()
+        repo_path = relative.parts and relative.parts[0] in {"docs", "openspec", "tests"}
+        supported = (
+            repo_path
+            and not relative.is_absolute()
+            and ".." not in relative.parts
+            and path.resolve().is_relative_to(root.resolve())
+            and path.is_file()
+        )
+        if evidence_id in active and repo_path and not supported:
+            violations.append(_violation("fabricated-evidence", evidence_id))
+            continue
+        unverifiable = evidence_id == "S62" or (str(location).endswith(".md") and not supported)
+        if valid or supported or not unverifiable:
+            continue
+        if evidence_id == "S62" or evidence_id in active:
+            violations.append(_violation("fabricated-evidence", evidence_id))
+            continue
+        matches = [
+            gap
+            for gap in gaps.values()
+            if isinstance(gap, dict) and gap.get("evidence_id") == evidence_id and gap.get("reason")
+        ]
+        if not matches:
+            violations.append(_violation("evidence-gap-missing", evidence_id))
+    return violations
+
+
+def validate_slice_policy(
+    tasks_text: str, progress_text: str, changed_paths: list[str]
+) -> list[Violation]:
+    guards = (
+        "Decision needed before apply: No",
+        "Chained PRs recommended: Yes",
+        "Chain strategy: feature-branch-chain",
+        "400-line budget risk: High",
+    )
+    if not all(guard in tasks_text for guard in guards) or any(
+        opposite in tasks_text
+        for opposite in (
+            "Decision needed before apply: Yes",
+            "Chained PRs recommended: No",
+            "budget risk: Low",
+        )
+    ):
+        return [_violation("slice-policy-source", "parent tasks guards")]
+    counts = [
+        int(n) for n in re.findall(r"(\d+) (?:authored|changed)(?: changed)? lines", progress_text)
+    ]
+    counts += [
+        int(a) + int(d) for a, d in re.findall(r"(\d+) additions \+ (\d+) deletions", progress_text)
+    ]
+    if not {387, 375, 109}.issubset(counts):
+        return [_violation("slice-policy-source", "parent progress records")]
+    violations = []
+    if any(count > 400 for count in counts):
+        violations.append(_violation("slice-budget", "parent measured slice"))
+    if any("unit4" in path.lower() for path in changed_paths):
+        violations.append(_violation("slice-unit4", "Unit4 path"))
+    return violations
+
+
+def validate_parent_verify_snapshot(
+    root: Path, expected_hash: str = PARENT_VERIFY_SHA256
+) -> list[Violation]:
+    active = root / "openspec/changes/fix-roadmap-refresh-verification-closure/evidence"
+    date = "[0-9]" * 4 + "-" + "[0-9]" * 2 + "-" + "[0-9]" * 2
+    pattern = f"{date}-fix-roadmap-refresh-verification-closure/evidence"
+    archived = list((root / "openspec/changes/archive").glob(pattern))
+    locations = [active] if active.parent.is_dir() else archived
+    if len(locations) != 1:
+        return [_violation("parent-verify-snapshot", "missing or ambiguous evidence")]
+    evidence = locations[0]
+    snapshot = evidence / "parent-verify-fail.md"
+    receipt = evidence / "parent-verify-fail.sha256"
+    expected = f"{expected_hash}  parent-verify-fail.md\n"
+    if not snapshot.is_file() or not receipt.is_file():
+        return [_violation("parent-verify-snapshot", "missing evidence")]
+    if file_sha256(snapshot) != expected_hash or receipt.read_text(encoding="utf-8") != expected:
+        return [_violation("parent-verify-snapshot", "bytes or receipt")]
+    return []
+
+
+def validate_documentation(root: Path, run_renderer=run_fixed_renderer) -> list[Violation]:
+    """Check bounded documentation ownership, links, and generated-output inputs."""
+    violations: list[Violation] = []
+
+    def add(code: str, detail: str) -> None:
+        violations.append(Violation("CRITICAL", code, detail))
+
+    diagrams = root / "docs/diagrams"
+    source = diagrams / "odoo-forge-current-implementation.mmd"
+    output = diagrams / "odoo-forge-current-implementation.mmd.svg"
+    renderer = diagrams / "render-current-implementation.sh"
+    renderer_valid = renderer.is_file() and file_sha256(renderer) == RENDERER_SHA256
+    if not renderer_valid:
+        add("fixed-renderer", str(renderer.relative_to(root)))
+    else:
+        result = run_renderer(root)
+        if result.returncode:
+            add(
+                (
+                    "renderer-execution"
+                    if result.detail.startswith("renderer")
+                    else "renderer-coherence"
+                ),
+                result.detail,
+            )
+    if not source.is_file() or not output.is_file():
+        add("missing-derived-output", "Mermaid source or SVG output")
+
+    html_path = root / "docs/specs/platform/platform-architecture.html"
+    html_text = html_path.read_text(encoding="utf-8") if html_path.is_file() else ""
+    parser = _ArchitectureHtml()
+    parser.feed(html_text)
+    if parser.language != "es":
+        add("html-language", str(html_path.relative_to(root)))
+    if (
+        parser.ownership_markers != 1
+        or parser.ownership != "hand-authored"
+        or parser.ownership_verified != "true"
+    ):
+        add("html-ownership", str(html_path.relative_to(root)))
+    for state, code in (("current", "html-current-label"), ("target", "html-target-label")):
+        if parser.states.count(state) != 1:
+            add(code, str(html_path.relative_to(root)))
+    target = "../../diagrams/odoo-forge-current-implementation-guide.md"
+    resolved = (html_path.parent / target).resolve()
+    if (
+        parser.links != [target]
+        or not resolved.is_relative_to(root.resolve())
+        or not resolved.is_file()
+    ):
+        add("html-guide-link", str(html_path.relative_to(root)))
+    stale = (
+        "no operational adapter",
+        "pg dockerizado ya hecho",
+        "solo docker local (4b) existe hoy",
+    )
+    if any(
+        marker
+        in f"{html_text}\n{source.read_text(encoding='utf-8') if source.is_file() else ''}".lower()
+        for marker in stale
+    ):
+        add("stale-claim", "current implementation documentation")
+    return violations
+
+
 def validate_repository(root: Path, plan: dict) -> list[Violation]:
     """Validate repository-bound roadmap evidence without mutating any artifact."""
+    root = root.resolve()
     violations: list[Violation] = []
     meta = plan["meta"]
 
@@ -249,12 +525,21 @@ def validate_repository(root: Path, plan: dict) -> list[Violation]:
 
     s62 = meta.get("evidence_catalog", {}).get("S62", "")
     evidence_path = root / s62.split("#", 1)[0]
-    if not s62.startswith("openspec/changes/archive/") or not evidence_path.is_file():
+    if not _is_archived_evidence_path(root, s62):
+        add("invalid-evidence-path", f"S62:{s62}")
+    if not evidence_path.is_file():
         add("missing-evidence", f"S62:{s62}")
 
     changes = root / "openspec/changes"
-    active = {path.name for path in changes.iterdir() if path.is_dir() and path.name != "archive"}
+    active = (
+        {path.name for path in changes.iterdir() if path.is_dir() and path.name != "archive"}
+        if changes.is_dir()
+        else set()
+    )
     expected_active = {"refresh-platform-roadmap-after-stabilization", "sp-data-environments"}
+    corrective = "fix-roadmap-refresh-verification-closure"
+    if (changes / corrective).is_dir():
+        expected_active.add(corrective)
     if active != expected_active:
         add("active-inventory", f"expected={sorted(expected_active)} actual={sorted(active)}")
 
@@ -266,13 +551,25 @@ def validate_repository(root: Path, plan: dict) -> list[Violation]:
         "refresh-platform-roadmap-after-stabilization",
         "sp-data-environments (blocked)",
     )
-    if any(marker not in roadmap_text for marker in required) or "PR #64" in roadmap_text or "Unit 3 is next" in roadmap_text:
+    if (
+        any(marker not in roadmap_text for marker in required)
+        or "PR #64" in roadmap_text
+        or "Unit 3 is next" in roadmap_text
+    ):
         add("stale-roadmap", str(roadmap.relative_to(root)))
 
     for relative, expected_hash in meta.get("protected_history_sha256", {}).items():
         path = root / relative
         if not path.is_file() or file_sha256(path) != expected_hash:
             add("protected-history", relative)
+
+    violations.extend(validate_documentation(root))
+    violations.extend(validate_evidence_claims(plan, root))
+    child = changes / "fix-roadmap-refresh-verification-closure"
+    if child.is_dir():
+        (child / "apply-progress.md").read_text(encoding="utf-8")
+    if child.is_dir() or any((changes / "archive").glob(f"*-{corrective}")):
+        violations.extend(validate_parent_verify_snapshot(root))
 
     return violations
 
