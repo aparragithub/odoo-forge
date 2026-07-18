@@ -1,0 +1,15 @@
+name: forge-min
+odoo_version: "19.0"
+edition: community
+core:
+  type: core
+  url: https://github.com/odoo/odoo.git
+  ref: "19.0"
+client:
+  addons_path: client/addons
+workspace:
+  checkout_timeout_seconds: 300
+backend:
+  odoo:
+    bind_host: 0.0.0.0
+    http_port: 18069
