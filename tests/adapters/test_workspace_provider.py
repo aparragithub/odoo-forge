@@ -239,6 +239,69 @@ def test_timeout_raises_checkout_error_without_leaking_url(
     assert "secret-token" not in rendered_traceback
 
 
+def test_first_clone_attempt_uses_filter_blob_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dest = tmp_path / "custom" / "acme" / "odoo"
+    fake_run = _fake_run_factory(rev_parse_output=COMMIT)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    provider = GitWorkspaceProvider()
+    provider.checkout(URL, COMMIT, dest)
+
+    clone_calls = [
+        argv
+        for argv in fake_run.calls  # type: ignore[attr-defined]
+        if "clone" in argv
+    ]
+    assert len(clone_calls) == 1
+    first_clone = clone_calls[0]
+    assert "--filter=blob:none" in first_clone
+    assert "--" in first_clone
+    assert first_clone.index("--filter=blob:none") < first_clone.index("--")
+    assert first_clone.index("--") < first_clone.index(URL)
+
+
+def test_failed_filtered_clone_falls_back_to_full_clone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dest = tmp_path / "custom" / "acme" / "odoo"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if "clone" in argv and "--filter=blob:none" in argv:
+            return _FakeCompletedProcess(128, stderr="fatal: filter unsupported")
+        if "clone" in argv:
+            # Real `git clone` recreates the target directory; our fallback
+            # `rmtree`s it first, so the fake must mimic that side effect.
+            Path(argv[-1]).mkdir(parents=True, exist_ok=True)
+            return _FakeCompletedProcess(0, stdout="")
+        if "rev-parse" in argv:
+            return _FakeCompletedProcess(0, stdout=f"{COMMIT}\n")
+        if "status" in argv:
+            return _FakeCompletedProcess(0, stdout="")
+        return _FakeCompletedProcess(0, stdout="")
+
+    calls: list[list[str]] = []
+    original_fake_run = _fake_run
+
+    def _recording_fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        return original_fake_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", _recording_fake_run)
+
+    provider = GitWorkspaceProvider()
+    provider.checkout(URL, COMMIT, dest)
+
+    clone_calls = [argv for argv in calls if "clone" in argv]
+    assert len(clone_calls) == 2
+    assert "--filter=blob:none" in clone_calls[0]
+    assert "--filter=blob:none" not in clone_calls[1]
+    assert "--" in clone_calls[1]
+    assert clone_calls[1].index("--") < clone_calls[1].index(URL)
+    assert dest.exists()
+
+
 def test_clone_passes_url_as_positional_after_end_of_options(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
