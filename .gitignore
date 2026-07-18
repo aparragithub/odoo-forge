@@ -10,7 +10,15 @@ __pycache__/
 .codegraph/
 .pi/
 
+# Local agent integrations and generated skill state
+.agents/
+.claude/
+CLAUDE.md
+CONTEXT.md
+skills-lock.json
+
 # Local planning residue
+.scratch/
 openspec/changes/sp1/
 
 # Coverage data
@@ -21,3 +29,8 @@ htmlcov/
 # Review tooling scratch files
 .tmp-review-*.json
 .tmp-cap-*.json
+
+# Local runnable example: keep the manifest, ignore generated lock + secrets
+example/project.lock
+example/credentials.sops.yaml
+example/

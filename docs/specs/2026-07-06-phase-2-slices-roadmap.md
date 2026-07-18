@@ -4,6 +4,10 @@
 > must not be used as the current platform plan. Use
 > [`docs/specs/platform/portfolio.json`](platform/portfolio.json) for authoritative status,
 > dependencies, acceptance evidence, and handoffs.
+>
+> **Guía actual breve.** Para la ruta documental vigente, empezá en
+> [`docs/00-master-index.md`](../00-master-index.md). Para changes OpenSpec activos, corroborá con
+> el árbol vivo de `openspec/changes/` en lugar de usar esta roadmap histórica como inventario.
 
 **Status:** historical/superseded · **Last updated:** 2026-07-07 (Slice 2 FULLY DONE)
 

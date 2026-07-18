@@ -1,7 +1,7 @@
 # Verification Report: CAP-DURABLE-OPERATIONS-RECORD-FIX
 
 **Mode**: Full artifacts (proposal, design, delta spec, tasks, apply-progress all present)
-**Verdict**: **PASS**
+**Verdict**: **PASS WITH WARNINGS**
 
 ## Completeness
 
