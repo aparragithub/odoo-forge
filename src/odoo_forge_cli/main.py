@@ -56,6 +56,8 @@ from odoo_forge_workspace.provider import GitWorkspaceProvider
 
 app = typer.Typer()
 
+_WORKSPACE_PROVIDER_TIMEOUT_SECONDS: float | None = None
+
 
 def _make_provider() -> SourceProvider:
     """Composition root: the ONE place the concrete git adapter is built."""
@@ -69,7 +71,24 @@ def _make_published_artifact_resolver() -> PublishedArtifactResolver:
 
 def _make_workspace_provider() -> WorkspaceProvider:
     """Composition root: the ONE place the concrete workspace adapter is built."""
-    return GitWorkspaceProvider()
+    timeout = _WORKSPACE_PROVIDER_TIMEOUT_SECONDS
+    if timeout is None:
+        return GitWorkspaceProvider()
+    return GitWorkspaceProvider(timeout=timeout)
+
+
+def _make_manifest_workspace_provider(manifest: Manifest) -> WorkspaceProvider:
+    timeout = None
+    if manifest.workspace is not None:
+        timeout = manifest.workspace.checkout_timeout_seconds
+
+    global _WORKSPACE_PROVIDER_TIMEOUT_SECONDS
+    previous_timeout = _WORKSPACE_PROVIDER_TIMEOUT_SECONDS
+    _WORKSPACE_PROVIDER_TIMEOUT_SECONDS = float(timeout) if timeout is not None else None
+    try:
+        return _make_workspace_provider()
+    finally:
+        _WORKSPACE_PROVIDER_TIMEOUT_SECONDS = previous_timeout
 
 
 def _make_backend_provider(
@@ -290,7 +309,7 @@ def validate(
     try:
         compose(parsed)
         lock = _load_lock(manifest.parent / "project.lock")
-        provider = _make_workspace_provider()
+        provider = _make_manifest_workspace_provider(parsed)
         scanned = provider.scan(list(_HOST_ROOTS.values()))
         materialized = materialize_state(scanned, _HOST_ROOTS)
         report = detect_drift(parsed, lock, materialized)
@@ -389,7 +408,7 @@ def project(
             raise LockfileError(f"no lockfile found at '{lock_path}' — run `forge lock` first")
 
         plan = plan_projection(parsed, loaded_lock, _HOST_ROOTS)
-        provider = _make_workspace_provider()
+        provider = _make_manifest_workspace_provider(parsed)
         project_workspace(plan, provider)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -426,7 +445,7 @@ def unlock(
     # (`plan_unlock`) — the adapter only executes the worktree move.
     try:
         unlock_plan = plan_unlock(parsed, layer, repo, _HOST_ROOTS)
-        provider = _make_workspace_provider()
+        provider = _make_manifest_workspace_provider(parsed)
         provider.promote(unlock_plan.source, unlock_plan.dest, unlock_plan.branch)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -481,7 +500,7 @@ def run(
     # about — `DockerBackendProvider.run` itself rolls back everything it
     # created before raising.
     try:
-        workspace_provider = _make_workspace_provider()
+        workspace_provider = _make_manifest_workspace_provider(parsed)
         scanned = workspace_provider.scan(list(_HOST_ROOTS.values()))
         materialized = materialize_state(scanned, _HOST_ROOTS)
         mount_view = build_mount_planning_view(
