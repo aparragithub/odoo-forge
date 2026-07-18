@@ -30,7 +30,6 @@ htmlcov/
 .tmp-review-*.json
 .tmp-cap-*.json
 
-# Local runnable example: keep the manifest, ignore generated lock + secrets
-example/project.lock
-example/credentials.sops.yaml
-example/
+# Local runnable example: keep the manifest, ignore the rest
+example/**
+!example/project.yaml
