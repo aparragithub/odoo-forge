@@ -11,7 +11,7 @@ from odoo_forge.backend.plan import (
 )
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.manifest.projection import MountEvidence, MountPlanningView
-from odoo_forge.manifest.schema import Client, Manifest
+from odoo_forge.manifest.schema import BackendConfig, Client, Manifest, OdooBackendConfig
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -130,6 +130,18 @@ class TestPlanBackend:
 
         assert plan.odoo.env["DB_HOST"] == plan.postgres.name
         assert plan.odoo.env["DB_HOST"] != "localhost"
+
+    def test_odoo_http_port_defaults_to_random_loopback_host_port(self) -> None:
+        plan = plan_backend(_manifest(), _mount_view())
+
+        assert plan.odoo.ports == {"8069": None, "8072": None}
+
+    def test_odoo_http_port_can_be_fixed_from_manifest_backend_config(self) -> None:
+        manifest = _manifest(backend=BackendConfig(odoo=OdooBackendConfig(http_port=18069)))
+
+        plan = plan_backend(manifest, _mount_view())
+
+        assert plan.odoo.ports == {"8069": 18069, "8072": None}
 
     def test_volumes_named_pg_and_filestore(self) -> None:
         manifest = _manifest()

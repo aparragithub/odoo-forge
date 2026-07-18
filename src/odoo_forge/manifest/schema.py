@@ -74,6 +74,14 @@ class Workspace(BaseModel):
     checkout_timeout_seconds: int | None = Field(default=None, gt=0)
 
 
+class OdooBackendConfig(BaseModel):
+    http_port: int | None = Field(default=None, gt=0, le=65535)
+
+
+class BackendConfig(BaseModel):
+    odoo: OdooBackendConfig | None = None
+
+
 class Manifest(BaseModel):
     name: str
     odoo_version: str
@@ -83,6 +91,7 @@ class Manifest(BaseModel):
     client: Client
     overrides: list[Override] = []
     workspace: Workspace | None = None
+    backend: BackendConfig | None = None
 
 
 __all__ = [
@@ -95,5 +104,7 @@ __all__ = [
     "Client",
     "Override",
     "Workspace",
+    "OdooBackendConfig",
+    "BackendConfig",
     "Manifest",
 ]
