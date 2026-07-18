@@ -22,7 +22,7 @@ from odoo_forge.manifest.lockfile import (
     ResolvedRepo,
     compute_manifest_hash,
 )
-from odoo_forge.manifest.projection import ScannedRepo
+from odoo_forge.manifest.projection import ScannedRepo, build_mount_roots
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
@@ -226,6 +226,52 @@ def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.Mo
     assert fake_backend.run_calls[0].network.name == "odoo-forge-odoo-idp-default"
     assert expected_ref.odoo_container in result.output
     assert expected_ref.postgres_container in result.output
+
+
+def test_run_scans_and_materializes_with_the_resolved_host_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`run` must thread `main._HOST_ROOTS` — not the fixed container table —
+    into `workspace_provider.scan`/`materialize_state`/`build_mount_planning_view`."""
+    custom_roots = build_mount_roots(Path("/custom/state/odoo-forge"))
+    monkeypatch.setattr(main, "_HOST_ROOTS", custom_roots)
+
+    scan_calls: list[object] = []
+    scanned = [
+        ScannedRepo(
+            path=custom_roots["community"] / "core" / "odoo", url=_CORE_URL, commit=_CORE_COMMIT
+        )
+    ]
+
+    class _RecordingWorkspaceProvider:
+        def checkout(self, url: str, commit: str, dest: Path) -> None:
+            raise NotImplementedError
+
+        def scan(self, roots: object) -> list[ScannedRepo]:
+            scan_calls.append(roots)
+            return scanned
+
+        def promote(self, source: Path, dest: Path, branch: str) -> None:
+            raise NotImplementedError
+
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: _RecordingWorkspaceProvider())
+
+    expected_ref = InstanceRef(
+        project="odoo-idp",
+        instance="default",
+        network="odoo-forge-odoo-idp-default",
+        postgres_container="odoo-forge-odoo-idp-default-db",
+        odoo_container="odoo-forge-odoo-idp-default-odoo",
+    )
+    fake_backend = _FakeBackendProvider(run_result=expected_ref)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(app, ["run", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert scan_calls == [list(custom_roots.values())]
 
 
 def test_run_binds_opaque_credentials_at_the_composition_root(

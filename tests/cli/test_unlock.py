@@ -4,6 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from odoo_forge.manifest.errors import AlreadyUnlockedError
+from odoo_forge.manifest.projection import build_mount_roots
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 
@@ -105,6 +106,37 @@ def test_unlock_core_layer_computes_community_source(
     source, dest, _branch = fake_provider.promote_calls[0]
     assert source == Path("/mnt/community/core/odoo")
     assert dest == Path("/mnt/worktrees/core/odoo")
+
+
+def test_unlock_uses_the_resolved_host_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`unlock` must call `plan_unlock` with `main._HOST_ROOTS` — not the
+    fixed container table."""
+    custom_roots = build_mount_roots(Path("/custom/state/odoo-forge"))
+    monkeypatch.setattr(main, "_HOST_ROOTS", custom_roots)
+    fake_provider = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+
+    project_yaml = _write_manifest(tmp_path)
+
+    result = runner.invoke(
+        app,
+        [
+            "unlock",
+            "--manifest",
+            str(project_yaml),
+            "--layer",
+            "custom-x",
+            "--repo",
+            "https://example.com/custom-x.git",
+        ],
+    )
+
+    assert result.exit_code == 0
+    source, dest, _branch = fake_provider.promote_calls[0]
+    assert source == custom_roots["custom"] / "custom-x" / "custom-x"
+    assert dest == custom_roots["worktrees"] / "custom-x" / "custom-x"
 
 
 def test_already_unlocked_exits_nonzero_single_cause(
