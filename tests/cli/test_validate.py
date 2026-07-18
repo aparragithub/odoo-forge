@@ -11,7 +11,7 @@ from odoo_forge.manifest.lockfile import (
     ResolvedRepo,
     compute_manifest_hash,
 )
-from odoo_forge.manifest.projection import ScannedRepo
+from odoo_forge.manifest.projection import ScannedRepo, build_mount_roots
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
@@ -214,3 +214,41 @@ def test_drift_detected_against_real_scanned_workspace(
     assert result.exit_code == 0
     assert "commit_mismatch" not in result.output  # rendered as human text, not the raw kind
     assert "lock declares 'expected-sha' but materialized at 'stale-sha'" in result.output
+
+
+def test_validate_scans_and_materializes_with_the_resolved_host_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`validate` must thread `main._HOST_ROOTS` — not the fixed container
+    table — into `provider.scan`/`materialize_state`."""
+    manifest_path = FIXTURES_DIR / "valid.project.yaml"
+    manifest = Manifest.model_validate(yaml.safe_load(manifest_path.read_text()))
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(manifest_path.read_text())
+
+    fresh_lock = Lockfile(generated_from=compute_manifest_hash(manifest))
+    (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
+
+    custom_roots = build_mount_roots(Path("/custom/state/odoo-forge"))
+    monkeypatch.setattr(main, "_HOST_ROOTS", custom_roots)
+
+    scan_calls: list[object] = []
+
+    class _RecordingWorkspaceProvider:
+        def checkout(self, url: str, commit: str, dest: Path) -> None:
+            raise NotImplementedError
+
+        def scan(self, roots: object) -> list[ScannedRepo]:
+            scan_calls.append(roots)
+            return []
+
+        def promote(self, source: Path, dest: Path, branch: str) -> None:
+            raise NotImplementedError
+
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: _RecordingWorkspaceProvider())
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert scan_calls == [list(custom_roots.values())]

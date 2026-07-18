@@ -19,6 +19,7 @@ from odoo_forge.manifest.projection import (
     WorkspacePlan,
     WorkspacePlanEntry,
     build_mount_planning_view,
+    build_mount_roots,
     classify_root,
     materialize_state,
     plan_projection,
@@ -55,6 +56,21 @@ def _git_layer(**overrides: object) -> GitLayer:
     }
     defaults.update(overrides)
     return GitLayer(**defaults)  # type: ignore[arg-type]
+
+
+class TestBuildMountRoots:
+    def test_maps_the_five_roots_under_an_arbitrary_base(self) -> None:
+        base = Path("/custom/state/odoo-forge")
+
+        roots = build_mount_roots(base)
+
+        assert roots == {
+            "community": base / "community",
+            "custom": base / "custom",
+            "localization": base / "localization",
+            "enterprise": base / "enterprise",
+            "worktrees": base / "worktrees",
+        }
 
 
 class TestClassifyRoot:
@@ -198,6 +214,24 @@ class TestPlanProjection:
         assert [step.layer for step in plan.steps] == ["core", "enterprise", "custom-x"]
         assert [step.mount_root for step in plan.steps] == ["community", "enterprise", "custom"]
         assert [step.commit for step in plan.steps] == ["sha-core", "sha-ee", "sha-partner"]
+
+    def test_honors_injected_roots_for_a_non_default_base(self) -> None:
+        base = Path("/custom/state/odoo-forge")
+        roots = build_mount_roots(base)
+        manifest = _manifest()
+        lock = Lockfile(
+            generated_from="hash",
+            layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+            ],
+        )
+
+        plan = plan_projection(manifest, lock, roots)
+
+        assert plan.steps[0].target_path == roots["community"] / "core" / "odoo"
 
     def test_orphaned_lock_layer_raises_and_returns_no_partial_plan(self) -> None:
         manifest = _manifest()
@@ -671,6 +705,33 @@ class TestBuildMountPlanningView:
         assert "token" not in str(error.value)
         assert credential_url not in str(error.value)
 
+    def test_container_path_stays_fixed_at_mnt_when_host_base_differs(self) -> None:
+        host_base = Path("/custom/state/odoo-forge")
+        host_roots = build_mount_roots(host_base)
+        manifest = _manifest()
+        lock = Lockfile(
+            generated_from=compute_manifest_hash(manifest),
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+            ],
+        )
+        scanned = [
+            ScannedRepo(
+                path=host_roots["community"] / "core" / "odoo",
+                url=manifest.core.url,
+                commit="sha-core",
+            )
+        ]
+        state = materialize_state(scanned, host_roots)
+
+        view = build_mount_planning_view(manifest, lock, scanned, state, host_roots)
+
+        assert view.mounts[0].source_path == host_roots["community"] / "core" / "odoo"
+        assert view.mounts[0].container_path == Path("/mnt/community/core/odoo")
+
     def test_selects_a_valid_worktree_over_a_stale_read_only_counterpart(self) -> None:
         custom_url = "https://github.com/ingadhoc/odoo-partner.git"
         manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
@@ -747,6 +808,18 @@ class TestPlanUnlock:
         assert plan.source.parts[:2] == ("/", "mnt")
         assert "community" in plan.source.parts
         assert plan.dest == Path("/mnt/worktrees/core") / plan.source.name
+
+    def test_honors_injected_roots_for_a_non_default_base(self) -> None:
+        base = Path("/custom/state/odoo-forge")
+        roots = build_mount_roots(base)
+        manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+
+        plan = plan_unlock(
+            manifest, "custom-x", "https://github.com/ingadhoc/odoo-partner.git", roots
+        )
+
+        assert plan.source == roots["custom"] / "custom-x" / "odoo-partner"
+        assert plan.dest == roots["worktrees"] / "custom-x" / "odoo-partner"
 
     def test_unknown_layer_raises_projection_error(self) -> None:
         manifest = _manifest()
