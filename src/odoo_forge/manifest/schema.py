@@ -70,6 +70,10 @@ class Override(BaseModel):
     ref: str
 
 
+class Workspace(BaseModel):
+    checkout_timeout_seconds: int | None = Field(default=None, gt=0)
+
+
 class Manifest(BaseModel):
     name: str
     odoo_version: str
@@ -78,6 +82,7 @@ class Manifest(BaseModel):
     layers: list[Layer] = []
     client: Client
     overrides: list[Override] = []
+    workspace: Workspace | None = None
 
 
 __all__ = [
@@ -89,5 +94,6 @@ __all__ = [
     "Layer",
     "Client",
     "Override",
+    "Workspace",
     "Manifest",
 ]

@@ -4,7 +4,14 @@ import pytest
 import yaml
 from pydantic import TypeAdapter, ValidationError
 
-from odoo_forge.manifest.schema import CoreLayer, GitLayer, GitRepo, Layer, Manifest, PublishedLayer
+from odoo_forge.manifest.schema import (
+    CoreLayer,
+    GitLayer,
+    GitRepo,
+    Layer,
+    Manifest,
+    PublishedLayer,
+)
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -22,6 +29,24 @@ def test_manifest_requires_core_field() -> None:
     manifest = Manifest.model_validate(_base_manifest_kwargs())
 
     assert isinstance(manifest.core, CoreLayer)
+
+
+def test_manifest_workspace_defaults_to_none() -> None:
+    manifest = Manifest.model_validate(_base_manifest_kwargs())
+
+    assert manifest.workspace is None
+
+
+def test_manifest_workspace_accepts_checkout_timeout_seconds() -> None:
+    manifest = Manifest.model_validate(
+        {
+            **_base_manifest_kwargs(),
+            "workspace": {"checkout_timeout_seconds": 300},
+        }
+    )
+
+    assert manifest.workspace is not None
+    assert manifest.workspace.checkout_timeout_seconds == 300
 
 
 def test_core_default_url_and_ref_none() -> None:
