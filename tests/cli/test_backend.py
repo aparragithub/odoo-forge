@@ -657,6 +657,30 @@ def test_instance_command_manifest_validation_errors_are_field_oriented_and_safe
     assert backend_provider_created is False
 
 
+def test_run_rejects_invalid_backend_bind_host_before_provider_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    invalid_manifest = tmp_path / "project.yaml"
+    invalid_manifest.write_text(_MANIFEST_TEXT + "backend:\n  odoo:\n    bind_host: odoo.local\n")
+    backend_provider_created = False
+
+    def make_backend_provider(**_kwargs: object) -> _FakeBackendProvider:
+        nonlocal backend_provider_created
+        backend_provider_created = True
+        return _FakeBackendProvider()
+
+    monkeypatch.setattr(main, "_make_backend_provider", make_backend_provider)
+
+    result = runner.invoke(app, ["run", "--manifest", str(invalid_manifest)])
+
+    assert result.exit_code == 1
+    assert result.output.splitlines() == [
+        "error: backend.odoo.bind_host: Value error, bind_host must be a valid IPv4 address"
+    ]
+    assert backend_provider_created is False
+    assert "Traceback" not in result.output
+
+
 def test_stop_succeeds_calls_provider_with_derived_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

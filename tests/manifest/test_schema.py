@@ -5,6 +5,7 @@ import yaml
 from pydantic import TypeAdapter, ValidationError
 
 from odoo_forge.manifest.schema import (
+    DEFAULT_ODOO_BIND_HOST,
     BackendConfig,
     CoreLayer,
     GitLayer,
@@ -66,6 +67,32 @@ def test_manifest_backend_accepts_optional_odoo_http_port() -> None:
     )
 
     assert manifest.backend == BackendConfig(odoo=OdooBackendConfig(http_port=18069))
+
+
+def test_manifest_backend_odoo_bind_host_defaults_to_loopback() -> None:
+    Manifest.model_validate(_base_manifest_kwargs())
+
+    assert OdooBackendConfig().bind_host == DEFAULT_ODOO_BIND_HOST
+
+
+def test_manifest_backend_accepts_valid_ipv4_bind_host() -> None:
+    manifest = Manifest.model_validate(
+        {**_base_manifest_kwargs(), "backend": {"odoo": {"bind_host": "192.168.1.20"}}}
+    )
+
+    assert manifest.backend is not None
+    assert manifest.backend.odoo is not None
+    assert manifest.backend.odoo.bind_host == "192.168.1.20"
+
+
+@pytest.mark.parametrize("bind_host", ["odoo.local", "::1", " 192.168.1.20 "])
+def test_manifest_backend_rejects_non_ipv4_bind_host(bind_host: str) -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        Manifest.model_validate(
+            {**_base_manifest_kwargs(), "backend": {"odoo": {"bind_host": bind_host}}}
+        )
+
+    assert exc_info.value.errors()[0]["loc"] == ("backend", "odoo", "bind_host")
 
 
 def test_manifest_backend_rejects_invalid_odoo_http_port() -> None:

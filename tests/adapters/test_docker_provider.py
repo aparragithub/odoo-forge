@@ -578,6 +578,32 @@ def test_run_container_argv_uses_fixed_loopback_port_when_planned() -> None:
     assert "127.0.0.1:0:8072" in argv
 
 
+def test_run_container_argv_uses_planned_bind_host_for_all_odoo_ports() -> None:
+    spec = _make_plan().odoo.model_copy(
+        update={"bind_host": "192.168.1.20", "ports": {"8069": 18069, "8072": None}}
+    )
+
+    argv = _run_container_argv(spec)
+
+    assert "192.168.1.20:18069:8069" in argv
+    assert "192.168.1.20:0:8072" in argv
+    assert not any("127.0.0.1" in value for value in argv)
+
+
+def test_run_container_argv_keeps_postgres_unpublished_for_non_loopback_odoo_host() -> None:
+    base_plan = _make_plan()
+    plan = base_plan.model_copy(
+        update={
+            "odoo": base_plan.odoo.model_copy(update={"bind_host": "192.168.1.20"}),
+        }
+    )
+
+    argv = _run_container_argv(plan.postgres)
+
+    assert "-p" not in argv
+    assert not any("192.168.1.20" in value for value in argv)
+
+
 def test_run_container_argv_uses_secret_files_not_container_environment() -> None:
     secret = "credential-value-not-in-docker-config"
     spec = _make_postgres_spec().model_copy(

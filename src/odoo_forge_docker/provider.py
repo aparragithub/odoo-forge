@@ -133,7 +133,7 @@ def _run_container_argv(
         suffix = ":ro" if mount.read_only else ""
         argv += ["-v", f"{mount.host_path}:{mount.container_path}{suffix}"]
     for container_port, host_port in spec.ports.items():
-        host = "127.0.0.1:0" if host_port is None else f"127.0.0.1:{host_port}"
+        host = f"{spec.bind_host}:{host_port or 0}"
         argv += ["-p", f"{host}:{container_port}"]
     argv.append(spec.image)
     return argv

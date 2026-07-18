@@ -143,6 +143,22 @@ class TestPlanBackend:
 
         assert plan.odoo.ports == {"8069": 18069, "8072": None}
 
+    def test_odoo_bind_host_defaults_to_loopback(self) -> None:
+        plan = plan_backend(_manifest(), _mount_view())
+
+        assert plan.odoo.bind_host == "127.0.0.1"
+        assert plan.postgres.bind_host == "127.0.0.1"
+
+    def test_odoo_bind_host_propagates_without_changing_port_allocation(self) -> None:
+        manifest = _manifest(
+            backend=BackendConfig(odoo=OdooBackendConfig(http_port=18069, bind_host="192.168.1.20"))
+        )
+
+        plan = plan_backend(manifest, _mount_view())
+
+        assert plan.odoo.bind_host == "192.168.1.20"
+        assert plan.odoo.ports == {"8069": 18069, "8072": None}
+
     def test_volumes_named_pg_and_filestore(self) -> None:
         manifest = _manifest()
         mount_view = _mount_view()
