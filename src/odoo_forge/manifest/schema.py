@@ -5,10 +5,11 @@ resolution (SHAs, branch names) happens during composition/materialization
 in later slices.
 """
 
+import ipaddress
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class GitRepo(BaseModel):
@@ -74,8 +75,21 @@ class Workspace(BaseModel):
     checkout_timeout_seconds: int | None = Field(default=None, gt=0)
 
 
+DEFAULT_ODOO_BIND_HOST = "127.0.0.1"
+
+
 class OdooBackendConfig(BaseModel):
     http_port: int | None = Field(default=None, gt=0, le=65535)
+    bind_host: str = Field(default=DEFAULT_ODOO_BIND_HOST, strict=True)
+
+    @field_validator("bind_host")
+    @classmethod
+    def validate_bind_host(cls, value: str) -> str:
+        try:
+            ipaddress.IPv4Address(value)
+        except ipaddress.AddressValueError as exc:
+            raise ValueError("bind_host must be a valid IPv4 address") from exc
+        return value
 
 
 class BackendConfig(BaseModel):
@@ -105,6 +119,7 @@ __all__ = [
     "Override",
     "Workspace",
     "OdooBackendConfig",
+    "DEFAULT_ODOO_BIND_HOST",
     "BackendConfig",
     "Manifest",
 ]
