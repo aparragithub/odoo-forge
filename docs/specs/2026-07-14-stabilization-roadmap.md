@@ -17,6 +17,7 @@
 | Backend materialized-state planning | Complete | Archived `make-backend-planning-consume-materialized-state` change |
 | First Docker PostgreSQL adapter | Complete and archived as superseded planning | `2026-07-15-CHG-DATABASE-ADAPTER-VERIFICATION-CLOSURE/verify-report.md` and `S62` |
 | Unit 4 registry, Git, and workspace runtime-risk recheck | Separate future scope | Requires its own bounded SDD change |
+| Local example Odoo runtime | Practical MVP achieved | `docs/22-example-runtime-guide.md` documents the runnable local flow |
 
 `S62` resolves to the preserved real-Docker receipt in
 [`CHG-FIRST-DATABASE-ADAPTER/apply-progress.md`](../../openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/apply-progress.md).
@@ -38,8 +39,8 @@ Este inventario debe reflejar únicamente directorios no archivados bajo `opensp
 
 ## Qué Sigue Ahora
 
-1. Consolidar el primer MVP técnico: una instancia Odoo local real y corrible sobre el baseline ya logrado de Docker, PostgreSQL y credenciales.
-2. Implementar `SP-DEVELOPER-ONBOARDING` como próximo outcome práctico visible con `forge onboard <cliente>`, apoyado en `CAP-PROJECT-CATALOG`, `CAP-SOURCE`, `CAP-WORKSPACE`, `CAP-LOCAL-BACKEND`, `CAP-CREDENTIALS` y los adapters locales ya aceptados.
+1. Tratar como logrado el primer MVP técnico práctico: una instancia Odoo local real y corrible sobre el baseline ya aceptado de Docker, PostgreSQL y credenciales. La guía operativa quedó en [`docs/22-example-runtime-guide.md`](../22-example-runtime-guide.md).
+2. Implementar `SP-DEVELOPER-ONBOARDING` como próximo SDD y siguiente outcome práctico visible con `forge onboard <cliente>`, apoyado en `CAP-PROJECT-CATALOG`, `CAP-SOURCE`, `CAP-WORKSPACE`, `CAP-LOCAL-BACKEND`, `CAP-CREDENTIALS` y los adapters locales ya aceptados.
 3. Después cerrar los enablers transversales que siguen faltando para datos administrados: `CAP-RESOURCE-OWNERSHIP`, `WF-DATA-COPY` y `SP-CONTROL-PLANE-AUTHORITY`.
 4. Recién después retomar `SP-DATA-ENVIRONMENTS` como outcome posterior de entornos de datos administrados.
 
@@ -50,7 +51,7 @@ Este inventario debe reflejar únicamente directorios no archivados bajo `opensp
 1. Usá `portfolio.json` para claims actuales de estado, dependencias y evidencia.
 2. Usá [`docs/00-master-index.md`](../00-master-index.md) y la serie `01` a `21` para navegación de mantenimiento.
 3. Tratá esta roadmap como contexto de estabilización e historial de secuencia, no como fuente autoritativa de trabajo OpenSpec vivo.
-4. Tomá `SP-DEVELOPER-ONBOARDING` como siguiente outcome práctico y `sp-data-environments` como change vivo posterior, todavía bloqueado.
+4. Tomá `SP-DEVELOPER-ONBOARDING` como próximo SDD y siguiente outcome práctico, y `sp-data-environments` como change vivo posterior, todavía bloqueado.
 5. No inicies implementación de `sp-data-environments` mientras sigan faltando sus handoffs aceptados.
 
 ## No Objetivos Explícitos
