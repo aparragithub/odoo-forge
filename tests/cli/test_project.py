@@ -6,6 +6,7 @@ from typer.testing import CliRunner
 
 from odoo_forge.manifest.errors import CheckoutError
 from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo
+from odoo_forge.manifest.projection import build_mount_roots
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 from odoo_forge_workspace.provider import GitWorkspaceProvider
@@ -95,6 +96,28 @@ def test_valid_lock_projects_every_layer(tmp_path: Path, monkeypatch: pytest.Mon
     assert urls == [
         "https://github.com/odoo/odoo.git",
         "https://example.com/custom-x.git",
+    ]
+
+
+def test_project_checks_out_using_the_resolved_host_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`project` must call `plan_projection` with `main._HOST_ROOTS` — not
+    the fixed container table."""
+    custom_roots = build_mount_roots(Path("/custom/state/odoo-forge"))
+    monkeypatch.setattr(main, "_HOST_ROOTS", custom_roots)
+    fake_provider = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+
+    project_yaml, _lock_path = _write_manifest_and_lock(tmp_path)
+
+    result = runner.invoke(app, ["project", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    dests = [call[2] for call in fake_provider.checkout_calls]
+    assert dests == [
+        custom_roots["community"] / "core" / "odoo",
+        custom_roots["custom"] / "custom-x" / "custom-x",
     ]
 
 
