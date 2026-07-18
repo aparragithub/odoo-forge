@@ -36,8 +36,8 @@ from odoo_forge.manifest.errors import (
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.projection import (
-    MOUNT_ROOTS,
     build_mount_planning_view,
+    build_mount_roots,
     materialize_state,
     plan_projection,
     plan_unlock,
@@ -84,6 +84,48 @@ def _make_backend_provider(
 def _make_image_registry_provider() -> GhcrImageRegistryProvider:
     """Composition root: the ONE place the concrete registry adapter is built."""
     return GhcrImageRegistryProvider()
+
+
+def _resolve_mount_base() -> Path:
+    """Composition root: resolve the HOST mount base from the environment.
+
+    `odoo_forge` core never reads environment variables — this is the ONE
+    place `FORGE_MOUNT_BASE`/`XDG_STATE_HOME` are consulted. Mirrors
+    `DockerBackendProvider._default_authority`
+    (`odoo_forge_postgres_docker/provider.py:481-489`). Precedence:
+    `FORGE_MOUNT_BASE` (if truthy) wins; else
+    `${XDG_STATE_HOME:-~/.local/state} / "odoo-forge"`. An empty-string
+    `FORGE_MOUNT_BASE` is treated as unset.
+
+    The resolved base must be absolute: it becomes the source token of the
+    Docker `-v <source>:<target>` bind mount, and Docker silently reinterprets
+    a non-absolute source as a *named volume* rather than a host bind mount.
+    A relative `FORGE_MOUNT_BASE` therefore fails fast with a clear error; a
+    non-absolute `XDG_STATE_HOME` is ignored per the XDG Base Directory spec.
+    """
+    base = os.environ.get("FORGE_MOUNT_BASE")
+    if base:
+        resolved = Path(base).expanduser()
+        if not resolved.is_absolute():
+            raise ManifestInputError(f"FORGE_MOUNT_BASE must be an absolute path, got {base!r}")
+        return resolved
+    state = os.environ.get("XDG_STATE_HOME")
+    state_home = (
+        Path(state) if state and Path(state).is_absolute() else Path.home() / ".local" / "state"
+    )
+    return state_home.expanduser() / "odoo-forge"
+
+
+# CONTAINER mount base stays the fixed `/mnt` constant (`MOUNT_ROOTS`
+# default in `odoo_forge.manifest.projection`); only the HOST table is
+# resolved from the environment. Resolution runs at import time, so a
+# misconfigured `FORGE_MOUNT_BASE` surfaces as a clean single-line error and
+# a non-zero exit rather than a raw traceback before any command can run.
+try:
+    _HOST_ROOTS = build_mount_roots(_resolve_mount_base())
+except ManifestInputError as exc:
+    typer.echo(f"error: {exc}", err=True)
+    raise SystemExit(1) from exc
 
 
 @app.callback()
@@ -249,8 +291,8 @@ def validate(
         compose(parsed)
         lock = _load_lock(manifest.parent / "project.lock")
         provider = _make_workspace_provider()
-        scanned = provider.scan(list(MOUNT_ROOTS.values()))
-        materialized = materialize_state(scanned, MOUNT_ROOTS)
+        scanned = provider.scan(list(_HOST_ROOTS.values()))
+        materialized = materialize_state(scanned, _HOST_ROOTS)
         report = detect_drift(parsed, lock, materialized)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -346,7 +388,7 @@ def project(
         if loaded_lock is None:
             raise LockfileError(f"no lockfile found at '{lock_path}' — run `forge lock` first")
 
-        plan = plan_projection(parsed, loaded_lock)
+        plan = plan_projection(parsed, loaded_lock, _HOST_ROOTS)
         provider = _make_workspace_provider()
         project_workspace(plan, provider)
     except ManifestError as exc:
@@ -383,7 +425,7 @@ def unlock(
     # traceback. `source`/`dest`/`branch` are computed here in the pure core
     # (`plan_unlock`) — the adapter only executes the worktree move.
     try:
-        unlock_plan = plan_unlock(parsed, layer, repo)
+        unlock_plan = plan_unlock(parsed, layer, repo, _HOST_ROOTS)
         provider = _make_workspace_provider()
         provider.promote(unlock_plan.source, unlock_plan.dest, unlock_plan.branch)
     except ManifestError as exc:
@@ -440,14 +482,14 @@ def run(
     # created before raising.
     try:
         workspace_provider = _make_workspace_provider()
-        scanned = workspace_provider.scan(list(MOUNT_ROOTS.values()))
-        materialized = materialize_state(scanned, MOUNT_ROOTS)
+        scanned = workspace_provider.scan(list(_HOST_ROOTS.values()))
+        materialized = materialize_state(scanned, _HOST_ROOTS)
         mount_view = build_mount_planning_view(
             parsed,
             _load_lock(manifest.parent / "project.lock"),
             scanned,
             materialized,
-            MOUNT_ROOTS,
+            _HOST_ROOTS,
         )
         plan = plan_backend(
             parsed,

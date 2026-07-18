@@ -30,13 +30,25 @@ if TYPE_CHECKING:
 # projection only ever targets the other 4 roots.
 MountRoot = Literal["custom", "community", "localization", "enterprise"]
 
-MOUNT_ROOTS: dict[str, Path] = {
-    "community": Path("/mnt/community"),
-    "custom": Path("/mnt/custom"),
-    "localization": Path("/mnt/localization"),
-    "enterprise": Path("/mnt/enterprise"),
-    "worktrees": Path("/mnt/worktrees"),
-}
+# Fixed: container FS convention. `plan_backend` derives the mount root name
+# from `evidence.container_path.parts[2]` (`backend/plan.py:86`), so the
+# CONTAINER base must never vary with the HOST base — only the HOST base is
+# configurable (resolved at the CLI composition root, `odoo_forge_cli.main`).
+CONTAINER_MOUNT_BASE: Path = Path("/mnt")
+
+
+def build_mount_roots(base: Path) -> dict[str, Path]:
+    """Build the fixed 5-root table rooted at `base`. Pure, zero I/O."""
+    return {
+        "community": base / "community",
+        "custom": base / "custom",
+        "localization": base / "localization",
+        "enterprise": base / "enterprise",
+        "worktrees": base / "worktrees",
+    }
+
+
+MOUNT_ROOTS: dict[str, Path] = build_mount_roots(CONTAINER_MOUNT_BASE)
 
 
 class ScannedRepo(BaseModel):
@@ -103,10 +115,13 @@ def classify_root(layer: CoreLayer | GitLayer | PublishedLayer) -> MountRoot:
     return "custom"
 
 
-def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
+def plan_projection(
+    manifest: Manifest, lock: Lockfile, roots: Mapping[str, Path] = MOUNT_ROOTS
+) -> WorkspacePlan:
     """Join v2 `lock.git_layers` to the current manifest by name and classify each
     to a mount root, preserving Git-layer order. Published entries are retained
-    in the lock but have no Git checkout. Pure, zero I/O.
+    in the lock but have no Git checkout. Pure, zero I/O; `roots` is injectable,
+    defaulting to the fixed container table.
 
     Raises `ProjectionError` naming the orphaned layer when a locked layer
     has no matching manifest layer — no partial plan is ever returned.
@@ -133,23 +148,26 @@ def plan_projection(manifest: Manifest, lock: Lockfile) -> WorkspacePlan:
                     layer=lock_layer.name,
                     url=repo.url,
                     commit=repo.commit,
-                    target_path=MOUNT_ROOTS[mount_root] / lock_layer.name / _repo_name(repo.url),
+                    target_path=roots[mount_root] / lock_layer.name / _repo_name(repo.url),
                 )
             )
 
     return WorkspacePlan(steps=steps)
 
 
-def plan_unlock(manifest: Manifest, layer_name: str, repo_url: str) -> UnlockPlan:
+def plan_unlock(
+    manifest: Manifest, layer_name: str, repo_url: str, roots: Mapping[str, Path] = MOUNT_ROOTS
+) -> UnlockPlan:
     """Compute the `source`/`dest`/`branch` promotion target for `unlock`.
 
-    Pure, zero I/O: classifies `layer_name` against `manifest` to find its
-    read-only mount root (mirroring `plan_projection`), then derives the
-    `source` read-only checkout path, the `dest` writable worktree path
-    under the reserved `worktrees` root, and a deterministic `branch` name.
-    Raises `ProjectionError` when the layer is unknown or the repository URL
-    is not declared by that layer. The adapter's `promote` is the one that
-    later raises `AlreadyUnlockedError` if `dest` already exists.
+    Pure, zero I/O; `roots` is injectable, defaulting to the fixed container
+    table. Classifies `layer_name` against `manifest` to find its read-only
+    mount root (mirroring `plan_projection`), then derives the `source`
+    read-only checkout path, the `dest` writable worktree path under the
+    reserved `worktrees` root, and a deterministic `branch` name. Raises
+    `ProjectionError` when the layer is unknown or the repository URL is not
+    declared by that layer. The adapter's `promote` is the one that later
+    raises `AlreadyUnlockedError` if `dest` already exists.
     """
     manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
         "core": manifest.core,
@@ -182,8 +200,8 @@ def plan_unlock(manifest: Manifest, layer_name: str, repo_url: str) -> UnlockPla
     )
     repo_name = _repo_name(effective_url)
     return UnlockPlan(
-        source=MOUNT_ROOTS[mount_root] / layer_name / repo_name,
-        dest=MOUNT_ROOTS["worktrees"] / layer_name / repo_name,
+        source=roots[mount_root] / layer_name / repo_name,
+        dest=roots["worktrees"] / layer_name / repo_name,
         branch=f"unlock/{layer_name}/{repo_name}",
     )
 
@@ -255,8 +273,15 @@ def build_mount_planning_view(
     scanned: Sequence[ScannedRepo],
     state: MaterializedState,
     roots: Mapping[str, Path],
+    container_roots: Mapping[str, Path] = MOUNT_ROOTS,
 ) -> MountPlanningView:
-    """Validate scan facts and select one authoritative bind per locked repository."""
+    """Validate scan facts and select one authoritative bind per locked repository.
+
+    `roots` is the HOST table (used for scan matching, dedup, and
+    `source_path`). `container_roots` is the CONTAINER table (used ONLY for
+    `MountEvidence.container_path`), defaulting to the fixed `/mnt` table so
+    the container side never varies with a custom host base.
+    """
     if lock is None:
         raise MountPlanningError("mount planning requires a project lock")
     if detect_drift(manifest, lock, None).manifest_lock_drift:
@@ -268,7 +293,7 @@ def build_mount_planning_view(
     if len(expected) != len(plan.steps):
         raise MountPlanningError("lock contains duplicate repository identities")
     container_paths = [
-        roots[step.mount_root] / step.layer / _repo_name(step.url) for step in plan.steps
+        container_roots[step.mount_root] / step.layer / _repo_name(step.url) for step in plan.steps
     ]
     if len(set(container_paths)) != len(container_paths):
         raise MountPlanningError("lock contains conflicting projected container paths")
@@ -324,7 +349,7 @@ def build_mount_planning_view(
                 layer=step.layer,
                 url=step.url,
                 source_path=evidence.path,
-                container_path=roots[step.mount_root] / step.layer / _repo_name(step.url),
+                container_path=container_roots[step.mount_root] / step.layer / _repo_name(step.url),
                 read_only="worktree" not in by_source,
             )
         )
@@ -428,7 +453,9 @@ def _repo_name(url: str) -> str:
 
 __all__ = [
     "MountRoot",
+    "CONTAINER_MOUNT_BASE",
     "MOUNT_ROOTS",
+    "build_mount_roots",
     "ScannedRepo",
     "WorkspacePlanEntry",
     "WorkspacePlan",
