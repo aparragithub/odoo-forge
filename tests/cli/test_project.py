@@ -31,6 +31,8 @@ _MANIFEST_TEXT = (
     "  addons_path: client/addons\n"
 )
 
+_MANIFEST_TEXT_WITH_TIMEOUT = _MANIFEST_TEXT + ("workspace:\n  checkout_timeout_seconds: 300\n")
+
 
 class _FakeWorkspaceProvider:
     """Records `checkout` calls in order, no I/O."""
@@ -52,9 +54,11 @@ class _FakeWorkspaceProvider:
         raise NotImplementedError
 
 
-def _write_manifest_and_lock(tmp_path: Path) -> tuple[Path, Path]:
+def _write_manifest_and_lock(
+    tmp_path: Path, manifest_text: str = _MANIFEST_TEXT
+) -> tuple[Path, Path]:
     project_yaml = tmp_path / "project.yaml"
-    project_yaml.write_text(_MANIFEST_TEXT)
+    project_yaml.write_text(manifest_text)
 
     lock = Lockfile(
         generated_from="irrelevant-for-projection",
@@ -247,3 +251,31 @@ def test_missing_lock_exits_clean_one_error(
     assert result.output.count("error:") == 1
     assert "Traceback" not in result.output
     assert not fake_provider.checkout_calls
+
+
+def test_project_uses_manifest_workspace_checkout_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    observed_timeouts: list[float] = []
+
+    class _RecordingGitWorkspaceProvider:
+        def __init__(self, timeout: float = 60) -> None:
+            observed_timeouts.append(timeout)
+            self.checkout_calls: list[tuple[str, str, Path]] = []
+
+        def checkout(self, url: str, commit: str, dest: Path) -> None:
+            self.checkout_calls.append((url, commit, dest))
+
+        def scan(self, roots: object) -> list[object]:
+            raise NotImplementedError
+
+        def promote(self, source: Path, dest: Path, branch: str) -> None:
+            raise NotImplementedError
+
+    project_yaml, _lock_path = _write_manifest_and_lock(tmp_path, _MANIFEST_TEXT_WITH_TIMEOUT)
+
+    monkeypatch.setitem(main.__dict__, "GitWorkspaceProvider", _RecordingGitWorkspaceProvider)
+    result = runner.invoke(app, ["project", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert observed_timeouts == [300.0]
