@@ -39,7 +39,7 @@ When multiple catalog records match the supplied identifiers, the capability MUS
 
 A successful resolved catalog result MUST provide the authoritative downstream inputs for the selected project/client record: manifest reference, source context, data-policy default, and target default.
 
-Each resolved field MUST be present in the successful result and MUST originate from catalog authority or catalog-declared defaults. Downstream consumers MUST be able to consume the same resolved result without re-implementing manifest lookup, source-context selection, data-policy defaulting, or target defaulting.
+Each resolved field MUST be present in the successful result and MUST originate from catalog authority or catalog-declared defaults. A required string default (data-policy default, target default) that is present but blank or whitespace-only MUST be treated as missing, not as a materialized value, so that empty data can never reach downstream consumers as if it were authoritative. Downstream consumers MUST be able to consume the same resolved result without re-implementing manifest lookup, source-context selection, data-policy defaulting, or target defaulting.
 
 The resolved result MAY include identifying metadata needed to trace the authority that produced it, but it MUST NOT require consumers to infer missing required fields.
 
@@ -58,6 +58,14 @@ The resolved result MAY include identifying metadata needed to trace the authori
 - WHEN project-catalog resolution runs
 - THEN the system MUST fail with an explicit invalid-catalog outcome
 - AND it MUST NOT return a partial success result
+
+#### Scenario: Blank required default is treated as missing
+
+- GIVEN a catalog record whose data-policy default or target default is present but blank or whitespace-only
+- WHEN project-catalog resolution runs
+- THEN the system MUST fail with an explicit invalid-catalog outcome
+- AND the failure classification MUST be indistinguishable from the same field being absent
+- AND it MUST NOT return a result carrying the blank value as an authoritative default
 
 ### Requirement: Catalog-Owned Defaults and Failure Semantics
 
