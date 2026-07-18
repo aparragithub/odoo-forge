@@ -68,6 +68,25 @@ def _write_manifest(tmp_path: Path) -> Path:
     return project_yaml
 
 
+def _write_manifest_with_backend_http_port(tmp_path: Path, http_port: int) -> Path:
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(_MANIFEST_TEXT + f"backend:\n  odoo:\n    http_port: {http_port}\n")
+    (tmp_path / "project.lock").write_text(
+        Lockfile(
+            generated_from=compute_manifest_hash(
+                Manifest.model_validate(yaml.safe_load(project_yaml.read_text()))
+            ),
+            git_layers=[
+                ResolvedGitLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=_CORE_URL, ref="19.0", commit=_CORE_COMMIT)],
+                )
+            ],
+        ).to_canonical_json()
+    )
+    return project_yaml
+
+
 class _FakeWorkspaceProvider:
     """Returns complete core evidence unless a test selects a failure mode."""
 
@@ -377,6 +396,31 @@ def test_run_with_odoo_image_ref_passes_canonical_digest_to_planner(
     assert len(fake_backend.run_calls) == 1
     assert fake_backend.run_calls[0].odoo.image == odoo_image_ref
     assert expected_ref.odoo_container in result.output
+
+
+def test_run_passes_manifest_configured_odoo_http_port_to_backend_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_workspace = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+
+    expected_ref = InstanceRef(
+        project="odoo-idp",
+        instance="default",
+        network="odoo-forge-odoo-idp-default",
+        postgres_container="odoo-forge-odoo-idp-default-db",
+        odoo_container="odoo-forge-odoo-idp-default-odoo",
+    )
+    fake_backend = _FakeBackendProvider(run_result=expected_ref)
+    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+
+    project_yaml = _write_manifest_with_backend_http_port(tmp_path, 18069)
+
+    result = runner.invoke(app, ["run", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert len(fake_backend.run_calls) == 1
+    assert fake_backend.run_calls[0].odoo.ports == {"8069": 18069, "8072": None}
 
 
 def test_run_rejects_non_digest_odoo_image_ref_before_backend(
