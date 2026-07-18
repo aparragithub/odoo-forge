@@ -125,4 +125,3 @@ branch name, or exit non-zero on `AlreadyUnlockedError`/`ScanError`.
 - WHEN `forge unlock --layer core --repo <url>` runs
 - THEN `promote` is called with `dest` under
   `~/.local/state/odoo-forge/worktrees/`, and the command exits zero
-</content>
