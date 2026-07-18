@@ -63,6 +63,10 @@ _PULL_IMAGE_NOT_FOUND_MARKERS = (
     "not found",
     "does not exist",
 )
+_LOCAL_IMAGE_NOT_FOUND_MARKERS = (
+    "no such image",
+    "unable to find image",
+)
 _PULL_AUTH_MARKERS = (
     "pull access denied",
     "unauthorized",
@@ -219,7 +223,7 @@ class DockerBackendProvider:
 
         created: list[_CreatedResource] = []
         try:
-            self._pull_image(plan.odoo)
+            self._ensure_odoo_image(plan.odoo)
             self._ensure_network(plan.network, created)
             pgdata_created = self._ensure_volume(plan.postgres.volumes[0], created)
             for volume in plan.volumes:
@@ -426,6 +430,21 @@ class DockerBackendProvider:
         if any(marker in lowered for marker in _PULL_IMAGE_NOT_FOUND_MARKERS):
             raise ImageNotFoundError(stderr or f"image not found: {spec.image!r}")
         raise ContainerRunError(stderr or f"docker pull failed for {spec.image!r}")
+
+    def _ensure_odoo_image(self, spec: ContainerSpec) -> None:
+        """Use the exact local image reference, pulling only when it is absent."""
+        result = self._run_raw(["docker", "image", "inspect", spec.image])
+        if result.returncode == 0:
+            return
+
+        stderr = " ".join((result.stderr or "").split())
+        lowered = stderr.lower()
+        if _DAEMON_DOWN_MARKER.lower() in lowered:
+            raise DockerUnavailableError(stderr)
+        if any(marker in lowered for marker in _LOCAL_IMAGE_NOT_FOUND_MARKERS):
+            self._pull_image(spec)
+            return
+        raise ContainerRunError(stderr or f"docker image inspect failed for {spec.image!r}")
 
     def _rollback(self, created: list[_CreatedResource]) -> list[str]:
         """Tear down ONLY resources this invocation created, in reverse order.

@@ -172,6 +172,8 @@ class _Router:
         self.kwargs: list[dict[str, object]] = []
         self.not_found: set[str] = set()
         self.pull_error_stderr: str | None = None
+        self.image_inspect_stderr: str | None = "Error: No such image: odoo-forge-odoo:19.0"
+        self.image_inspect_returncode = 1
         self.pg_ready_after: int = 0
         self._pg_attempts = 0
         self.odoo_healthy_after: int = 0
@@ -193,6 +195,11 @@ class _Router:
                 return _FakeCompletedProcess(1)
             return _FakeCompletedProcess(
                 0, stdout=json.dumps([{"Labels": self._volume_labels.get(name, {})}])
+            )
+        if argv[1:3] == ["image", "inspect"]:
+            return _FakeCompletedProcess(
+                self.image_inspect_returncode,
+                stderr=self.image_inspect_stderr or "",
             )
         if argv[1] == "inspect" and len(argv) == 3:
             name = argv[2]
@@ -754,6 +761,67 @@ def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch
         if isinstance(env, dict):
             assert env["LANG"] == "C"
             assert env["LC_ALL"] == "C"
+
+
+def test_run_uses_exact_local_odoo_image_without_pulling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        image_inspect_returncode=0,
+        image_inspect_stderr=None,
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+
+    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    assert ["docker", "image", "inspect", _make_plan().odoo.image] in router.calls
+    assert not any(call[1] == "pull" for call in router.calls)
+
+
+def test_run_pulls_exact_odoo_image_only_when_local_inspection_reports_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+
+    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    inspect_idx = router.calls.index(["docker", "image", "inspect", _make_plan().odoo.image])
+    pull_idx = next(i for i, call in enumerate(router.calls) if call[1] == "pull")
+    assert inspect_idx < pull_idx
+    assert router.calls[pull_idx] == ["docker", "pull", _make_plan().odoo.image]
+
+
+def test_run_fails_closed_on_unexpected_local_image_inspection_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        image_inspect_stderr="permission denied while inspecting image",
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+
+    with pytest.raises(ContainerRunError, match="permission denied"):
+        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    assert not any(call[1] == "pull" for call in router.calls)
+    assert not any(call[1:3] == ["network", "create"] for call in router.calls)
+
+
+def test_run_classifies_local_image_daemon_failure_without_pulling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        image_inspect_stderr="Cannot connect to the Docker daemon at unix:///var/run/docker.sock",
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+
+    with pytest.raises(DockerUnavailableError):
+        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    assert not any(call[1] == "pull" for call in router.calls)
 
 
 def test_preexisting_volume_is_not_created_or_owned(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1331,6 +1399,24 @@ def test_run_pull_failures_map_to_typed_backend_errors(
         provider.run(_make_plan())
 
     assert any(call[1] == "pull" for call in router.calls)
+    assert not any(call[1] == "run" for call in router.calls)
+
+
+def test_run_maps_generic_pull_failure_after_local_image_miss(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        pull_error_stderr="unexpected pull failure: checksum mismatch",
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+
+    with pytest.raises(ContainerRunError, match="unexpected pull failure: checksum mismatch"):
+        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+
+    inspect_idx = router.calls.index(["docker", "image", "inspect", _make_plan().odoo.image])
+    pull_idx = next(i for i, call in enumerate(router.calls) if call[1] == "pull")
+    assert inspect_idx < pull_idx
     assert not any(call[1] == "run" for call in router.calls)
 
 
