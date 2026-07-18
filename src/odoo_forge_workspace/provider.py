@@ -136,9 +136,7 @@ class GitWorkspaceProvider:
         tmp_dir = tempfile.mkdtemp(dir=dest.parent)
         clone_path = Path(tmp_dir)
         try:
-            # `--` marks end-of-options so a `url`/`dest` beginning with `-`
-            # is always treated as a positional, never a git flag.
-            self._run(["git", "clone", "--no-checkout", "--", url, str(clone_path)])
+            self._clone(url, clone_path)
             # `git checkout` has no clean end-of-options form for a revision,
             # so we rely on `commit` already being a resolved 40-char SHA and
             # pass `--detach` to keep the checkout headless.
@@ -148,6 +146,40 @@ class GitWorkspaceProvider:
             raise
 
         self._atomic_swap(clone_path, dest)
+
+    def _clone(self, url: str, clone_path: Path) -> None:
+        """Clone `url` into `clone_path`, preferring a partial clone.
+
+        Attempts `git clone --filter=blob:none --no-checkout` first, so only
+        the commit/tree graph is fetched and blobs are lazily fetched later
+        by `checkout`. If the remote does not support the filter (or any
+        other clone failure occurs), `clone_path` is removed and a single
+        full-clone retry (`--no-checkout`, no `--filter`) is attempted. `git
+        clone` requires an empty/absent target, so `clone_path` must not
+        exist when the retry runs. A second failure propagates unchanged.
+        """
+        # `--` marks end-of-options so a `url`/`dest` beginning with `-`
+        # is always treated as a positional, never a git flag.
+        try:
+            self._run(
+                [
+                    "git",
+                    "clone",
+                    "--filter=blob:none",
+                    "--no-checkout",
+                    "--",
+                    url,
+                    str(clone_path),
+                ]
+            )
+            return
+        except CheckoutError:
+            pass
+
+        # Retry outside the `except` block so a second failure does not
+        # implicitly chain onto the first via `__context__`.
+        shutil.rmtree(clone_path, ignore_errors=True)
+        self._run(["git", "clone", "--no-checkout", "--", url, str(clone_path)])
 
     @staticmethod
     def _atomic_swap(clone_path: Path, dest: Path) -> None:
