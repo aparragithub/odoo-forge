@@ -5,11 +5,13 @@ import yaml
 from pydantic import TypeAdapter, ValidationError
 
 from odoo_forge.manifest.schema import (
+    BackendConfig,
     CoreLayer,
     GitLayer,
     GitRepo,
     Layer,
     Manifest,
+    OdooBackendConfig,
     PublishedLayer,
 )
 
@@ -47,6 +49,35 @@ def test_manifest_workspace_accepts_checkout_timeout_seconds() -> None:
 
     assert manifest.workspace is not None
     assert manifest.workspace.checkout_timeout_seconds == 300
+
+
+def test_manifest_backend_defaults_to_none() -> None:
+    manifest = Manifest.model_validate(_base_manifest_kwargs())
+
+    assert manifest.backend is None
+
+
+def test_manifest_backend_accepts_optional_odoo_http_port() -> None:
+    manifest = Manifest.model_validate(
+        {
+            **_base_manifest_kwargs(),
+            "backend": {"odoo": {"http_port": 18069}},
+        }
+    )
+
+    assert manifest.backend == BackendConfig(odoo=OdooBackendConfig(http_port=18069))
+
+
+def test_manifest_backend_rejects_invalid_odoo_http_port() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        Manifest.model_validate(
+            {
+                **_base_manifest_kwargs(),
+                "backend": {"odoo": {"http_port": 70000}},
+            }
+        )
+
+    assert exc_info.value.errors()[0]["loc"] == ("backend", "odoo", "http_port")
 
 
 def test_core_default_url_and_ref_none() -> None:
