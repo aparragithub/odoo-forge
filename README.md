@@ -1,36 +1,42 @@
 # odoo-forge
 
-Modular Odoo platform: layered projects, declarative manifests, pluggable execution backends.
+Plataforma modular para Odoo: proyectos por capas, manifests declarativos y backends de ejecución desacoplados.
 
-An Odoo project (core + enterprise + OCA + localization + custom addons) is a **declarative definition**, not a repository layout. Layers are versioned, published artifacts; execution environments (local Docker, IDP server, EC2, Kubernetes, Fargate) are interchangeable backends — install only what you need.
+Un proyecto Odoo no se modela como un layout fijo de repositorios, sino como una definición declarativa de capas, versiones, overrides y runtime. La intención del sistema es mantener separado el core de dominio de los adapters concretos para Git, Docker, registry, filesystem y futuras superficies de plataforma.
 
-## Status
+## Estado actual
 
-The operational implementation includes manifest and lockfile handling, effective published-layer
-and override resolution, Git-backed workspace materialization, materialized-state-aware backend
-planning, the local Docker Odoo/PostgreSQL backend, the isolated Docker PostgreSQL
-`DatabaseProvider` adapter, GHCR image operations, and the image factory.
+La implementación operativa actual incluye:
 
-Provider-neutral credentials, data artifacts, project-catalog resolution, and durable operations
-are implemented foundations. They are not yet wired into a managed data-environment workflow.
-Tenancy, a control plane, remote backends, RBAC, and a web UI remain target state. The authoritative
-product status, dependencies, and acceptance evidence are in
-[`docs/specs/platform/portfolio.json`](docs/specs/platform/portfolio.json); the
-[current stabilization roadmap](docs/specs/2026-07-14-stabilization-roadmap.md) orders the active
-work. See the [current implementation guide](docs/diagrams/odoo-forge-current-implementation-guide.md)
-for the shipped boundary. The [complete-platform diagram](docs/diagrams/odoo-forge-complete-platform.mmd)
-is target-state context, not a statement of current implementation.
+- manejo de `project.yaml` y `project.lock`;
+- resolución efectiva de capas y overrides;
+- materialización de workspace respaldada por Git;
+- planning de backend a partir de estado materializado;
+- backend local Odoo/PostgreSQL sobre Docker;
+- adapter aislado `DatabaseProvider` para PostgreSQL en Docker;
+- operaciones de imágenes en GHCR;
+- image factory para imágenes base.
 
-## Roadmap
+También existen foundations neutrales al provider para credenciales, artefactos de datos, catálogo de proyectos y operaciones durables. Esas piezas todavía no están conectadas a un flujo operativo administrado de data environments.
 
-The [current stabilization roadmap](docs/specs/2026-07-14-stabilization-roadmap.md) orders the next
-reviewable work. The [active OpenSpec change](openspec/changes/refresh-platform-roadmap-after-stabilization/proposal.md)
-tracks this reconciliation; [`sp-data-environments`](openspec/changes/sp-data-environments/proposal.md)
-remains blocked. `docs/specs/platform/portfolio.json` remains authoritative for product status and
-dependencies.
+Tenancy, control plane, backends remotos, RBAC y UI web siguen siendo estado objetivo. La fuente estructural y canónica para estado de producto, dependencias, evidencia y handoffs es [`docs/specs/platform/portfolio.json`](docs/specs/platform/portfolio.json).
 
-1. **Operational foundation** — image factory, CLI core, workspace materialization, local Docker backend, Docker PostgreSQL adapter, and GHCR adapter. Implemented.
-2. **Provider-neutral foundations** — credentials, data artifacts, `DatabaseProvider`, project catalog, and durable operations. Implemented; managed consumers remain separate work.
-3. **Published layers** — version/digest resolution and Git overrides are implemented.
-4. **Platform workflows** — managed data environments, tenancy, control plane, governance, and actor journeys. Blocked, planned, or absent as recorded in the portfolio.
-5. **Remote backends and interfaces** — EC2, Kubernetes, Fargate, RBAC, and web UI. Target state only.
+## Por dónde entrar
+
+- Si querés navegar la documentación de mantenimiento, empezá en [`docs/00-master-index.md`](docs/00-master-index.md).
+- Si querés entender el límite de lo implementado hoy, seguí con [`docs/diagrams/odoo-forge-current-implementation-guide.md`](docs/diagrams/odoo-forge-current-implementation-guide.md).
+- Si querés entender la estructura del repositorio, seguí con [`docs/01-repository-map.md`](docs/01-repository-map.md).
+
+## Verdad actual sobre roadmap y OpenSpec
+
+- El árbol vivo de `openspec/changes/` tiene solo un change activo: [`sp-data-environments`](openspec/changes/sp-data-environments/proposal.md).
+- `refresh-platform-roadmap-after-stabilization` ya no es trabajo activo: quedó archivado en `openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization/`.
+- `fix-roadmap-refresh-verification-closure` también es historia archivada, no trabajo vivo.
+- La roadmap fechada [`docs/specs/2026-07-14-stabilization-roadmap.md`](docs/specs/2026-07-14-stabilization-roadmap.md) debe leerse como secuencia y contexto histórico de estabilización, no como inventario autoritativo de changes activos.
+
+## Resumen de dirección
+
+1. Fundación operativa: image factory, CLI core, materialización de workspace, backend local Docker, adapter PostgreSQL en Docker y adapter GHCR. Implementado.
+2. Foundations neutrales al provider: credenciales, artefactos de datos, `DatabaseProvider`, catálogo de proyectos y operaciones durables. Implementadas, pero todavía separadas de flujos administrados.
+3. Workflows de plataforma: data environments administrados, tenancy, control plane, gobernanza y journeys por actor. Bloqueados, planificados o ausentes según `portfolio.json`.
+4. Superficies remotas e interfaces: EC2, Kubernetes, Fargate, RBAC y UI web. Estado objetivo.

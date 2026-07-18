@@ -16,10 +16,14 @@ Este documento explica el diagrama `odoo-forge-current-implementation.mmd` en pa
 Leé este documento como una guía de lo que está entregado hoy. Para estado, dependencias y evidencia
 de aceptación, la fuente de verdad es el
 [`portfolio.json`](../specs/platform/portfolio.json). La
-[hoja de ruta de estabilización](../specs/2026-07-14-stabilization-roadmap.md) ordena el trabajo
-activo, incluido este [cambio OpenSpec](../../openspec/changes/refresh-platform-roadmap-after-stabilization/proposal.md);
-`sp-data-environments` sigue bloqueado. El diagrama de plataforma completa es una referencia de
-estado objetivo/histórica: no describe componentes desplegados hoy.
+[hoja de ruta de estabilización](../specs/2026-07-14-stabilization-roadmap.md) debe leerse como
+secuencia histórica de estabilización y no como inventario autoritativo de changes vivos. El árbol
+actual de `openspec/changes/` tiene solo un change activo:
+[`sp-data-environments`](../../openspec/changes/sp-data-environments/proposal.md), que sigue
+bloqueado. `refresh-platform-roadmap-after-stabilization` quedó archivado y ya no debe tratarse
+como trabajo activo. Para navegación general de maintainers, empezá en
+[`docs/00-master-index.md`](../00-master-index.md). El diagrama de plataforma completa es una
+referencia de estado objetivo/histórica: no describe componentes desplegados hoy.
 
 ## Resumen rápido
 

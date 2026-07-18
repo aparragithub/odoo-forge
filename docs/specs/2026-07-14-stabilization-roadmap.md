@@ -1,12 +1,14 @@
-# Current Stabilization Roadmap
+# Hoja De Ruta De Estabilización 2026-07-14
 
-**Status:** reconciled with HEAD through `bbfd166` and the planning-only merge `a44bae9`.
+> **Documento de secuencia e historia preservada.** La fuente estructural y canónica para estado,
+> dependencias, evidencia y handoffs es [`docs/specs/platform/portfolio.json`](platform/portfolio.json).
+> La serie de mantenimiento vigente empieza en [`docs/00-master-index.md`](../00-master-index.md).
+> Los changes archivados en `openspec/changes/archive/` se preservan como evidencia y no se
+> reescriben para simular actualidad.
 
-`docs/specs/platform/portfolio.json` is the authoritative product, dependency, and evidence
-record. This document is the review-facing sequence only; archived OpenSpec and dated roadmaps
-remain historical evidence and are never rewritten.
+**Estado de vigencia:** roadmap fechada, útil como contexto de estabilización y secuencia de revisión.
 
-## Current State
+## Estado Relevante
 
 | Area | State | Evidence |
 |---|---|---|
@@ -20,28 +22,38 @@ remain historical evidence and are never rewritten.
 [`CHG-FIRST-DATABASE-ADAPTER/apply-progress.md`](../../openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/apply-progress.md).
 The archived closure independently records five passing real-Docker adapter scenarios.
 
-## Active OpenSpec Inventory
+## Inventario OpenSpec Vigente
 
-Every non-archived directory under `openspec/changes/` is listed here.
+Este inventario debe reflejar únicamente directorios no archivados bajo `openspec/changes/`.
 
-| Active change | Classification | Correct next step |
+| Change vivo | Clasificación | Siguiente paso correcto |
 |---|---|---|
-| [`refresh-platform-roadmap-after-stabilization`](../../openspec/changes/refresh-platform-roadmap-after-stabilization/proposal.md) | Active documentation reconciliation | Complete its chained authority, current-guidance, then derived-artifact slices. |
-| [`sp-data-environments`](../../openspec/changes/sp-data-environments/proposal.md) | Blocked | Keep active; resume only when `WF-DATA-COPY` and `SP-CONTROL-PLANE-AUTHORITY` have accepted evidence. |
+| [`sp-data-environments`](../../openspec/changes/sp-data-environments/proposal.md) | Activo pero bloqueado | Mantenerlo como único change vivo, sin tomarlo como próximo paso MVP; reanudar solo cuando `WF-DATA-COPY`, `CAP-RESOURCE-OWNERSHIP` y `SP-CONTROL-PLANE-AUTHORITY` tengan evidencia aceptada. |
 
-`sp-data-environments (blocked)` remains active; this change does not alter its prerequisites.
+`sp-data-environments` sigue siendo el único change activo del árbol vivo; esta roadmap no cambia sus prerequisitos, pero sí aclara que no es el siguiente outcome práctico a implementar.
 
-`CHG-FIRST-DATABASE-ADAPTER` is archived as superseded. Its preserved planning bytes and the
-traceable closure pointer are in
-[`archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/archive-report.md`](../../openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/archive-report.md).
+`refresh-platform-roadmap-after-stabilization` ya no forma parte del inventario activo: quedó archivado en [`archive/2026-07-17-refresh-platform-roadmap-after-stabilization/`](../../openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization/). Lo mismo aplica a `fix-roadmap-refresh-verification-closure`, preservado bajo [`archive/2026-07-16-fix-roadmap-refresh-verification-closure/`](../../openspec/changes/archive/2026-07-16-fix-roadmap-refresh-verification-closure/).
 
-## Next Sequence
+`CHG-FIRST-DATABASE-ADAPTER` está archivado como superseded. Su cierre trazable sigue en [`archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/archive-report.md`](../../openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/archive-report.md).
 
-1. Finish the active roadmap-reconciliation change in reviewable chained slices.
-2. Keep Unit 4 runtime-risk recheck independent from documentation reconciliation.
-3. Do not start `sp-data-environments` implementation until all of its accepted handoffs exist.
+## Qué Sigue Ahora
 
-## Explicit Non-Goals
+1. Consolidar el primer MVP técnico: una instancia Odoo local real y corrible sobre el baseline ya logrado de Docker, PostgreSQL y credenciales.
+2. Implementar `SP-DEVELOPER-ONBOARDING` como próximo outcome práctico visible con `forge onboard <cliente>`, apoyado en `CAP-PROJECT-CATALOG`, `CAP-SOURCE`, `CAP-WORKSPACE`, `CAP-LOCAL-BACKEND`, `CAP-CREDENTIALS` y los adapters locales ya aceptados.
+3. Después cerrar los enablers transversales que siguen faltando para datos administrados: `CAP-RESOURCE-OWNERSHIP`, `WF-DATA-COPY` y `SP-CONTROL-PLANE-AUTHORITY`.
+4. Recién después retomar `SP-DATA-ENVIRONMENTS` como outcome posterior de entornos de datos administrados.
+
+`.scratch/dev-onboarding/spec.md` debe leerse como spec primaria de `SP-DEVELOPER-ONBOARDING`, no como avance primario de `SP-DATA-ENVIRONMENTS`.
+
+## Secuencia De Lectura Actual
+
+1. Usá `portfolio.json` para claims actuales de estado, dependencias y evidencia.
+2. Usá [`docs/00-master-index.md`](../00-master-index.md) y la serie `01` a `21` para navegación de mantenimiento.
+3. Tratá esta roadmap como contexto de estabilización e historial de secuencia, no como fuente autoritativa de trabajo OpenSpec vivo.
+4. Tomá `SP-DEVELOPER-ONBOARDING` como siguiente outcome práctico y `sp-data-environments` como change vivo posterior, todavía bloqueado.
+5. No inicies implementación de `sp-data-environments` mientras sigan faltando sus handoffs aceptados.
+
+## No Objetivos Explícitos
 
 - Rewriting archived OpenSpec, verification reports, receipts, or dated roadmaps.
 - Treating achieved provider-neutral contracts as runtime integration.

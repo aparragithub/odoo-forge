@@ -4,6 +4,11 @@
 > design lineage. Use [`docs/specs/platform/portfolio.json`](platform/portfolio.json) for current
 > capability identities, status, dependencies, acceptance evidence, and handoffs. The legacy
 > `docs/specs/platform/SP-*.md` briefs are historical inputs, not active implementation claims.
+>
+> **Guía actual breve.** Para navegación vigente de maintainers, empezá en
+> [`docs/00-master-index.md`](../00-master-index.md). Para trabajo OpenSpec vivo, mirá el árbol
+> actual de `openspec/changes/`: hoy solo `sp-data-environments` sigue activo; roadmap-refresh y su
+> corrective closure ya están archivados.
 
 **Status:** historical/superseded · **Created:** 2026-07-08.
 
