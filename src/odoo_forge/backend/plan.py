@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from odoo_forge.backend.status import derive_instance_ref, sanitize_name
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.manifest.projection import MountPlanningView
-from odoo_forge.manifest.schema import Manifest
+from odoo_forge.manifest.schema import DEFAULT_ODOO_BIND_HOST, Manifest
 
 ContainerRole = Literal["odoo", "postgres"]
 
@@ -52,6 +52,7 @@ class ContainerSpec(BaseModel):
     mounts: list[Mount] = []
     labels: dict[str, str]
     volumes: list[VolumeSpec] = []
+    bind_host: str = DEFAULT_ODOO_BIND_HOST
     ports: dict[str, int | None] = {}
 
 
@@ -82,8 +83,10 @@ def plan_backend(
 ) -> BackendPlan:
     """Compute a `BackendPlan` from validated evidence. Pure, zero I/O."""
     odoo_http_port = None
+    odoo_bind_host = DEFAULT_ODOO_BIND_HOST
     if manifest.backend is not None and manifest.backend.odoo is not None:
         odoo_http_port = manifest.backend.odoo.http_port
+        odoo_bind_host = manifest.backend.odoo.bind_host
 
     mounts = [
         Mount(
@@ -146,6 +149,7 @@ def plan_backend(
         mounts=mounts,
         labels=_labels(project, instance, role="odoo"),
         volumes=[filestore_volume],
+        bind_host=odoo_bind_host,
         ports={"8069": odoo_http_port, "8072": None},
     )
 
