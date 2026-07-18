@@ -569,6 +569,15 @@ def test_run_container_argv_binds_published_ports_to_loopback() -> None:
     assert "127.0.0.1:0:8072" in argv
 
 
+def test_run_container_argv_uses_fixed_loopback_port_when_planned() -> None:
+    argv = _run_container_argv(
+        _make_plan().odoo.model_copy(update={"ports": {"8069": 18069, "8072": None}})
+    )
+
+    assert "127.0.0.1:18069:8069" in argv
+    assert "127.0.0.1:0:8072" in argv
+
+
 def test_run_container_argv_uses_secret_files_not_container_environment() -> None:
     secret = "credential-value-not-in-docker-config"
     spec = _make_postgres_spec().model_copy(

@@ -81,6 +81,10 @@ def plan_backend(
     credentials: BackendCredentialBindings | None = None,
 ) -> BackendPlan:
     """Compute a `BackendPlan` from validated evidence. Pure, zero I/O."""
+    odoo_http_port = None
+    if manifest.backend is not None and manifest.backend.odoo is not None:
+        odoo_http_port = manifest.backend.odoo.http_port
+
     mounts = [
         Mount(
             root=evidence.container_path.parts[2],
@@ -142,7 +146,7 @@ def plan_backend(
         mounts=mounts,
         labels=_labels(project, instance, role="odoo"),
         volumes=[filestore_volume],
-        ports={"8069": None, "8072": None},
+        ports={"8069": odoo_http_port, "8072": None},
     )
 
     return BackendPlan(
