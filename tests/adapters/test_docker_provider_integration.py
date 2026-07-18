@@ -321,3 +321,40 @@ def test_run_status_stop_round_trip_against_real_daemon(tmp_path: Path) -> None:
         cleanup_errors = _cleanup(plan)
         assert not cleanup_errors, f"owned cleanup failed: {cleanup_errors}"
         assert not _residuals(plan), "owned Docker resources leaked"
+
+
+@pytest.mark.real_docker
+def test_run_uses_a_localhost_tag_without_registry_pull(tmp_path: Path) -> None:
+    """A locally tagged factory image must support a registry-free lifecycle."""
+    _require_docker()
+    source_image = _factory_image()
+    local_image = f"localhost/odoo-forge-local:{uuid.uuid4().hex[:12]}"
+    tag_result = _docker(["image", "tag", source_image, local_image])
+    assert tag_result.returncode == 0, tag_result.stderr
+
+    plan: BackendPlan | None = None
+    try:
+        secret = uuid.uuid4().hex
+        plan = _plan(tmp_path, local_image, secret)
+        values = {
+            CredentialHandle("integration/postgres"): secret,
+            CredentialHandle("integration/odoo"): secret,
+        }
+        provider = DockerBackendProvider(
+            credential_injector=SopsEnvFileInjector(values.__getitem__)
+        )
+        ref = provider.run(plan)
+        status = provider.status(ref)
+        assert status.postgres.running and status.odoo.running
+        assert status.odoo.ready
+        provider.stop(ref)
+    except Exception as exc:
+        assert secret not in str(exc)
+        raise
+    finally:
+        if plan is not None:
+            cleanup_errors = _cleanup(plan)
+            assert not cleanup_errors, f"owned cleanup failed: {cleanup_errors}"
+            assert not _residuals(plan), "owned Docker resources leaked"
+        remove_result = _docker(["image", "rm", local_image])
+        assert remove_result.returncode == 0, remove_result.stderr
