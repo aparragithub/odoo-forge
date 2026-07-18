@@ -202,6 +202,71 @@ def test_validate_record_returns_an_invalid_record_for_an_incomplete_record() ->
     assert invalid.reason_code == "missing:source_context"
 
 
+def test_returns_invalid_catalog_when_data_policy_default_is_blank() -> None:
+    result = _resolve_incomplete(defaults=CatalogDefaults(data_policy="", target="staging"))
+
+    assert result.type == "invalid-catalog"
+    assert result.details == {
+        "record_id": "acme-website",
+        "invalid_fields": ["data_policy_default"],
+        "reason_code": "missing:data_policy_default",
+    }
+
+
+def test_returns_invalid_catalog_when_target_default_is_whitespace_only() -> None:
+    result = _resolve_incomplete(defaults=CatalogDefaults(data_policy="masked-copy", target="   "))
+
+    assert result.type == "invalid-catalog"
+    assert result.details == {
+        "record_id": "acme-website",
+        "invalid_fields": ["target_default"],
+        "reason_code": "missing:target_default",
+    }
+
+
+def test_returns_invalid_catalog_when_both_defaults_are_blank() -> None:
+    result = _resolve_incomplete(defaults=CatalogDefaults(data_policy="", target="   "))
+
+    assert result.type == "invalid-catalog"
+    assert result.details == {
+        "record_id": "acme-website",
+        "invalid_fields": ["data_policy_default", "target_default"],
+        "reason_code": "missing:data_policy_default+target_default",
+    }
+
+
+def test_returns_invalid_catalog_when_blank_target_combined_with_none_source_context() -> None:
+    result = _resolve_incomplete(
+        source_context=None, defaults=CatalogDefaults(data_policy="masked-copy", target="   ")
+    )
+
+    assert result.type == "invalid-catalog"
+    assert result.details == {
+        "record_id": "acme-website",
+        "invalid_fields": ["source_context", "target_default"],
+        "reason_code": "missing:source_context+target_default",
+    }
+
+
+def test_validate_record_accepts_non_blank_defaults_unchanged() -> None:
+    validated = validate_record(_record())
+
+    assert isinstance(validated, ValidatedCatalogRecord)
+    assert validated.data_policy_default == "masked-copy"
+    assert validated.target_default == "staging"
+
+
+def test_blank_manifest_ref_or_source_context_out_of_scope_for_blank_checks() -> None:
+    result = _resolve_incomplete(source_context=None)
+
+    assert result.type == "invalid-catalog"
+    assert result.details == {
+        "record_id": "acme-website",
+        "invalid_fields": ["source_context"],
+        "reason_code": "missing:source_context",
+    }
+
+
 def test_request_field_order_matches_declared_identifier_dimensions() -> None:
     assert tuple(ProjectCatalogRequest.model_fields) == IDENTIFIER_DIMENSIONS
 

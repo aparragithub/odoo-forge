@@ -7,6 +7,11 @@ from odoo_forge.project_catalog.models import (
 )
 
 
+def _is_blank(value: str | None) -> bool:
+    """True when a required string output is absent or whitespace-only."""
+    return value is None or not value.strip()
+
+
 def invalid_required_fields(record: CatalogRecord) -> list[str]:
     """Return required outputs that catalog authority did not materialize."""
     missing: list[str] = []
@@ -14,9 +19,9 @@ def invalid_required_fields(record: CatalogRecord) -> list[str]:
         missing.append("manifest_ref")
     if record.source_context is None:
         missing.append("source_context")
-    if record.defaults.data_policy is None:
+    if _is_blank(record.defaults.data_policy):
         missing.append("data_policy_default")
-    if record.defaults.target is None:
+    if _is_blank(record.defaults.target):
         missing.append("target_default")
     return missing
 
@@ -33,7 +38,7 @@ def validate_record(record: CatalogRecord) -> ValidatedCatalogRecord | InvalidCa
     data_policy = record.defaults.data_policy
     target = record.defaults.target
 
-    if manifest_ref is None or source_context is None or data_policy is None or target is None:
+    if manifest_ref is None or source_context is None or _is_blank(data_policy) or _is_blank(target):
         invalid_fields = invalid_required_fields(record)
         return InvalidCatalogRecord(
             record_id=record.record_id,
