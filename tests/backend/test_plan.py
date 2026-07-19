@@ -11,7 +11,14 @@ from odoo_forge.backend.plan import (
 )
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.manifest.projection import MountEvidence, MountPlanningView
-from odoo_forge.manifest.schema import BackendConfig, Client, Manifest, OdooBackendConfig
+from odoo_forge.manifest.schema import (
+    BackendConfig,
+    Client,
+    GitLayer,
+    GitRepo,
+    Manifest,
+    OdooBackendConfig,
+)
 
 
 def _manifest(**overrides: object) -> Manifest:
@@ -86,11 +93,45 @@ class TestPlanBackend:
         plan = plan_backend(manifest, mount_view)
 
         assert set(plan.postgres.env) == {"POSTGRES_USER", "POSTGRES_DB"}
-        assert set(plan.odoo.env) == {"DB_HOST", "DB_PORT", "DB_USER", "POSTGRES_DB"}
+        assert set(plan.odoo.env) == {
+            "DB_HOST",
+            "DB_PORT",
+            "DB_USER",
+            "POSTGRES_DB",
+            "FORGE_ADDONS_PATH_ORDER",
+        }
         assert "DB_NAME" not in plan.postgres.env
         assert "DB_NAME" not in plan.odoo.env
         assert plan.odoo.env["DB_USER"] == plan.postgres.env["POSTGRES_USER"]
         assert plan.odoo.env["POSTGRES_DB"] == plan.postgres.env["POSTGRES_DB"]
+
+    def test_odoo_env_carries_manifest_derived_addons_path_order(self) -> None:
+        manifest = _manifest(
+            layers=[
+                GitLayer(
+                    type="git",
+                    name="ov",
+                    category="overrides",
+                    repos=[GitRepo(url="https://github.com/acme/ov.git", ref="19.0")],
+                ),
+                GitLayer(
+                    type="git",
+                    name="oca",
+                    category="oca",
+                    repos=[GitRepo(url="https://github.com/OCA/x.git", ref="19.0")],
+                ),
+            ],
+            mount_priority=["custom/overrides"],
+        )
+
+        plan = plan_backend(manifest, _mount_view())
+
+        # mount_priority entry first, then default order (system roots, then
+        # remaining custom categories sorted). Consumed by entrypoint.sh.
+        assert plan.odoo.env["FORGE_ADDONS_PATH_ORDER"] == (
+            "/mnt/custom/overrides,/mnt/worktrees,/mnt/community,"
+            "/mnt/enterprise,/mnt/custom/oca"
+        )
 
     def test_mounts_only_validated_repositories_at_canonical_targets(self) -> None:
         plan = plan_backend(_manifest(), _mount_view())
