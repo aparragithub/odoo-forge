@@ -8,6 +8,7 @@ from odoo_forge.manifest.schema import (
     DEFAULT_ODOO_BIND_HOST,
     BackendConfig,
     CoreLayer,
+    EnterpriseLayer,
     GitLayer,
     GitRepo,
     Layer,
@@ -114,26 +115,110 @@ def test_core_default_url_and_ref_none() -> None:
     assert manifest.core.ref is None
 
 
-def test_requires_edition_on_repo_and_layer() -> None:
-    repo = GitRepo(
-        url="https://github.com/ingadhoc/odoo-argentina-ee.git",
-        ref="19.0",
-        requires_edition="enterprise",
-    )
-    git_layer = GitLayer(
-        type="git", name="localization", repos=[repo], requires_edition="enterprise"
-    )
+def test_requires_enterprise_on_layer_defaults_to_false() -> None:
+    repo = GitRepo(url="https://github.com/ingadhoc/odoo-argentina-ee.git", ref="19.0")
+    git_layer = GitLayer(type="git", name="localization", repos=[repo])
     published_layer = PublishedLayer(
         type="published",
         name="enterprise",
         source="registry://example/odoo-ee",
         version="19.0.1",
-        requires_edition="enterprise",
     )
 
-    assert repo.requires_edition == "enterprise"
-    assert git_layer.requires_edition == "enterprise"
-    assert published_layer.requires_edition == "enterprise"
+    assert git_layer.requires_enterprise is False
+    assert published_layer.requires_enterprise is False
+
+
+def test_requires_enterprise_true_on_git_and_published_layer() -> None:
+    repo = GitRepo(url="https://github.com/ingadhoc/odoo-argentina-ee.git", ref="19.0")
+    git_layer = GitLayer(type="git", name="localization", repos=[repo], requires_enterprise=True)
+    published_layer = PublishedLayer(
+        type="published",
+        name="enterprise",
+        source="registry://example/odoo-ee",
+        version="19.0.1",
+        requires_enterprise=True,
+    )
+
+    assert git_layer.requires_enterprise is True
+    assert published_layer.requires_enterprise is True
+
+
+def test_git_repo_rejects_legacy_requires_edition_key() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        GitRepo.model_validate(
+            {
+                "url": "https://github.com/ingadhoc/odoo-argentina-ee.git",
+                "ref": "19.0",
+                "requires_edition": "enterprise",
+            }
+        )
+
+    assert "requires_enterprise" in str(exc_info.value)
+
+
+def test_git_layer_rejects_legacy_requires_edition_key() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        GitLayer.model_validate(
+            {
+                "type": "git",
+                "name": "localization",
+                "repos": [],
+                "requires_edition": "enterprise",
+            }
+        )
+
+    assert "requires_enterprise" in str(exc_info.value)
+
+
+def test_published_layer_rejects_legacy_requires_edition_key() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        PublishedLayer.model_validate(
+            {
+                "type": "published",
+                "name": "enterprise",
+                "source": "registry://example/odoo-ee",
+                "version": "19.0.1",
+                "requires_edition": "enterprise",
+            }
+        )
+
+    assert "requires_enterprise" in str(exc_info.value)
+
+
+def test_enterprise_edition_requires_enterprise_block() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        Manifest.model_validate({**_base_manifest_kwargs(), "edition": "enterprise"})
+
+    assert "enterprise" in str(exc_info.value)
+
+
+def test_community_edition_forbids_enterprise_block() -> None:
+    with pytest.raises(ValidationError) as exc_info:
+        Manifest.model_validate(
+            {
+                **_base_manifest_kwargs(),
+                "edition": "community",
+                "enterprise": {"url": "https://github.com/odoo/enterprise.git", "ref": "19.0"},
+            }
+        )
+
+    assert "enterprise" in str(exc_info.value)
+
+
+def test_enterprise_edition_with_valid_enterprise_block_succeeds() -> None:
+    manifest = Manifest.model_validate(
+        {
+            **_base_manifest_kwargs(),
+            "edition": "enterprise",
+            "enterprise": {"url": "https://github.com/odoo/enterprise.git", "ref": "19.0"},
+        }
+    )
+
+    assert isinstance(manifest.enterprise, EnterpriseLayer)
+    assert manifest.enterprise.url == "https://github.com/odoo/enterprise.git"
+    assert manifest.enterprise.ref == "19.0"
+    assert manifest.enterprise.type == "enterprise"
 
 
 def test_discriminated_layer_single_error() -> None:
@@ -154,13 +239,14 @@ def test_client_and_override_and_manifest_parse() -> None:
         "odoo_version": "19.0",
         "edition": "enterprise",
         "core": {"type": "core", "url": "https://github.com/odoo/odoo.git", "ref": "19.0"},
+        "enterprise": {"url": "https://github.com/odoo/enterprise.git", "ref": "19.0"},
         "layers": [
             {
                 "type": "published",
-                "name": "enterprise",
+                "name": "enterprise-addons",
                 "source": "registry://example/odoo-ee",
                 "version": "19.0.1",
-                "requires_edition": "enterprise",
+                "requires_enterprise": True,
             },
             {
                 "type": "git",
@@ -169,9 +255,9 @@ def test_client_and_override_and_manifest_parse() -> None:
                     {
                         "url": "https://github.com/ingadhoc/odoo-argentina-ee.git",
                         "ref": "19.0",
-                        "requires_edition": "enterprise",
                     }
                 ],
+                "requires_enterprise": True,
             },
         ],
         "client": {
@@ -247,7 +333,7 @@ def test_valid_fixture_parses_into_manifest() -> None:
 
     assert manifest.edition == "enterprise"
     assert isinstance(manifest.layers[1], GitLayer)
-    assert manifest.layers[1].repos[0].requires_edition == "enterprise"
+    assert manifest.layers[1].requires_enterprise is True
 
 
 def test_malformed_fixture_yields_single_scoped_error() -> None:
