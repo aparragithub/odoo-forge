@@ -52,46 +52,82 @@ def _manifest(**overrides: object) -> Manifest:
 def _git_layer(**overrides: object) -> GitLayer:
     defaults: dict[str, object] = {
         "type": "git",
-        "name": "localization",
+        "name": "custom-x",
         "repos": [GitRepo(url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0")],
     }
     defaults.update(overrides)
     return GitLayer(**defaults)  # type: ignore[arg-type]
 
 
+def _container_roots(manifest: Manifest) -> dict[str, Path]:
+    """Manifest-derived container mount table (`/mnt/...` with per-category
+    `custom/<category>` keys) — the pure-mount-model replacement for the bare
+    `MOUNT_ROOTS` wherever a test drives `materialize_state` /
+    `build_mount_planning_view` through `classify_root` (which now returns
+    `custom/<category>` keys rather than a flat category root)."""
+    return build_mount_roots(projection.CONTAINER_MOUNT_BASE, manifest)
+
+
 class TestBuildMountRoots:
-    def test_maps_the_five_roots_under_an_arbitrary_base(self) -> None:
+    def test_maps_the_system_roots_and_the_bare_custom_parent_without_a_manifest(self) -> None:
         base = Path("/custom/state/odoo-forge")
 
         roots = build_mount_roots(base)
 
         assert roots == {
             "community": base / "community",
-            "custom": base / "custom",
-            "localization": base / "localization",
             "enterprise": base / "enterprise",
             "worktrees": base / "worktrees",
+            "custom": base / "custom",
         }
+
+    def test_manifest_derived_roots_replace_bare_custom_with_per_category_keys(self) -> None:
+        base = Path("/custom/state/odoo-forge")
+        manifest = _manifest(
+            layers=[
+                _git_layer(name="partners", category="partners"),
+                _git_layer(name="uncategorized"),
+            ]
+        )
+
+        roots = build_mount_roots(base, manifest)
+
+        assert roots == {
+            "community": base / "community",
+            "enterprise": base / "enterprise",
+            "worktrees": base / "worktrees",
+            "custom/partners": base / "custom" / "partners",
+            "custom/default": base / "custom" / "default",
+        }
+
+    def test_explicit_custom_category_also_maps_to_the_default_folder(self) -> None:
+        base = Path("/custom/state/odoo-forge")
+        manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+
+        roots = build_mount_roots(base, manifest)
+
+        assert roots["custom/default"] == base / "custom" / "default"
+        assert "custom/custom" not in roots
 
 
 class TestClassifyRoot:
-    def test_legacy_layer_without_category_falls_back_to_custom(self) -> None:
+    def test_legacy_layer_without_category_falls_back_to_custom_default(self) -> None:
         layer = _git_layer()
 
-        assert layer.category is None
-        assert classify_root(layer) == "custom"
+        assert layer.category == "custom"
+        assert classify_root(layer) == "custom/default"
 
-    def test_explicit_category_is_honored(self) -> None:
-        layer = _git_layer(category="localization")
+    def test_explicit_category_nests_under_custom(self) -> None:
+        layer = _git_layer(category="partners")
 
-        assert classify_root(layer) == "localization"
+        assert classify_root(layer) == "custom/partners"
 
     def test_requires_enterprise_does_not_affect_mount_classification(self) -> None:
         # `requires_enterprise` is a coherence precondition only (Slice 1);
         # it must NOT influence mount classification anymore.
-        layer = _git_layer(category="localization", requires_enterprise=True)
+        layer = _git_layer(category="partners", requires_enterprise=True)
 
-        assert classify_root(layer) == "localization"
+        assert classify_root(layer) == "custom/partners"
 
     def test_core_always_classifies_to_community(self) -> None:
         assert classify_root(CoreLayer()) == "community"
@@ -101,7 +137,7 @@ class TestClassifyRoot:
 
         assert classify_root(enterprise) == "enterprise"
 
-    def test_published_layer_default_category_is_custom(self) -> None:
+    def test_published_layer_default_category_is_custom_default(self) -> None:
         layer = PublishedLayer(
             type="published",
             name="enterprise",
@@ -109,7 +145,28 @@ class TestClassifyRoot:
             version="19.0.1",
         )
 
-        assert classify_root(layer) == "custom"
+        assert classify_root(layer) == "custom/default"
+
+    @pytest.mark.parametrize(
+        ("category", "expected_root"),
+        [
+            ("community", "custom/community"),
+            ("custom", "custom/default"),
+            ("localization", "custom/localization"),
+            ("enterprise", "custom/enterprise"),
+            ("worktrees", "custom/worktrees"),
+        ],
+    )
+    def test_a_category_matching_a_system_root_name_is_never_the_system_root(
+        self, category: str, expected_root: str
+    ) -> None:
+        # Pure mount model: user layers can NEVER target a system root, even
+        # when `category` is literally a reserved-looking name — it is just
+        # a plain subfolder under `/mnt/custom/`.
+        layer = _git_layer(category=category)
+
+        assert classify_root(layer) == expected_root
+        assert classify_root(layer) not in {"community", "enterprise", "worktrees"}
 
     @pytest.mark.parametrize(
         "layer",
@@ -129,7 +186,6 @@ class TestClassifyRoot:
         # this asserts that runtime invariant, so the comparison is
         # intentionally always-true to mypy.
         assert classify_root(layer) != "worktrees"  # type: ignore[arg-type, comparison-overlap]
-        assert classify_root(layer) in MOUNT_ROOTS  # type: ignore[arg-type]
 
 
 class TestPlanProjection:
@@ -224,7 +280,11 @@ class TestPlanProjection:
         plan = plan_projection(manifest, lock)
 
         assert [step.layer for step in plan.steps] == ["core", "enterprise", "custom-x"]
-        assert [step.mount_root for step in plan.steps] == ["community", "enterprise", "custom"]
+        assert [step.mount_root for step in plan.steps] == [
+            "community",
+            "custom/enterprise",
+            "custom/default",
+        ]
         assert [step.commit for step in plan.steps] == ["sha-core", "sha-ee", "sha-partner"]
 
     def test_honors_injected_roots_for_a_non_default_base(self) -> None:
@@ -493,6 +553,7 @@ class TestBuildMountPlanningView:
                 ),
             ],
         )
+        roots = _container_roots(manifest)
         scanned = [
             ScannedRepo(
                 path=Path("/mnt/community/core/odoo"),
@@ -500,7 +561,7 @@ class TestBuildMountPlanningView:
                 commit="sha-core",
             ),
             ScannedRepo(
-                path=Path("/mnt/custom/custom-x/not-odoo-partner"),
+                path=Path("/mnt/custom/default/custom-x/not-odoo-partner"),
                 url=custom_url,
                 commit="sha-partner",
             ),
@@ -508,7 +569,7 @@ class TestBuildMountPlanningView:
 
         with pytest.raises(MountPlanningError, match="custom-x") as error:
             build_mount_planning_view(
-                manifest, lock, scanned, materialize_state(scanned, MOUNT_ROOTS), MOUNT_ROOTS
+                manifest, lock, scanned, materialize_state(scanned, roots), roots
             )
 
         assert "odoo-partner" in str(error.value)
@@ -539,9 +600,10 @@ class TestBuildMountPlanningView:
                 ),
             ],
         )
+        roots = _container_roots(manifest)
         drifted = [
             ScannedRepo(
-                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                path=Path("/mnt/custom/default/custom-x/odoo-partner"),
                 url=credential_url,
                 commit="stale-partner",
             )
@@ -553,7 +615,7 @@ class TestBuildMountPlanningView:
                 commit="sha-core",
             ),
             ScannedRepo(
-                path=Path("/mnt/custom/ghost/unexpected"),
+                path=Path("/mnt/custom/default/ghost/unexpected"),
                 url=unexpected_url,
                 commit="sha-ghost",
             ),
@@ -561,15 +623,15 @@ class TestBuildMountPlanningView:
 
         with pytest.raises(MountPlanningError, match="commit") as drift_error:
             build_mount_planning_view(
-                manifest, lock, drifted, materialize_state(drifted, MOUNT_ROOTS), MOUNT_ROOTS
+                manifest, lock, drifted, materialize_state(drifted, roots), roots
             )
         with pytest.raises(MountPlanningError, match="unexpected") as unexpected_error:
             build_mount_planning_view(
                 manifest,
                 lock,
                 unexpected,
-                materialize_state(unexpected, MOUNT_ROOTS),
-                MOUNT_ROOTS,
+                materialize_state(unexpected, roots),
+                roots,
             )
 
         for error, repo_name, repo_url in (
@@ -581,12 +643,13 @@ class TestBuildMountPlanningView:
             assert "token" not in str(error.value)
             assert repo_url not in str(error.value)
 
-    @pytest.mark.parametrize("source_root", ["custom", "worktrees"])
+    @pytest.mark.parametrize("source_root", ["custom/default", "worktrees"])
     def test_rejects_duplicate_scanned_evidence_without_leaking_url(self, source_root: str) -> None:
         credential_url = "https://username:token@github.com/ingadhoc/odoo-partner.git"
         manifest = _manifest(
             layers=[_git_layer(name="custom-x", repos=[GitRepo(url=credential_url, ref="19.0")])]
         )
+        roots = _container_roots(manifest)
         lock = Lockfile(
             generated_from=compute_manifest_hash(manifest),
             git_layers=[
@@ -601,7 +664,7 @@ class TestBuildMountPlanningView:
             ],
         )
         duplicate = ScannedRepo(
-            path=MOUNT_ROOTS[source_root] / "custom-x" / "odoo-partner",
+            path=roots[source_root] / "custom-x" / "odoo-partner",
             url=credential_url,
             commit="sha-partner",
         )
@@ -617,7 +680,7 @@ class TestBuildMountPlanningView:
 
         with pytest.raises(MountPlanningError, match="duplicate") as error:
             build_mount_planning_view(
-                manifest, lock, scanned, materialize_state(scanned, MOUNT_ROOTS), MOUNT_ROOTS
+                manifest, lock, scanned, materialize_state(scanned, roots), roots
             )
 
         assert "odoo-partner" in str(error.value)
@@ -643,6 +706,7 @@ class TestBuildMountPlanningView:
                 ),
             ],
         )
+        roots = _container_roots(manifest)
         scanned = [
             ScannedRepo(
                 path=Path("/mnt/community/core/odoo"),
@@ -650,16 +714,16 @@ class TestBuildMountPlanningView:
                 commit="sha-core",
             ),
             ScannedRepo(
-                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                path=Path("/mnt/custom/default/custom-x/odoo-partner"),
                 url=credential_url,
                 commit="sha-partner",
             ),
         ]
-        state = materialize_state(scanned, MOUNT_ROOTS)
+        state = materialize_state(scanned, roots)
         state.layers[1].repos.append(state.layers[1].repos[0])
 
         with pytest.raises(MountPlanningError, match="duplicate materialized") as error:
-            build_mount_planning_view(manifest, lock, scanned, state, MOUNT_ROOTS)
+            build_mount_planning_view(manifest, lock, scanned, state, roots)
 
         assert "odoo-partner" in str(error.value)
         assert "username" not in str(error.value)
@@ -684,6 +748,7 @@ class TestBuildMountPlanningView:
                 ),
             ],
         )
+        roots = _container_roots(manifest)
         scanned = [
             ScannedRepo(
                 path=Path("/mnt/community/core/odoo"),
@@ -691,7 +756,7 @@ class TestBuildMountPlanningView:
                 commit="sha-core",
             ),
             ScannedRepo(
-                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                path=Path("/mnt/custom/default/custom-x/odoo-partner"),
                 url=credential_url,
                 commit="sha-partner",
             ),
@@ -710,7 +775,7 @@ class TestBuildMountPlanningView:
         )
 
         with pytest.raises(MountPlanningError, match="materialized commit drift") as error:
-            build_mount_planning_view(manifest, lock, scanned, state, MOUNT_ROOTS)
+            build_mount_planning_view(manifest, lock, scanned, state, roots)
 
         assert "odoo-partner" in str(error.value)
         assert "username" not in str(error.value)
@@ -747,6 +812,7 @@ class TestBuildMountPlanningView:
     def test_selects_a_valid_worktree_over_a_stale_read_only_counterpart(self) -> None:
         custom_url = "https://github.com/ingadhoc/odoo-partner.git"
         manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+        roots = _container_roots(manifest)
         lock = Lockfile(
             generated_from=compute_manifest_hash(manifest),
             git_layers=[
@@ -767,7 +833,7 @@ class TestBuildMountPlanningView:
                 commit="sha-core",
             ),
             ScannedRepo(
-                path=Path("/mnt/custom/custom-x/odoo-partner"),
+                path=Path("/mnt/custom/default/custom-x/odoo-partner"),
                 url=custom_url,
                 commit="stale-partner",
             ),
@@ -779,7 +845,7 @@ class TestBuildMountPlanningView:
         ]
 
         view = build_mount_planning_view(
-            manifest, lock, scanned, materialize_state(scanned, MOUNT_ROOTS), MOUNT_ROOTS
+            manifest, lock, scanned, materialize_state(scanned, roots), roots
         )
 
         assert isinstance(view, MountPlanningView)
@@ -796,7 +862,7 @@ class TestBuildMountPlanningView:
             (
                 "custom-x",
                 Path("/mnt/worktrees/custom-x/odoo-partner"),
-                Path("/mnt/custom/custom-x/odoo-partner"),
+                Path("/mnt/custom/default/custom-x/odoo-partner"),
                 False,
             ),
         ]
@@ -808,7 +874,7 @@ class TestPlanUnlock:
 
         plan = plan_unlock(manifest, "custom-x", "https://github.com/ingadhoc/odoo-partner.git")
 
-        assert plan.source == Path("/mnt/custom/custom-x/odoo-partner")
+        assert plan.source == Path("/mnt/custom/default/custom-x/odoo-partner")
         assert plan.dest == Path("/mnt/worktrees/custom-x/odoo-partner")
         assert plan.branch == "unlock/custom-x/odoo-partner"
 
@@ -823,14 +889,14 @@ class TestPlanUnlock:
 
     def test_honors_injected_roots_for_a_non_default_base(self) -> None:
         base = Path("/custom/state/odoo-forge")
-        roots = build_mount_roots(base)
         manifest = _manifest(layers=[_git_layer(name="custom-x", category="custom")])
+        roots = build_mount_roots(base, manifest)
 
         plan = plan_unlock(
             manifest, "custom-x", "https://github.com/ingadhoc/odoo-partner.git", roots
         )
 
-        assert plan.source == roots["custom"] / "custom-x" / "odoo-partner"
+        assert plan.source == roots["custom/default"] / "custom-x" / "odoo-partner"
         assert plan.dest == roots["worktrees"] / "custom-x" / "odoo-partner"
 
     def test_unknown_layer_raises_projection_error(self) -> None:
@@ -855,7 +921,7 @@ class TestPlanUnlock:
 
         plan = plan_unlock(manifest, "custom-x", declared_url)
 
-        assert plan.source == Path("/mnt/custom/custom-x/partner-fork")
+        assert plan.source == Path("/mnt/custom/default/custom-x/partner-fork")
         assert plan.dest == Path("/mnt/worktrees/custom-x/partner-fork")
         assert plan.branch == "unlock/custom-x/partner-fork"
         with pytest.raises(ProjectionError, match="does not belong to layer 'custom-x'"):

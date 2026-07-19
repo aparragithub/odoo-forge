@@ -284,16 +284,17 @@ def test_client_and_override_and_manifest_parse() -> None:
     assert manifest.overrides[0].repo == "odoo-argentina-ee"
 
 
-def test_git_layer_category_defaults_to_none() -> None:
-    """Additive optional field: absent `category` (legacy Slice 1/2a/2b
-    fixtures) must still validate, defaulting to `None`."""
+def test_git_layer_category_defaults_to_custom() -> None:
+    """Absent `category` must validate and default to `"custom"` (Slice 2:
+    open categories, validated free string). Under the pure mount model this
+    resolves to `/mnt/custom/default/` in projection, not a system root."""
     layer = GitLayer(
         type="git",
         name="localization",
         repos=[GitRepo(url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0")],
     )
 
-    assert layer.category is None
+    assert layer.category == "custom"
 
 
 def test_git_layer_accepts_explicit_category() -> None:
@@ -307,7 +308,44 @@ def test_git_layer_accepts_explicit_category() -> None:
     assert layer.category == "localization"
 
 
-def test_published_layer_category_defaults_to_none() -> None:
+def test_git_layer_accepts_a_category_matching_a_system_root_name() -> None:
+    """Slice 2 (pure mount model): NO reserved-name blocklist. A user layer
+    declaring `category: community` is just a plain `/mnt/custom/community`
+    subfolder — it can never collide with the system `community` root,
+    because user layers never target system roots at all."""
+    layer = GitLayer(
+        type="git",
+        name="localization",
+        repos=[GitRepo(url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0")],
+        category="community",
+    )
+
+    assert layer.category == "community"
+
+
+@pytest.mark.parametrize(
+    "category",
+    [
+        "../etc",
+        "a/b",
+        "Uppercase",
+        "-leading-hyphen",
+        "trailing-hyphen-",
+        "",
+        "a" * 64,
+    ],
+)
+def test_git_layer_rejects_invalid_category_slug(category: str) -> None:
+    with pytest.raises(ValidationError):
+        GitLayer(
+            type="git",
+            name="localization",
+            repos=[GitRepo(url="https://github.com/ingadhoc/odoo-partner.git", ref="19.0")],
+            category=category,
+        )
+
+
+def test_published_layer_category_defaults_to_custom() -> None:
     layer = PublishedLayer(
         type="published",
         name="enterprise",
@@ -315,7 +353,7 @@ def test_published_layer_category_defaults_to_none() -> None:
         version="19.0.1",
     )
 
-    assert layer.category is None
+    assert layer.category == "custom"
 
 
 def test_client_has_type_discriminator_default() -> None:
