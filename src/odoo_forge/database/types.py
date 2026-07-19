@@ -1,9 +1,19 @@
-"""Provider-owned immutable database lifecycle values."""
+"""Provider-owned immutable database lifecycle values.
+
+`ResourceOwnership`, `OperationIdentity`, and `CreationReceipt` are canonically defined in
+`odoo_forge.resource_ownership.types` (platform-scope `CAP-RESOURCE-OWNERSHIP` vocabulary) and
+re-exported here so every existing importer keeps resolving them through this module unchanged.
+"""
 
 import re
-from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, field_validator
+
+from odoo_forge.resource_ownership.types import (
+    CreationReceipt,
+    OperationIdentity,
+    ResourceOwnership,
+)
 
 _RESIDUAL_FAILURE_IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _SENSITIVE_RESIDUAL_TERMS = (
@@ -21,12 +31,6 @@ class _ProviderValue(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", hide_input_in_errors=True)
 
 
-class ResourceOwnership(StrEnum):
-    CREATED = "created"
-    ADOPTED = "adopted"
-    EXTERNAL = "external"
-
-
 class DatabaseSpec(_ProviderValue):
     name: str
 
@@ -36,17 +40,6 @@ class DatabaseRef(_ProviderValue):
 
     identifier: str
     ownership: ResourceOwnership
-
-
-class OperationIdentity(_ProviderValue):
-    value: str
-
-
-class CreationReceipt(_ProviderValue):
-    """Opaque operation proof used to reconcile or clean up a database."""
-
-    operation: OperationIdentity
-    owned_resource_ids: tuple[str, ...]
 
 
 class DatabaseCreation(_ProviderValue):
