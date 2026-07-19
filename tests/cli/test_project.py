@@ -6,7 +6,6 @@ from typer.testing import CliRunner
 
 from odoo_forge.manifest.errors import CheckoutError
 from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo
-from odoo_forge.manifest.projection import build_mount_roots
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 from odoo_forge_workspace.provider import GitWorkspaceProvider
@@ -106,10 +105,10 @@ def test_valid_lock_projects_every_layer(tmp_path: Path, monkeypatch: pytest.Mon
 def test_project_checks_out_using_the_resolved_host_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`project` must call `plan_projection` with `main._HOST_ROOTS` — not
-    the fixed container table."""
-    custom_roots = build_mount_roots(Path("/custom/state/odoo-forge"))
-    monkeypatch.setattr(main, "_HOST_ROOTS", custom_roots)
+    """`project` must plan against the resolved HOST mount base — not the
+    fixed `/mnt` container table."""
+    base = Path("/custom/state/odoo-forge")
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
     fake_provider = _FakeWorkspaceProvider()
     monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
 
@@ -120,8 +119,8 @@ def test_project_checks_out_using_the_resolved_host_roots(
     assert result.exit_code == 0
     dests = [call[2] for call in fake_provider.checkout_calls]
     assert dests == [
-        custom_roots["community"] / "core" / "odoo",
-        custom_roots["custom"] / "custom-x" / "custom-x",
+        base / "community" / "core" / "odoo",
+        base / "custom" / "default" / "custom-x" / "custom-x",
     ]
 
 
