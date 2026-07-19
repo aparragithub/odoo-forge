@@ -38,13 +38,22 @@ def validate_record(record: CatalogRecord) -> ValidatedCatalogRecord | InvalidCa
     data_policy = record.defaults.data_policy
     target = record.defaults.target
 
-    if manifest_ref is None or source_context is None or _is_blank(data_policy) or _is_blank(target):
+    if (
+        manifest_ref is None
+        or source_context is None
+        or _is_blank(data_policy)
+        or _is_blank(target)
+    ):
         invalid_fields = invalid_required_fields(record)
         return InvalidCatalogRecord(
             record_id=record.record_id,
             invalid_fields=invalid_fields,
             reason_code=invalid_catalog_reason_code(invalid_fields),
         )
+
+    # The guard above proves both required string outputs are present and
+    # non-blank; assert it so the type narrows from `str | None` to `str`.
+    assert data_policy is not None and target is not None
 
     return ValidatedCatalogRecord(
         record_id=record.record_id,
