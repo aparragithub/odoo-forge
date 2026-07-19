@@ -135,16 +135,17 @@ def _resolve_mount_base() -> Path:
     return state_home.expanduser() / "odoo-forge"
 
 
-# CONTAINER mount base stays the fixed `/mnt` constant (`MOUNT_ROOTS`
-# default in `odoo_forge.manifest.projection`); only the HOST table is
-# resolved from the environment. Resolution runs at import time, so a
-# misconfigured `FORGE_MOUNT_BASE` surfaces as a clean single-line error and
-# a non-zero exit rather than a raw traceback before any command can run.
-try:
-    _HOST_ROOTS = build_mount_roots(_resolve_mount_base())
-except ManifestInputError as exc:
-    typer.echo(f"error: {exc}", err=True)
-    raise SystemExit(1) from exc
+def _host_roots(manifest: Manifest) -> dict[str, Path]:
+    """Build the HOST mount-root table for `manifest`.
+
+    Slice 2 (pure mount model): `build_mount_roots` is manifest-derived, so
+    the HOST table can no longer be computed once at import time — every
+    manifest may declare a different set of custom categories. Resolution
+    still happens through the one composition-root function,
+    `_resolve_mount_base`; only its result is now threaded per-manifest
+    instead of cached in a module-level global.
+    """
+    return build_mount_roots(_resolve_mount_base(), manifest)
 
 
 @app.callback()
@@ -309,9 +310,10 @@ def validate(
     try:
         compose(parsed)
         lock = _load_lock(manifest.parent / "project.lock")
+        host_roots = _host_roots(parsed)
         provider = _make_manifest_workspace_provider(parsed)
-        scanned = provider.scan(list(_HOST_ROOTS.values()))
-        materialized = materialize_state(scanned, _HOST_ROOTS)
+        scanned = provider.scan(list(host_roots.values()))
+        materialized = materialize_state(scanned, host_roots)
         report = detect_drift(parsed, lock, materialized)
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
@@ -359,10 +361,11 @@ def onboard(
         if loaded_lock is None:
             raise LockfileError(f"no lockfile found at '{lock_path}' — run `forge lock` first")
 
-        plan = plan_projection(parsed, loaded_lock, _HOST_ROOTS)
+        host_roots = _host_roots(parsed)
+        plan = plan_projection(parsed, loaded_lock, host_roots)
         provider = _make_manifest_workspace_provider(parsed)
-        scanned = provider.scan(list(_HOST_ROOTS.values()))
-        materialized = materialize_state(scanned, _HOST_ROOTS)
+        scanned = provider.scan(list(host_roots.values()))
+        materialized = materialize_state(scanned, host_roots)
         preflight = detect_drift(parsed, loaded_lock, materialized)
         blocking_drift = [
             entry
@@ -374,8 +377,8 @@ def onboard(
 
         project_workspace(plan, provider)
 
-        scanned = provider.scan(list(_HOST_ROOTS.values()))
-        materialized = materialize_state(scanned, _HOST_ROOTS)
+        scanned = provider.scan(list(host_roots.values()))
+        materialized = materialize_state(scanned, host_roots)
         final_report = detect_drift(parsed, loaded_lock, materialized)
         if not final_report.is_clean:
             drift_entry = (
@@ -466,7 +469,7 @@ def project(
         if loaded_lock is None:
             raise LockfileError(f"no lockfile found at '{lock_path}' — run `forge lock` first")
 
-        plan = plan_projection(parsed, loaded_lock, _HOST_ROOTS)
+        plan = plan_projection(parsed, loaded_lock, _host_roots(parsed))
         provider = _make_manifest_workspace_provider(parsed)
         project_workspace(plan, provider)
     except ManifestError as exc:
@@ -503,7 +506,7 @@ def unlock(
     # traceback. `source`/`dest`/`branch` are computed here in the pure core
     # (`plan_unlock`) — the adapter only executes the worktree move.
     try:
-        unlock_plan = plan_unlock(parsed, layer, repo, _HOST_ROOTS)
+        unlock_plan = plan_unlock(parsed, layer, repo, _host_roots(parsed))
         provider = _make_manifest_workspace_provider(parsed)
         provider.promote(unlock_plan.source, unlock_plan.dest, unlock_plan.branch)
     except ManifestError as exc:
@@ -559,15 +562,16 @@ def run(
     # about — `DockerBackendProvider.run` itself rolls back everything it
     # created before raising.
     try:
+        host_roots = _host_roots(parsed)
         workspace_provider = _make_manifest_workspace_provider(parsed)
-        scanned = workspace_provider.scan(list(_HOST_ROOTS.values()))
-        materialized = materialize_state(scanned, _HOST_ROOTS)
+        scanned = workspace_provider.scan(list(host_roots.values()))
+        materialized = materialize_state(scanned, host_roots)
         mount_view = build_mount_planning_view(
             parsed,
             _load_lock(manifest.parent / "project.lock"),
             scanned,
             materialized,
-            _HOST_ROOTS,
+            host_roots,
         )
         plan = plan_backend(
             parsed,

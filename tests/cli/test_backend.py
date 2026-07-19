@@ -250,10 +250,12 @@ def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.Mo
 def test_run_scans_and_materializes_with_the_resolved_host_roots(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`run` must thread `main._HOST_ROOTS` — not the fixed container table —
-    into `workspace_provider.scan`/`materialize_state`/`build_mount_planning_view`."""
-    custom_roots = build_mount_roots(Path("/custom/state/odoo-forge"))
-    monkeypatch.setattr(main, "_HOST_ROOTS", custom_roots)
+    """`run` must thread the resolved HOST mount table — not the fixed
+    container table — into
+    `workspace_provider.scan`/`materialize_state`/`build_mount_planning_view`."""
+    base = Path("/custom/state/odoo-forge")
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    custom_roots = build_mount_roots(base, Manifest.model_validate(yaml.safe_load(_MANIFEST_TEXT)))
 
     scan_calls: list[object] = []
     scanned = [

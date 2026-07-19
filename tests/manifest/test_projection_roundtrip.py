@@ -15,8 +15,9 @@ from odoo_forge.manifest.lockfile import (
     compute_manifest_hash,
 )
 from odoo_forge.manifest.projection import (
-    MOUNT_ROOTS,
+    CONTAINER_MOUNT_BASE,
     ScannedRepo,
+    build_mount_roots,
     materialize_state,
     plan_projection,
     project_workspace,
@@ -95,13 +96,14 @@ def _lock(manifest: Manifest) -> Lockfile:
 def test_round_trip_no_false_drift_on_matching_workspace() -> None:
     manifest = _manifest()
     lock = _lock(manifest)
+    roots = build_mount_roots(CONTAINER_MOUNT_BASE, manifest)
     provider = _InMemoryWorkspaceProvider()
 
-    plan = plan_projection(manifest, lock)
+    plan = plan_projection(manifest, lock, roots)
     project_workspace(plan, provider)
 
-    scanned = provider.scan(list(MOUNT_ROOTS.values()))
-    materialized = materialize_state(scanned, MOUNT_ROOTS)
+    scanned = provider.scan(list(roots.values()))
+    materialized = materialize_state(scanned, roots)
     report = detect_drift(manifest, lock, materialized)
 
     assert report.is_clean
@@ -110,11 +112,12 @@ def test_round_trip_no_false_drift_on_matching_workspace() -> None:
 def test_round_trip_reports_not_materialized_when_never_projected() -> None:
     manifest = _manifest()
     lock = _lock(manifest)
+    roots = build_mount_roots(CONTAINER_MOUNT_BASE, manifest)
     provider = _InMemoryWorkspaceProvider()
 
     # No project_workspace call — nothing was ever checked out.
-    scanned = provider.scan(list(MOUNT_ROOTS.values()))
-    materialized = materialize_state(scanned, MOUNT_ROOTS)
+    scanned = provider.scan(list(roots.values()))
+    materialized = materialize_state(scanned, roots)
     report = detect_drift(manifest, lock, materialized)
 
     assert not report.is_clean
@@ -126,9 +129,10 @@ def test_round_trip_reports_not_materialized_when_never_projected() -> None:
 def test_round_trip_reports_commit_mismatch_on_stale_checkout() -> None:
     manifest = _manifest()
     lock = _lock(manifest)
+    roots = build_mount_roots(CONTAINER_MOUNT_BASE, manifest)
     provider = _InMemoryWorkspaceProvider()
 
-    plan = plan_projection(manifest, lock)
+    plan = plan_projection(manifest, lock, roots)
     project_workspace(plan, provider)
 
     # Simulate drift: the on-disk checkout is now at a stale commit that no
@@ -137,8 +141,8 @@ def test_round_trip_reports_commit_mismatch_on_stale_checkout() -> None:
     url, _stale_commit = provider._materialized[stale_path]
     provider._materialized[stale_path] = (url, "stale-commit")
 
-    scanned = provider.scan(list(MOUNT_ROOTS.values()))
-    materialized = materialize_state(scanned, MOUNT_ROOTS)
+    scanned = provider.scan(list(roots.values()))
+    materialized = materialize_state(scanned, roots)
     report = detect_drift(manifest, lock, materialized)
 
     assert not report.is_clean

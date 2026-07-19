@@ -9,7 +9,7 @@ except the typed `ProjectionError`.
 
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel
@@ -31,10 +31,13 @@ from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, Mater
 if TYPE_CHECKING:
     from odoo_forge.ports.workspace_provider import WorkspaceProvider
 
-# Fixed 5-root table. `worktrees` is reserved exclusively for `unlock`-promoted
-# writable copies and is NEVER returned by `classify_root` — read-only
-# projection only ever targets the other 4 roots.
-MountRoot = Literal["custom", "community", "localization", "enterprise"]
+# Widened from a closed `Literal` (Slice 2, pure mount model): only
+# `"community"`, `"enterprise"`, and `"worktrees"` are structural system
+# roots. Every other value is a manifest-derived `"custom/<category>"` key —
+# see `build_mount_roots`/`classify_root`. `worktrees` is reserved
+# exclusively for `unlock`-promoted writable copies and is NEVER returned by
+# `classify_root`.
+MountRoot = str
 
 # Fixed: container FS convention. `plan_backend` derives the mount root name
 # from `evidence.container_path.parts[2]` (`backend/plan.py:86`), so the
@@ -42,19 +45,67 @@ MountRoot = Literal["custom", "community", "localization", "enterprise"]
 # configurable (resolved at the CLI composition root, `odoo_forge_cli.main`).
 CONTAINER_MOUNT_BASE: Path = Path("/mnt")
 
+# Uncategorized layers (`category` defaulting to `"custom"`) resolve to this
+# folder name under `/mnt/custom/`, per the pure mount model: a user who
+# writes `category: custom` explicitly lands in the exact same place.
+_DEFAULT_CUSTOM_CATEGORY_DIR = "default"
 
-def build_mount_roots(base: Path) -> dict[str, Path]:
-    """Build the fixed 5-root table rooted at `base`. Pure, zero I/O."""
-    return {
+
+def _custom_category_folder(category: str) -> str:
+    """Map a validated layer `category` to its subfolder name under
+    `/mnt/custom/`. Single source of truth for the folder mapping: the schema
+    default `"custom"` (and an explicit `category: custom`) both resolve to
+    the `"default"` subfolder, pinned so the two are indistinguishable on disk.
+    """
+    return _DEFAULT_CUSTOM_CATEGORY_DIR if category == "custom" else category
+
+
+def _custom_root_key(category: str) -> str:
+    """Map a validated layer `category` to its `roots` dict key.
+
+    Pure mount model: every non-system layer nests under `/mnt/custom/`.
+    """
+    return f"custom/{_custom_category_folder(category)}"
+
+
+def build_mount_roots(base: Path, manifest: Manifest | None = None) -> dict[str, Path]:
+    """Build the mount-root table rooted at `base`. Pure, zero I/O.
+
+    Without a `manifest`, returns only the fixed system roots
+    (`community`, `enterprise`, `worktrees`) plus the bare `"custom"` parent
+    — enough for generic host-side directory enumeration (e.g. as a
+    `WorkspaceProvider.scan` root list, which recurses arbitrarily deep).
+
+    With a `manifest`, the bare `"custom"` parent is replaced by one
+    `"custom/<category>"` entry per distinct category actually declared
+    across `manifest.layers` (via `_custom_root_key`), so `classify_root`'s
+    return value is always a valid key into the result.
+    """
+    roots: dict[str, Path] = {
         "community": base / "community",
-        "custom": base / "custom",
-        "localization": base / "localization",
         "enterprise": base / "enterprise",
         "worktrees": base / "worktrees",
     }
+    if manifest is None:
+        roots["custom"] = base / "custom"
+        return roots
+
+    categories = sorted({layer.category for layer in manifest.layers})
+    for category in categories:
+        folder = _custom_category_folder(category)
+        roots[f"custom/{folder}"] = base / "custom" / folder
+    return roots
 
 
 MOUNT_ROOTS: dict[str, Path] = build_mount_roots(CONTAINER_MOUNT_BASE)
+
+
+def _default_container_roots(manifest: Manifest) -> dict[str, Path]:
+    """The pure-mount-model default mount table used when a caller passes no
+    explicit `roots`: the manifest-derived container table rooted at `/mnt`.
+    Single source of truth for the `roots is None` fallback shared by
+    `plan_projection`, `plan_unlock`, and `build_mount_planning_view`."""
+    return build_mount_roots(CONTAINER_MOUNT_BASE, manifest)
 
 
 class ScannedRepo(BaseModel):
@@ -107,32 +158,38 @@ class UnlockPlan(BaseModel):
 def classify_root(layer: CoreLayer | EnterpriseLayer | GitLayer | PublishedLayer) -> MountRoot:
     """Map a layer to its read-only projection mount root. Pure, zero I/O.
 
-    Precedence: `CoreLayer` always classifies to `"community"`; the
-    `EnterpriseLayer` singleton always classifies to `"enterprise"`; else the
-    layer's explicit `category` when set; else `"custom"` as the default.
-    `requires_enterprise` is a coherence precondition only and never affects
-    mount classification. Never returns `"worktrees"`.
+    Pure mount model: `CoreLayer` always classifies to `"community"`; the
+    `EnterpriseLayer` singleton always classifies to `"enterprise"`; every
+    other layer (`GitLayer`/`PublishedLayer`) ALWAYS nests under the custom
+    namespace at `"custom/<category>"` (see `_custom_root_key`) — user
+    layers can never target a system root, even when `category` is
+    literally `"community"`/`"enterprise"`/`"worktrees"`; that string just
+    becomes a plain subfolder of `/mnt/custom/`. `requires_enterprise` is a
+    coherence precondition only and never affects mount classification.
+    Never returns `"worktrees"`.
     """
     if isinstance(layer, CoreLayer):
         return "community"
     if isinstance(layer, EnterpriseLayer):
         return "enterprise"
-    if layer.category is not None:
-        return layer.category
-    return "custom"
+    return _custom_root_key(layer.category)
 
 
 def plan_projection(
-    manifest: Manifest, lock: Lockfile, roots: Mapping[str, Path] = MOUNT_ROOTS
+    manifest: Manifest, lock: Lockfile, roots: Mapping[str, Path] | None = None
 ) -> WorkspacePlan:
     """Join v2 `lock.git_layers` to the current manifest by name and classify each
     to a mount root, preserving Git-layer order. Published entries are retained
     in the lock but have no Git checkout. Pure, zero I/O; `roots` is injectable,
-    defaulting to the fixed container table.
+    defaulting to the manifest-derived container table
+    (`build_mount_roots(CONTAINER_MOUNT_BASE, manifest)`).
 
     Raises `ProjectionError` naming the orphaned layer when a locked layer
     has no matching manifest layer — no partial plan is ever returned.
     """
+    if roots is None:
+        roots = _default_container_roots(manifest)
+
     manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
         "core": manifest.core,
     }
@@ -163,12 +220,13 @@ def plan_projection(
 
 
 def plan_unlock(
-    manifest: Manifest, layer_name: str, repo_url: str, roots: Mapping[str, Path] = MOUNT_ROOTS
+    manifest: Manifest, layer_name: str, repo_url: str, roots: Mapping[str, Path] | None = None
 ) -> UnlockPlan:
     """Compute the `source`/`dest`/`branch` promotion target for `unlock`.
 
-    Pure, zero I/O; `roots` is injectable, defaulting to the fixed container
-    table. Classifies `layer_name` against `manifest` to find its read-only
+    Pure, zero I/O; `roots` is injectable, defaulting to the manifest-derived
+    container table (`build_mount_roots(CONTAINER_MOUNT_BASE, manifest)`).
+    Classifies `layer_name` against `manifest` to find its read-only
     mount root (mirroring `plan_projection`), then derives the `source`
     read-only checkout path, the `dest` writable worktree path under the
     reserved `worktrees` root, and a deterministic `branch` name. Raises
@@ -176,6 +234,9 @@ def plan_unlock(
     declared by that layer. The adapter's `promote` is the one that later
     raises `AlreadyUnlockedError` if `dest` already exists.
     """
+    if roots is None:
+        roots = _default_container_roots(manifest)
+
     manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
         "core": manifest.core,
     }
@@ -280,15 +341,17 @@ def build_mount_planning_view(
     scanned: Sequence[ScannedRepo],
     state: MaterializedState,
     roots: Mapping[str, Path],
-    container_roots: Mapping[str, Path] = MOUNT_ROOTS,
+    container_roots: Mapping[str, Path] | None = None,
 ) -> MountPlanningView:
     """Validate scan facts and select one authoritative bind per locked repository.
 
     `roots` is the HOST table (used for scan matching, dedup, and
     `source_path`). `container_roots` is the CONTAINER table (used ONLY for
-    `MountEvidence.container_path`), defaulting to the fixed `/mnt` table so
-    the container side never varies with a custom host base.
+    `MountEvidence.container_path`), defaulting to the manifest-derived fixed
+    `/mnt` table so the container side never varies with a custom host base.
     """
+    if container_roots is None:
+        container_roots = _default_container_roots(manifest)
     if lock is None:
         raise MountPlanningError("mount planning requires a project lock")
     if detect_drift(manifest, lock, None).manifest_lock_drift:

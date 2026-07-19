@@ -6,10 +6,11 @@ in later slices.
 """
 
 import ipaddress
+import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 _REQUIRES_EDITION_MIGRATION_ERROR = (
     "'requires_edition' has been removed. Use the top-level 'enterprise:' block "
@@ -58,10 +59,37 @@ class EnterpriseLayer(BaseModel):
     ref: str | None = None
 
 
-# Additive, optional projection-mount classification (Phase 2 Slice 3). Absent
-# on all Slice 1/2a/2b fixtures — defaults to `None`, which `classify_root`
-# treats as "custom".
-LayerCategory = Literal["custom", "community", "localization", "enterprise"]
+_CATEGORY_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+_CATEGORY_MAX_LENGTH = 63
+
+
+def _normalize_category(value: str | None) -> str:
+    """Normalize + validate a layer `category`. `None` defaults to `"custom"`.
+
+    Validation is deliberately minimal: slug shape (lowercase alphanumeric,
+    optionally hyphenated, no leading/trailing hyphen) and a length bound —
+    nothing else. There is intentionally NO reserved-name blocklist for
+    "community"/"enterprise"/"worktrees" (the system mount roots). Under the
+    pure mount model every user-declared layer nests under
+    `/mnt/custom/<category>/`, so even a category literally named
+    "community" only ever produces a plain subfolder there
+    (`/mnt/custom/community`) and can never collide with a system root —
+    the collision this blocklist would have prevented is structurally
+    impossible once nesting is in place.
+    """
+    resolved = "custom" if value is None else value
+    if len(resolved) > _CATEGORY_MAX_LENGTH or not _CATEGORY_PATTERN.match(resolved):
+        raise ValueError(
+            "category must be a lowercase alphanumeric slug (optionally "
+            f"hyphenated), at most {_CATEGORY_MAX_LENGTH} characters; got {resolved!r}"
+        )
+    return resolved
+
+
+# Validated free-form slug string, not a closed enum. `None` normalizes to
+# `"custom"` (the default namespace). See `_normalize_category` for the full
+# validation rationale.
+LayerCategory = Annotated[str, BeforeValidator(_normalize_category)]
 
 
 class PublishedLayer(_LegacyEditionKeyRejector):
@@ -72,7 +100,7 @@ class PublishedLayer(_LegacyEditionKeyRejector):
     source: str
     version: str
     requires_enterprise: bool = False
-    category: LayerCategory | None = None
+    category: LayerCategory = Field(default="custom", validate_default=True)
 
 
 class GitLayer(_LegacyEditionKeyRejector):
@@ -82,7 +110,7 @@ class GitLayer(_LegacyEditionKeyRejector):
     name: str
     repos: list[GitRepo]
     requires_enterprise: bool = False
-    category: LayerCategory | None = None
+    category: LayerCategory = Field(default="custom", validate_default=True)
 
 
 # NOTE: `CoreLayer` is intentionally NOT a member of this discriminated union.
