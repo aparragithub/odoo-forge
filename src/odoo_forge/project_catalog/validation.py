@@ -38,7 +38,12 @@ def validate_record(record: CatalogRecord) -> ValidatedCatalogRecord | InvalidCa
     data_policy = record.defaults.data_policy
     target = record.defaults.target
 
-    if manifest_ref is None or source_context is None or _is_blank(data_policy) or _is_blank(target):
+    if (
+        manifest_ref is None
+        or source_context is None
+        or _is_blank(data_policy)
+        or _is_blank(target)
+    ):
         invalid_fields = invalid_required_fields(record)
         return InvalidCatalogRecord(
             record_id=record.record_id,
