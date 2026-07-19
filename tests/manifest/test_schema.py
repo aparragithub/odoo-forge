@@ -441,7 +441,11 @@ def test_mount_priority_uncategorized_layer_key_is_custom_default() -> None:
 def test_mount_priority_rejects_unknown_custom_root() -> None:
     with pytest.raises(ValidationError, match="mount_priority"):
         Manifest.model_validate(
-            {**_base_manifest_kwargs(), "layers": _priority_layers(), "mount_priority": ["custom/nope"]}
+            {
+                **_base_manifest_kwargs(),
+                "layers": _priority_layers(),
+                "mount_priority": ["custom/nope"],
+            }
         )
 
 
