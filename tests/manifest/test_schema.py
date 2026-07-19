@@ -384,3 +384,80 @@ def test_malformed_fixture_yields_single_scoped_error() -> None:
     layer_errors = [e for e in errors if e["loc"][0] == "layers"]
     assert len(layer_errors) == 1
     assert layer_errors[0]["loc"][2] == "git"
+
+
+def _priority_layers() -> list[dict[str, object]]:
+    return [
+        {
+            "type": "git",
+            "name": "ov",
+            "category": "overrides",
+            "repos": [{"url": "https://github.com/acme/ov.git", "ref": "19.0"}],
+        },
+    ]
+
+
+def test_mount_priority_defaults_to_empty_list() -> None:
+    manifest = Manifest.model_validate(_base_manifest_kwargs())
+
+    assert manifest.mount_priority == []
+
+
+def test_mount_priority_accepts_known_system_and_custom_roots() -> None:
+    manifest = Manifest.model_validate(
+        {
+            **_base_manifest_kwargs(),
+            "layers": _priority_layers(),
+            "mount_priority": ["custom/overrides", "worktrees", "community", "enterprise"],
+        }
+    )
+
+    assert manifest.mount_priority == [
+        "custom/overrides",
+        "worktrees",
+        "community",
+        "enterprise",
+    ]
+
+
+def test_mount_priority_uncategorized_layer_key_is_custom_default() -> None:
+    manifest = Manifest.model_validate(
+        {
+            **_base_manifest_kwargs(),
+            "layers": [
+                {
+                    "type": "git",
+                    "name": "x",
+                    "repos": [{"url": "https://github.com/acme/x.git", "ref": "19.0"}],
+                }
+            ],
+            "mount_priority": ["custom/default"],
+        }
+    )
+
+    assert manifest.mount_priority == ["custom/default"]
+
+
+def test_mount_priority_rejects_unknown_custom_root() -> None:
+    with pytest.raises(ValidationError, match="mount_priority"):
+        Manifest.model_validate(
+            {
+                **_base_manifest_kwargs(),
+                "layers": _priority_layers(),
+                "mount_priority": ["custom/nope"],
+            }
+        )
+
+
+def test_mount_priority_rejects_system_root_typo() -> None:
+    # `localization` is no longer a system root (pure mount model); it is only
+    # valid as `custom/localization` and only when actually declared.
+    with pytest.raises(ValidationError, match="mount_priority"):
+        Manifest.model_validate({**_base_manifest_kwargs(), "mount_priority": ["localization"]})
+
+
+def test_mount_priority_rejects_duplicate_entries() -> None:
+    with pytest.raises(ValidationError, match="duplicate"):
+        Manifest.model_validate(
+            {**_base_manifest_kwargs(), "mount_priority": ["community", "community"]}
+        )

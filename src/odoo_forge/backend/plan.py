@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 from odoo_forge.backend.status import derive_instance_ref, sanitize_name
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
-from odoo_forge.manifest.projection import MountPlanningView
+from odoo_forge.manifest.projection import MountPlanningView, ordered_addons_roots
 from odoo_forge.manifest.schema import DEFAULT_ODOO_BIND_HOST, Manifest
 
 ContainerRole = Literal["odoo", "postgres"]
@@ -144,6 +144,13 @@ def plan_backend(
             "DB_PORT": _POSTGRES_PORT,
             "DB_USER": _DB_USER,
             "POSTGRES_DB": db_name,
+            # Manifest-derived addons_path precedence, consumed by
+            # entrypoint.sh's build_addons_path (honors `mount_priority`). The
+            # entrypoint still appends /opt/odoo/addons last and falls back to
+            # its own default scan when this is unset.
+            "FORGE_ADDONS_PATH_ORDER": ",".join(
+                str(root) for root in ordered_addons_roots(manifest)
+            ),
         },
         secret_env={"DB_PASSWORD": credentials.odoo_db_password} if credentials is not None else {},
         mounts=mounts,
