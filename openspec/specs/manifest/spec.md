@@ -35,23 +35,53 @@ alongside a `SourceProvider` adapter to produce concrete refs.
 - WHEN the manifest is parsed
 - THEN the schema accepts the override and stores no resolved SHA (intent only)
 
-### Requirement: Per-artifact edition gating
+### Requirement: Enterprise source is a first-class singleton block
 
-`GitRepo` and every `Layer` variant MUST expose an optional
-`requires_edition: Literal["enterprise"] | None = None`. Coherence validation
-MUST reject any `edition == "community"` manifest containing a repo or layer,
-at any nesting depth, with `requires_edition == "enterprise"`.
+`Manifest` MUST expose an optional `enterprise: EnterpriseLayer | None` block
+(fields `url`, `ref`), a singleton sibling of `core:`. It MUST be **required
+iff `edition == "enterprise"`** and MUST NOT be present when
+`edition != "enterprise"` (symmetric validation). The enterprise block is
+never listed under `layers:`.
 
-#### Scenario: Enterprise repo nested in localization rejected
-- GIVEN a community manifest whose `localization` `GitLayer` contains a repo
-  `odoo-argentina-ee` with `requires_edition: "enterprise"`
+#### Scenario: Enterprise edition requires the block
+- GIVEN a manifest with `edition: "enterprise"` and no `enterprise:` block
+- WHEN the manifest is validated
+- THEN validation MUST fail with a clear error
+
+#### Scenario: Community edition rejects the block
+- GIVEN a manifest with `edition: "community"` (or default) carrying an
+  `enterprise:` block
+- WHEN the manifest is validated
+- THEN validation MUST fail (symmetric guard)
+
+### Requirement: Enterprise-presence precondition (`requires_enterprise`)
+
+`GitLayer` and `PublishedLayer` MUST expose `requires_enterprise: bool = False`,
+used only as a coherence precondition (the layer needs the enterprise source
+present). It MUST NOT affect mount classification or chain position.
+`GitRepo.requires_edition` (and any layer-level `requires_edition`) has been
+**removed**; a manifest still setting it MUST be rejected at parse time with an
+actionable error naming `requires_enterprise` / the `enterprise:` block as the
+replacement.
+
+#### Scenario: Precondition violated under community edition
+- GIVEN a `community` manifest whose `adhoc-ee` `GitLayer` sets
+  `requires_enterprise: true`
 - WHEN the manifest is composed
-- THEN composition MUST raise a `CompositionError` naming the offending repo
+- THEN composition MUST raise a `CompositionError` naming the offending layer
 
-#### Scenario: Enterprise manifest accepts the same repo
-- GIVEN the same repo inside an `edition: "enterprise"` manifest
+#### Scenario: Precondition satisfied under enterprise edition
+- GIVEN the same layer inside an `edition: "enterprise"` manifest (with the
+  `enterprise:` block present)
 - WHEN the manifest is composed
-- THEN composition succeeds
+- THEN composition succeeds and the layer mounts at its own category root,
+  never at `"enterprise"`
+
+#### Scenario: Removed `requires_edition` key rejected
+- GIVEN a manifest with `requires_edition` set on a `GitRepo` or layer
+- WHEN the manifest is parsed
+- THEN parsing MUST fail with an error naming the field as removed and
+  pointing to `requires_enterprise`
 
 ### Requirement: Explicit discriminated layer union
 
@@ -94,8 +124,15 @@ object. It MUST NOT read or hash raw file bytes.
 
 ### Requirement: Compose orders and validates without materializing
 
-`compose(manifest) -> list[Layer]` MUST order core-first/client-last and validate edition coherence, override layers/repos, and final writable client. It MUST reject duplicates, unknown targets, invalid combinations, PublishedLayer/core targets before knowable I/O, and perform zero filesystem/network access.
-(Previously: it did not validate override repositories, duplicates, or target combinations.)
+`compose(manifest) -> list[Layer]` MUST order the chain as
+`core -> enterprise -> layers -> client` — inserting the `enterprise` singleton
+immediately after `core` when present — and validate edition coherence
+(including `requires_enterprise`), override layers/repos, and final writable
+client. It MUST reject duplicates, unknown targets, invalid combinations,
+PublishedLayer/core targets before knowable I/O, and perform zero
+filesystem/network access.
+(Previously: chain was `core -> layers -> client` with no enterprise slot, and
+it did not validate override repositories, duplicates, or target combinations.)
 
 #### Scenario: Override referencing a missing layer fails
 - GIVEN an `Override` naming a layer not present in `manifest.layers`
@@ -103,11 +140,13 @@ object. It MUST NOT read or hash raw file bytes.
 - THEN it raises `CompositionError` and performs no I/O
 
 #### Scenario: odoo-idp fire test composes cleanly
-- GIVEN a fixture manifest expressing odoo-idp (core odoo/odoo@19.0,
-  enterprise layer, localization layer with ~17 ingadhoc repos including
-  `odoo-argentina-ee` at `requires_edition: enterprise`, edition: enterprise)
+- GIVEN a fixture manifest expressing odoo-idp (core odoo/odoo@19.0, a
+  top-level `enterprise:` block, an `adhoc` category layer with ~17 ingadhoc
+  repos, and an `adhoc-ee` layer at `requires_enterprise: true`, edition:
+  enterprise)
 - WHEN `compose()` runs
-- THEN it returns an ordered layer chain with no errors
+- THEN it returns an ordered `core -> enterprise -> layers -> client` chain
+  with no errors
 
 ## Capability: drift-detection (New)
 
@@ -326,23 +365,46 @@ existing two Slice-1 contracts — neither existing contract MUST be weakened.
 
 ### Requirement: Layer category classifies the projection mount root
 
-Each `GitLayer`/`PublishedLayer` MUST expose an additive, optional
-`category: Literal["custom","community","localization","enterprise"] | None = None`
-field (back-compat: absent on all Slice 1/2a/2b fixtures). A pure
-`classify_root(layer) -> MountRoot` MUST return: `"enterprise"` when
-`requires_edition == "enterprise"`; else the explicit `category` when set; else
-`"custom"` as the default. `CoreLayer` MUST always classify to `"community"`.
-`classify_root` MUST NEVER return `"worktrees"` — that root is reserved
-exclusively for `unlock`-promoted writable copies.
+Each `GitLayer`/`PublishedLayer` MUST expose `category` as a validated
+free-form slug string (pattern `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`, length 1–63);
+absent/`None` normalizes to `"custom"`. There is intentionally NO reserved-name
+blocklist — the pure mount model nests every user layer under `/mnt/custom/`,
+so a category named `community`/`enterprise`/`worktrees` is only ever a plain
+subfolder there and can never collide with a system root.
 
-#### Scenario: Legacy layer without category falls back to custom
-- GIVEN a `GitLayer` with no `category` and `requires_edition` unset
-- WHEN `classify_root(layer)` runs
-- THEN it returns `"custom"`
+A pure `classify_root(layer) -> MountRoot` (where `MountRoot` is `str`, no
+longer a closed `Literal`) MUST return: `"community"` for `CoreLayer`;
+`"enterprise"` for the `EnterpriseLayer` singleton; otherwise
+`"custom/<category>"` for any `GitLayer`/`PublishedLayer`, where an
+uncategorized layer (default `"custom"`) resolves to `"custom/default"`.
+`requires_enterprise` MUST NOT affect classification. `classify_root` MUST
+NEVER return `"worktrees"` — that root is reserved exclusively for
+`unlock`-promoted writable copies.
 
-#### Scenario: Enterprise repo forces enterprise root regardless of category
-- GIVEN a layer with `category="localization"` and `requires_edition="enterprise"`
+#### Scenario: Uncategorized layer nests under custom/default
+- GIVEN a `GitLayer` with no `category`
 - WHEN `classify_root(layer)` runs
+- THEN it returns `"custom/default"`
+
+#### Scenario: Declared category nests under the custom namespace
+- GIVEN a `GitLayer` with `category="oca"`
+- WHEN `classify_root(layer)` runs
+- THEN it returns `"custom/oca"`
+
+#### Scenario: A category named like a system root never targets it
+- GIVEN a `GitLayer` with `category="enterprise"`
+- WHEN `classify_root(layer)` runs
+- THEN it returns `"custom/enterprise"` (a plain subfolder), never the
+  `"enterprise"` system root
+
+#### Scenario: requires_enterprise does not change classification
+- GIVEN a layer with `category="adhoc"` and `requires_enterprise=True`
+- WHEN `classify_root(layer)` runs
+- THEN it returns `"custom/adhoc"`
+
+#### Scenario: Enterprise singleton classifies to enterprise
+- GIVEN the manifest's `enterprise: EnterpriseLayer` singleton
+- WHEN `classify_root(enterprise)` runs
 - THEN it returns `"enterprise"`
 
 #### Scenario: Core always classifies to community
@@ -526,27 +588,39 @@ resolution happens only in `odoo_forge_cli`.
 - THEN the non-absolute `XDG_STATE_HOME` is ignored per the XDG Base Directory
   spec and the default `~/.local/state/odoo-forge` base is used
 
-### Requirement: Host and container mount root tables are decoupled
+### Requirement: Mount root tables are manifest-derived and host/container decoupled
 
-The five mount roots (`community`, `custom`, `localization`, `enterprise`,
-`worktrees`) MUST derive as `<base>/<root>` from any base. The CLI MUST
-build two independent tables from the same five keys: a HOST table rooted
-at the resolved host mount base (used for `WorkspaceProvider`
-checkout/scan/promote and `MaterializedState` path evidence), and a
-CONTAINER table rooted at the fixed `/mnt` constant (used for
-`MountEvidence.container_path` and Docker bind-mount targets). Changing the
-HOST base MUST NOT change any CONTAINER-side path.
+The mount-root table MUST be derived from the manifest, not a static constant:
+`build_mount_roots(base, manifest)` MUST return the system/structural roots —
+exactly `community`, `enterprise`, `worktrees` — plus one `custom/<category>`
+entry per distinct category declared across `manifest.layers` (uncategorized →
+`custom/default`). Without a manifest it MUST return the system roots plus the
+bare `custom` parent (sufficient for recursive scan enumeration). `localization`
+is NOT a system root. The CLI MUST build two independent tables from the same
+keys: a HOST table rooted at the resolved host mount base (used for
+`WorkspaceProvider` checkout/scan/promote and `MaterializedState` path
+evidence), threaded per-manifest via `_host_roots(parsed)`; and a CONTAINER
+table rooted at the fixed `/mnt` constant (used for
+`MountEvidence.container_path` and Docker bind-mount targets). Changing the HOST
+base MUST NOT change any CONTAINER-side path.
+
+#### Scenario: A declared category adds a manifest-derived root
+- GIVEN a manifest declaring a layer with `category: "oca"`
+- WHEN `build_mount_roots(base, manifest)` runs
+- THEN the result includes `custom/oca -> <base>/custom/oca` alongside the
+  system roots `community`, `enterprise`, `worktrees`
+
+#### Scenario: No custom categories yields only the system roots
+- GIVEN a manifest with no custom categories
+- WHEN mount roots are computed with a manifest
+- THEN the result is exactly the system roots `community`, `enterprise`,
+  `worktrees` (plus any `custom/default` only if an uncategorized layer exists)
 
 #### Scenario: Container path is unaffected by a custom host base
 - GIVEN the host mount base resolves to `/custom/path`
-- WHEN a bind mount is computed for the `custom` root
-- THEN the host side is `/custom/path/custom/...` and the container side is
-  `/mnt/custom/...`
-
-#### Scenario: Default host base still yields fixed container paths
-- GIVEN the host mount base resolves to `~/.local/state/odoo-forge`
-- WHEN a bind mount is computed for any root
-- THEN the container side is `/mnt/<root>/...`, unchanged from prior behavior
+- WHEN a bind mount is computed for a `custom/oca` layer
+- THEN the host side is `/custom/path/custom/oca/...` and the container side is
+  `/mnt/custom/oca/...`
 
 ### Requirement: forge validate delegates all logic to the core
 
