@@ -48,6 +48,7 @@ Leé esto después de [02-repository-authority-matrix.md](02-repository-authorit
 | `data_artifacts/` | Contratos de restore-set y outcomes redacted de readiness/discard | Protege la semántica de restore sin imponer implementación de storage |
 | `project_catalog/` | Modelos de request de catálogo y lógica de resolución autoritativa | Resuelve un registro autoritativo sin heurísticas de fallback |
 | `durable_operations/` | Registros replay-safe de workflow, checkpoints y lifecycle de cleanup residual | Persistencia y recovery quedan detrás de ports |
+| `resource_ownership/` | Modelo de ownership de tres estados (`created`/`adopted`/`external`), `ResourceRef` genérico, receipt reusable y atribución opcional de tenant | Vocabulario canónico de `CAP-RESOURCE-OWNERSHIP`; `database/types.py` re-exporta `ResourceOwnership`, `OperationIdentity` y `CreationReceipt` desde acá |
 
 ## Ports Que Definen El Límite
 
@@ -61,6 +62,7 @@ Leé esto después de [02-repository-authority-matrix.md](02-repository-authorit
 | `DatabaseProvider` | `src/odoo_forge_postgres_docker` hoy | Provisionar, restaurar, adoptar, reconciliar, borrar y limpiar bases de datos |
 | `DurableOperationStore` | ningún package concreto listado en este corte | Persistir estado autoritativo del workflow |
 | `DurableOperationRecovery` | ningún package concreto listado en este corte | Registrar intentos de recovery sobre estado durable |
+| `ResourceOwnershipPort` | ningún package concreto listado en este corte (el adapter Docker `LocalOwnershipAuthority` ya satisface read/attest pero no está cableado a este port) | Leer estado de ownership y receipt/evidence, y atestiguar sin transicionar estado |
 
 ## Flujos De Dominio Clave
 
@@ -126,6 +128,16 @@ Leé esto después de [02-repository-authority-matrix.md](02-repository-authorit
 | `DatabaseCreation` / `CreationReceipt` | Handoff seguro para reconciliar, borrar y limpiar más adelante |
 | `DatabaseProvider` | Contrato de lifecycle que nunca exige credenciales en plaintext ni detalles de storage |
 
+### Flujo de resource ownership
+
+| Concern del core | Significado |
+| --- | --- |
+| `ResourceOwnership` | Exactamente tres estados (`created`/`adopted`/`external`), sin extensiones en v1 |
+| `ResourceRef` | Identificador opaco + `resource_kind` + ownership, generalizado a cualquier tipo de recurso |
+| `OwnershipReceipt` | Proof de operación opaco + owned resource ids + expectativa de live-proof; el mecanismo concreto queda en el adapter |
+| `TenantAttribution` | Link opcional a tenant compuesto con ownership, nunca mandatorio en el momento de ownership |
+| `ResourceOwnershipPort.describe_ownership()` / `.attest_ownership()` | Lectura y atestación sin verbos de transición; `reserve`/`bind`/`activate`/`retire`/`adopt` quedan diferidos a `SP-CONTROL-PLANE-AUTHORITY` |
+
 ## Lo Que Maintainers No Deben Hacer En El Core
 
 | No hacer | Por qué |
@@ -141,5 +153,5 @@ Leé esto después de [02-repository-authority-matrix.md](02-repository-authorit
 
 - Confirmá que el cambio pueda expresarse con datos puros y funciones puras.
 - Si se necesita un side effect, agregá o refiná un port en vez de importar un adapter.
-- Actualizá los tests correspondientes bajo `tests/manifest`, `tests/backend`, `tests/ports`, `tests/database`, `tests/credentials`, `tests/data_artifacts`, `tests/project_catalog` o `tests/durable_operations`.
+- Actualizá los tests correspondientes bajo `tests/manifest`, `tests/backend`, `tests/ports`, `tests/database`, `tests/credentials`, `tests/data_artifacts`, `tests/project_catalog`, `tests/durable_operations` o `tests/resource_ownership`.
 - Revisá otra vez el siguiente doc: [Mapa De CLI Y Adapters](04-cli-and-adapters-map.md) antes de tocar wiring del composition root.

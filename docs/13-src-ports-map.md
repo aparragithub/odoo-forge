@@ -54,6 +54,7 @@ No es solo una interfaz por estilo. Es la pieza que permite que `src/odoo_forge/
 | `DatabaseProvider` | Lifecycle de base de datos neutral al provider | `src/odoo_forge_postgres_docker` |
 | `DurableOperationStore` | Persistencia replay-safe de workflows durables | no hay adapter canónico cableado en este corte |
 | `DurableOperationRecovery` | Registro de intentos/evidencia de recovery | no hay adapter canónico cableado en este corte |
+| `ResourceOwnershipPort` | Leer ownership state/evidence y atestiguar receipts sin transicionar estado | no hay adapter canónico cableado en este corte (el Docker `LocalOwnershipAuthority` ya implementa read/attest pero no está adaptado a este port en este corte) |
 
 ## Familias por propósito
 
@@ -64,6 +65,7 @@ No es solo una interfaz por estilo. Es la pieza que permite que `src/odoo_forge/
 | Registry y artifacts publicados | `ImageRegistryProvider`, `PublishedArtifactResolver` | commands de imágenes y layers `published` |
 | Database foundation | `DatabaseProvider` | provision, restore, adopt, reconcile, delete y cleanup |
 | Workflows durables | `DurableOperationStore`, `DurableOperationRecovery` | checkpoints, commit terminal, recovery y cleanup residual |
+| Resource ownership | `ResourceOwnershipPort` | describe/attest de ownership state y receipt para cualquier tipo de recurso |
 
 ## Qué implementa cada adapter
 
@@ -100,6 +102,7 @@ Por eso `ports/` no es accesorio. Es el pasillo central por donde pasan los lím
 | `DatabaseProvider` | lifecycle completo con credenciales opacas | secrets o handles se filtran a capas incorrectas |
 | `DurableOperationStore` | persistencia con revisiones y lifecycle | recovery deja de ser auditable o compare-and-swap seguro |
 | `DurableOperationRecovery` | evidencia de recuperación | el workflow durable pierde trazabilidad |
+| `ResourceOwnershipPort` | `describe_ownership()` y `attest_ownership()` puramente read/attest, sin verbos de transición | ownership deja de ser provider-neutral o el port empieza a exponer `reserve`/`bind`/`activate`/`retire`/`adopt` fuera de `SP-CONTROL-PLANE-AUTHORITY` |
 
 ## Señales de diseño sano
 
