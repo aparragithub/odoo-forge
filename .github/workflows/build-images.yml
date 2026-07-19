@@ -41,8 +41,26 @@ jobs:
         run: |
           bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
           ./actionlint -color
-      - name: Run build.sh unit tests
-        run: ./factory/tests/test-build-sh.sh
+      - name: Run factory shell tests
+        # Run the whole factory/tests/ suite, not just build.sh: the entrypoint
+        # addons-path/mount-root, Dockerfile mount-root, and secret-handling
+        # tests all guard runtime behavior and must gate CI too. Invoked via
+        # `bash` (not `./`) so a missing executable bit on any script never
+        # silently skips it.
+        run: |
+          shopt -s nullglob
+          failed=0
+          for t in factory/tests/test-*.sh; do
+            echo "::group::$t"
+            if bash "$t"; then
+              echo "::endgroup::"
+            else
+              echo "::endgroup::"
+              echo "::error::$t failed"
+              failed=1
+            fi
+          done
+          exit "$failed"
 
   setup:
     runs-on: ubuntu-latest

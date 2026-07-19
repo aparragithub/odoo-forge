@@ -13,9 +13,13 @@ enterprise:
 
 layers:
   # --- OCA ------------------------------------------------------------------
+  # `category` is a free-form user label (open categories, pure mount model):
+  # this layer nests read-only at /mnt/custom/oca/. It is NOT the community
+  # system root — those are only community/enterprise/worktrees, populated by
+  # `core`/`enterprise`, never by a user layer.
   - type: git
     name: oca
-    category: community
+    category: oca
     repos:
       - url: https://github.com/OCA/sale-workflow.git            # sale_order_type
         ref: "19.0"
@@ -25,7 +29,7 @@ layers:
   # --- AdHoc (ingadhoc) -----------------------------------------------------
   - type: git
     name: adhoc
-    category: localization
+    category: adhoc
     repos:
       - url: https://github.com/ingadhoc/odoo-argentina.git        # l10n_ar_tax, l10n_ar_tax_python, l10n_ar_ux
         ref: "19.0"
@@ -48,7 +52,7 @@ layers:
   # account_reports) desde el fork enterprise de arriba.
   - type: git
     name: adhoc-ee
-    category: localization
+    category: adhoc
     requires_enterprise: true
     repos:
       - url: https://github.com/ingadhoc/odoo-argentina-ee.git     # l10n_ar_account_reports
