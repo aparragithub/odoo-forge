@@ -11,7 +11,7 @@ from odoo_forge.manifest.lockfile import (
     ResolvedRepo,
     compute_manifest_hash,
 )
-from odoo_forge.manifest.projection import ScannedRepo
+from odoo_forge.manifest.projection import ScannedRepo, build_mount_roots
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
@@ -34,6 +34,15 @@ _MANIFEST_TEXT = (
     "        ref: main\n"
     "client:\n"
     "  addons_path: client/addons\n"
+)
+
+# Mirror the per-manifest HOST table `onboard` builds internally
+# (`build_mount_roots(_resolve_mount_base(), parsed)`), so the fake provider's
+# scanned paths line up with the roots the command actually resolves. The
+# `custom-x` layer defaults to the `custom` category, nesting under
+# `custom/default` in the pure mount model.
+_HOST_ROOTS = build_mount_roots(
+    main._resolve_mount_base(), Manifest.model_validate(yaml.safe_load(_MANIFEST_TEXT))
 )
 
 
@@ -64,12 +73,12 @@ class _FakeWorkspaceProvider:
             if self._stale_checkout:
                 return [
                     ScannedRepo(
-                        path=main._HOST_ROOTS["community"] / "core" / "odoo",
+                        path=_HOST_ROOTS["community"] / "core" / "odoo",
                         url="https://github.com/odoo/odoo.git",
                         commit="stale-sha",
                     ),
                     ScannedRepo(
-                        path=main._HOST_ROOTS["custom"] / "custom-x" / "custom-x",
+                        path=_HOST_ROOTS["custom/default"] / "custom-x" / "custom-x",
                         url="https://example.com/custom-x.git",
                         commit="stale-sha",
                     ),
