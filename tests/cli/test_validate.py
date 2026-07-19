@@ -90,7 +90,7 @@ def test_composition_error_clear_error_exit_one(tmp_path: Path) -> None:
         "    name: enterprise\n"
         "    source: registry://example/odoo-ee\n"
         "    version: '19.0.1'\n"
-        "    requires_edition: enterprise\n"
+        "    requires_enterprise: true\n"
         "client:\n"
         "  addons_path: client/addons\n"
     )

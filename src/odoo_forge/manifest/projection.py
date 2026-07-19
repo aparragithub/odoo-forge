@@ -19,7 +19,13 @@ from odoo_forge.manifest.drift import detect_drift
 from odoo_forge.manifest.errors import MountPlanningError, ProjectionError, ScanError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.resolution import resolve_default_ref
-from odoo_forge.manifest.schema import CoreLayer, GitLayer, Manifest, PublishedLayer
+from odoo_forge.manifest.schema import (
+    CoreLayer,
+    EnterpriseLayer,
+    GitLayer,
+    Manifest,
+    PublishedLayer,
+)
 from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, MaterializedState
 
 if TYPE_CHECKING:
@@ -98,17 +104,18 @@ class UnlockPlan(BaseModel):
     branch: str
 
 
-def classify_root(layer: CoreLayer | GitLayer | PublishedLayer) -> MountRoot:
+def classify_root(layer: CoreLayer | EnterpriseLayer | GitLayer | PublishedLayer) -> MountRoot:
     """Map a layer to its read-only projection mount root. Pure, zero I/O.
 
-    Precedence: `CoreLayer` always classifies to `"community"`; else
-    `requires_edition == "enterprise"` always wins over any explicit
-    `category`; else the layer's explicit `category` when set; else
-    `"custom"` as the default. Never returns `"worktrees"`.
+    Precedence: `CoreLayer` always classifies to `"community"`; the
+    `EnterpriseLayer` singleton always classifies to `"enterprise"`; else the
+    layer's explicit `category` when set; else `"custom"` as the default.
+    `requires_enterprise` is a coherence precondition only and never affects
+    mount classification. Never returns `"worktrees"`.
     """
     if isinstance(layer, CoreLayer):
         return "community"
-    if layer.requires_edition == "enterprise":
+    if isinstance(layer, EnterpriseLayer):
         return "enterprise"
     if layer.category is not None:
         return layer.category

@@ -29,6 +29,7 @@ from odoo_forge.manifest.projection import (
 from odoo_forge.manifest.schema import (
     Client,
     CoreLayer,
+    EnterpriseLayer,
     GitLayer,
     GitRepo,
     Manifest,
@@ -85,13 +86,20 @@ class TestClassifyRoot:
 
         assert classify_root(layer) == "localization"
 
-    def test_enterprise_repo_forces_enterprise_root_regardless_of_category(self) -> None:
-        layer = _git_layer(category="localization", requires_edition="enterprise")
+    def test_requires_enterprise_does_not_affect_mount_classification(self) -> None:
+        # `requires_enterprise` is a coherence precondition only (Slice 1);
+        # it must NOT influence mount classification anymore.
+        layer = _git_layer(category="localization", requires_enterprise=True)
 
-        assert classify_root(layer) == "enterprise"
+        assert classify_root(layer) == "localization"
 
     def test_core_always_classifies_to_community(self) -> None:
         assert classify_root(CoreLayer()) == "community"
+
+    def test_enterprise_singleton_classifies_to_enterprise(self) -> None:
+        enterprise = EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="19.0")
+
+        assert classify_root(enterprise) == "enterprise"
 
     def test_published_layer_default_category_is_custom(self) -> None:
         layer = PublishedLayer(
@@ -107,12 +115,13 @@ class TestClassifyRoot:
         "layer",
         [
             CoreLayer(),
+            EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="19.0"),
             _git_layer(),
             _git_layer(category="community"),
             _git_layer(category="custom"),
             _git_layer(category="localization"),
             _git_layer(category="enterprise"),
-            _git_layer(requires_edition="enterprise"),
+            _git_layer(requires_enterprise=True),
         ],
     )
     def test_never_returns_worktrees(self, layer: object) -> None:
@@ -129,13 +138,14 @@ class TestPlanProjection:
     ) -> None:
         manifest = _manifest(
             edition="enterprise",
+            enterprise=EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="19.0"),
             layers=[
                 PublishedLayer(
                     type="published",
-                    name="enterprise",
+                    name="enterprise-addons",
                     source="registry://example/odoo-ee",
                     version="19.0.1",
-                    requires_edition="enterprise",
+                    requires_enterprise=True,
                 ),
             ],
         )
@@ -170,6 +180,7 @@ class TestPlanProjection:
     def test_plan_mirrors_lock_order(self) -> None:
         manifest = _manifest(
             edition="enterprise",
+            enterprise=EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="19.0"),
             layers=[
                 _git_layer(name="custom-x", category="custom"),
                 PublishedLayer(
@@ -177,7 +188,8 @@ class TestPlanProjection:
                     name="enterprise",
                     source="registry://example/odoo-ee",
                     version="19.0.1",
-                    requires_edition="enterprise",
+                    category="enterprise",
+                    requires_enterprise=True,
                 ),
             ],
         )

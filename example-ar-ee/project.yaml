@@ -1,0 +1,66 @@
+name: forge-ar-enterprise
+odoo_version: "19.0"
+edition: enterprise
+
+core:
+  type: core
+  url: https://github.com/odoo/odoo.git
+  ref: "19.0"
+
+enterprise:
+  url: https://github.com/aparragithub/enterprise.git
+  ref: "19.0"
+
+layers:
+  # --- OCA ------------------------------------------------------------------
+  - type: git
+    name: oca
+    category: community
+    repos:
+      - url: https://github.com/OCA/sale-workflow.git            # sale_order_type
+        ref: "19.0"
+      - url: https://github.com/OCA/stock-logistics-workflow.git # stock_picking_invoice_link
+        ref: "19.0"
+
+  # --- AdHoc (ingadhoc) -----------------------------------------------------
+  - type: git
+    name: adhoc
+    category: localization
+    repos:
+      - url: https://github.com/ingadhoc/odoo-argentina.git        # l10n_ar_tax, l10n_ar_tax_python, l10n_ar_ux
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-argentina-ce.git     # l10n_ar_reports (dep de l10n_ar_account_reports)
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/argentina-sale.git        # targets: l10n_ar_sale_order_type, l10n_ar_stock_delivery
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/account-payment.git       # target: l10n_ar_payment_bundle, account_payment_pro*
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/account-financial-tools.git  # account_ux, account_internal_transfer
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/sale.git                  # sale_ux
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/stock.git                 # stock_ux, delivery_ux, stock_declared_value
+        ref: "19.0"
+
+  # --- AdHoc enterprise-only ------------------------------------------------
+  # Modulo enterprise a instalar: l10n_ar_account_reports (motor de reportes AR:
+  # percepciones, retenciones, IVA). Requiere Enterprise (accountant +
+  # account_reports) desde el fork enterprise de arriba.
+  - type: git
+    name: adhoc-ee
+    category: localization
+    requires_enterprise: true
+    repos:
+      - url: https://github.com/ingadhoc/odoo-argentina-ee.git     # l10n_ar_account_reports
+        ref: "19.0"
+
+client:
+  addons_path: client/addons
+
+workspace:
+  checkout_timeout_seconds: 600
+
+backend:
+  odoo:
+    bind_host: 0.0.0.0
+    http_port: 18169
