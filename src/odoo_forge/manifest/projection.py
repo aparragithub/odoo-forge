@@ -25,6 +25,8 @@ from odoo_forge.manifest.schema import (
     GitLayer,
     Manifest,
     PublishedLayer,
+    _custom_category_folder,
+    _custom_root_key,
 )
 from odoo_forge.manifest.state import MaterializedLayer, MaterializedRepo, MaterializedState
 
@@ -44,29 +46,6 @@ MountRoot = str
 # CONTAINER base must never vary with the HOST base — only the HOST base is
 # configurable (resolved at the CLI composition root, `odoo_forge_cli.main`).
 CONTAINER_MOUNT_BASE: Path = Path("/mnt")
-
-# Uncategorized layers (`category` defaulting to `"custom"`) resolve to this
-# folder name under `/mnt/custom/`, per the pure mount model: a user who
-# writes `category: custom` explicitly lands in the exact same place.
-_DEFAULT_CUSTOM_CATEGORY_DIR = "default"
-
-
-def _custom_category_folder(category: str) -> str:
-    """Map a validated layer `category` to its subfolder name under
-    `/mnt/custom/`. Single source of truth for the folder mapping: the schema
-    default `"custom"` (and an explicit `category: custom`) both resolve to
-    the `"default"` subfolder, pinned so the two are indistinguishable on disk.
-    """
-    return _DEFAULT_CUSTOM_CATEGORY_DIR if category == "custom" else category
-
-
-def _custom_root_key(category: str) -> str:
-    """Map a validated layer `category` to its `roots` dict key.
-
-    Pure mount model: every non-system layer nests under `/mnt/custom/`.
-    """
-    return f"custom/{_custom_category_folder(category)}"
-
 
 def build_mount_roots(base: Path, manifest: Manifest | None = None) -> dict[str, Path]:
     """Build the mount-root table rooted at `base`. Pure, zero I/O.
@@ -106,6 +85,24 @@ def _default_container_roots(manifest: Manifest) -> dict[str, Path]:
     Single source of truth for the `roots is None` fallback shared by
     `plan_projection`, `plan_unlock`, and `build_mount_planning_view`."""
     return build_mount_roots(CONTAINER_MOUNT_BASE, manifest)
+
+
+def ordered_addons_roots(manifest: Manifest, base: Path = CONTAINER_MOUNT_BASE) -> list[Path]:
+    """Ordered mount-root paths for the runtime `addons_path` precedence. Pure.
+
+    `manifest.mount_priority` entries come first, in that exact order (already
+    validated by the schema to be known roots for this manifest); the remaining
+    known roots follow in the default order — the system roots `worktrees`,
+    `community`, `enterprise`, then declared `custom/<category>` roots sorted.
+    Odoo resolves duplicate module names by first match, so earlier roots win.
+    `/opt/odoo/addons` is appended by the entrypoint, not here.
+    """
+    roots = build_mount_roots(base, manifest)
+    default_order = [key for key in ("worktrees", "community", "enterprise") if key in roots]
+    default_order += sorted(key for key in roots if key.startswith("custom/"))
+    ordered = list(manifest.mount_priority)
+    ordered += [key for key in default_order if key not in manifest.mount_priority]
+    return [roots[key] for key in ordered]
 
 
 class ScannedRepo(BaseModel):
@@ -526,6 +523,7 @@ __all__ = [
     "CONTAINER_MOUNT_BASE",
     "MOUNT_ROOTS",
     "build_mount_roots",
+    "ordered_addons_roots",
     "ScannedRepo",
     "WorkspacePlanEntry",
     "WorkspacePlan",

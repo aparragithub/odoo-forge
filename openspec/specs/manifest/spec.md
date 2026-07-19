@@ -622,6 +622,49 @@ base MUST NOT change any CONTAINER-side path.
 - THEN the host side is `/custom/path/custom/oca/...` and the container side is
   `/mnt/custom/oca/...`
 
+### Requirement: Manifest mount_priority controls runtime addons_path precedence
+
+`Manifest` MUST expose `mount_priority: list[str] = []` as an optional ordered
+list of known mount-root keys for that manifest. Each entry MUST be one of the
+system roots `worktrees`, `community`, `enterprise`, or a declared
+`custom/<category>` root (with the uncategorized/default custom category mapped
+to `custom/default`). Duplicate entries MUST be rejected at validation time.
+
+The effective addons-path root order MUST be computed as: all
+`manifest.mount_priority` entries first, in exactly that order; then every
+remaining known root in the default order `worktrees`, `community`,
+`enterprise`, followed by sorted `custom/<category>` roots. `forge run`/backend
+planning MUST export that effective CONTAINER-side root order via the runtime
+`FORGE_ADDONS_PATH_ORDER` environment variable. The image entrypoint consumes
+that variable literally and still appends `/opt/odoo/addons` last.
+
+#### Scenario: mount_priority defaults to no explicit override
+- GIVEN a manifest omitting `mount_priority`
+- WHEN the manifest is parsed
+- THEN validation succeeds with `mount_priority == []`
+
+#### Scenario: mount_priority accepts known system and declared custom roots
+- GIVEN a manifest declaring category `overrides`
+- WHEN `mount_priority` is set to `["custom/overrides", "worktrees", "community", "enterprise"]`
+- THEN validation succeeds with that exact ordered list preserved
+
+#### Scenario: mount_priority rejects an unknown root for the manifest
+- GIVEN a manifest that does not declare category `nope`
+- WHEN `mount_priority` includes `custom/nope`
+- THEN validation MUST fail with a clear error naming the invalid entry
+
+#### Scenario: mount_priority rejects duplicate entries
+- GIVEN a manifest with `mount_priority: ["community", "community"]`
+- WHEN the manifest is parsed
+- THEN validation MUST fail with a clear duplicate-entry error
+
+#### Scenario: runtime addons_path order honors mount_priority before defaults
+- GIVEN a manifest whose `mount_priority` is `["custom/overrides"]`
+- WHEN backend planning computes `FORGE_ADDONS_PATH_ORDER`
+- THEN the exported root order starts with `/mnt/custom/overrides`
+- AND the remaining roots follow as `/mnt/worktrees`, `/mnt/community`,
+  `/mnt/enterprise`, then any remaining sorted `/mnt/custom/<category>` roots
+
 ### Requirement: forge validate delegates all logic to the core
 
 `forge validate [--manifest project.yaml]` MUST parse and validate the

@@ -38,6 +38,11 @@ Sobre D3 se acordó un modelo de mount **puro** que elimina, por construcción, 
 - Se paga un breaking change acotado (remoción de `requires_edition`, forma nueva de `MOUNT_ROOTS` y del `mkdir` del Dockerfile), mitigado con error de migración accionable y notas de CHANGELOG.
 - `backend/plan.py` deriva `Mount.root` de `container_path.parts[2]`, que con el anidamiento colapsa toda categoría custom a la etiqueta `"custom"`. Es inocuo hoy —`Mount.root` no lo consume nadie; los binds usan el `container_path` completo y anidado—, pero conviene revisarlo si algún consumidor futuro pretende distinguir categorías por esa etiqueta.
 
+## Estado
+
+- **T2.6 — Prioridad configurable del `addons_path`**: implementado. El manifiesto ahora expone `mount_priority: list[str]` para declarar, por key de mount root, qué roots deben ir primero en el `addons_path`. Las entradas válidas son los roots conocidos para ese manifiesto (`worktrees`, `community`, `enterprise`, y `custom/<category>` para categorías declaradas; `category: custom` normaliza a `custom/default`).
+- En runtime, el backend exporta `FORGE_ADDONS_PATH_ORDER` con los roots de contenedor en el orden efectivo: primero `manifest.mount_priority`, luego el orden por default (`worktrees`, `community`, `enterprise`, y después `custom/<category>` ordenados). El entrypoint consume esa variable literalmente y sigue agregando `/opt/odoo/addons` al final.
+
 ## Preguntas abiertas
 
-- **Prioridad configurable del `addons_path` por categoría de usuario** (T2.6, parkeado, no bloqueante): hoy las categorías de usuario rankean *después* de los roots de sistema, sin override. Si en algún momento una categoría necesita precedencia sobre `community`/`enterprise` (p. ej. para pisar un módulo core con un fork), habría que exponer una prioridad declarativa. Se difiere hasta tener un caso real.
+- Ninguna para esta decisión por ahora. Si aparece un caso real que requiera otra semántica de precedencia distinta de ordenar roots conocidos, se evaluará como un cambio nuevo.
