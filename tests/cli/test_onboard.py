@@ -44,11 +44,13 @@ class _FakeWorkspaceProvider:
         scan_error: bool = False,
         fail_checkout: bool = False,
         stale_checkout: bool = False,
+        post_checkout_stale: bool = False,
     ) -> None:
         self.checkout_calls: list[tuple[str, str, Path]] = []
         self._scan_error = scan_error
         self._fail_checkout = fail_checkout
         self._stale_checkout = stale_checkout
+        self._post_checkout_stale = post_checkout_stale
 
     def checkout(self, url: str, commit: str, dest: Path) -> None:
         if self._fail_checkout:
@@ -77,7 +79,7 @@ class _FakeWorkspaceProvider:
             ScannedRepo(
                 path=dest,
                 url=url,
-                commit="stale-sha" if self._stale_checkout else commit,
+                commit="stale-sha" if self._stale_checkout or self._post_checkout_stale else commit,
             )
             for url, commit, dest in self.checkout_calls
         ]
@@ -199,6 +201,24 @@ def test_onboard_rejects_stale_checkout_evidence_before_project(
 
     assert result.exit_code == 1
     assert "drift" in result.output.lower() or "stale" in result.output.lower()
+    assert not provider.checkout_calls
+
+
+def test_onboard_reports_post_projection_drift_as_safety_net(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _FakeWorkspaceProvider(post_checkout_stale=True)
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    manifest = _write_manifest_and_lock(tmp_path)
+
+    result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
+
+    assert result.exit_code == 1
+    assert "drift" in result.output.lower()
+    # Preflight passed and checkout ran; the drift was caught only by the
+    # post-projection safety-net re-scan, not by preflight.
+    assert provider.checkout_calls
+    assert "next" not in result.output.lower()
 
 
 def test_onboard_reports_scan_failure_without_checkout(
