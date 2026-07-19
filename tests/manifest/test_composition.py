@@ -7,7 +7,13 @@ import yaml
 from odoo_forge.manifest import composition
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.errors import CompositionError
-from odoo_forge.manifest.schema import CoreLayer, GitLayer, Manifest, PublishedLayer
+from odoo_forge.manifest.schema import (
+    CoreLayer,
+    EnterpriseLayer,
+    GitLayer,
+    Manifest,
+    PublishedLayer,
+)
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
@@ -45,6 +51,28 @@ def test_onion_order_core_first_client_last() -> None:
     assert chain[-1] == manifest.client
 
 
+def test_enterprise_singleton_inserted_at_chain_position_two() -> None:
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            edition="enterprise",
+            enterprise={"url": "https://github.com/odoo/enterprise.git", "ref": "19.0"},
+            layers=[
+                {
+                    "type": "published",
+                    "name": "extra",
+                    "source": "registry://example/extra",
+                    "version": "1.0.0",
+                },
+            ],
+        )
+    )
+
+    chain = compose(manifest)
+
+    assert [member.type for member in chain] == ["core", "enterprise", "published", "client"]
+    assert chain[1] is manifest.enterprise
+
+
 def test_composed_chain_is_uniformly_type_tagged() -> None:
     manifest = Manifest.model_validate(
         _base_kwargs(
@@ -75,18 +103,18 @@ def test_compose_empty_layers_chain_is_core_then_client() -> None:
     assert chain[1] is manifest.client
 
 
-def test_community_rejects_nested_enterprise_repo() -> None:
+def test_community_rejects_layer_with_requires_enterprise() -> None:
     manifest = Manifest.model_validate(
         _base_kwargs(
             layers=[
                 {
                     "type": "git",
                     "name": "localization",
+                    "requires_enterprise": True,
                     "repos": [
                         {
                             "url": "https://github.com/ingadhoc/odoo-argentina-ee.git",
                             "ref": "19.0",
-                            "requires_edition": "enterprise",
                         }
                     ],
                 },
@@ -94,28 +122,28 @@ def test_community_rejects_nested_enterprise_repo() -> None:
         )
     )
 
-    with pytest.raises(CompositionError, match="odoo-argentina-ee"):
+    with pytest.raises(CompositionError, match="localization"):
         compose(manifest)
 
 
 def test_community_rejects_layer_level_enterprise_published() -> None:
-    # Layer-level `requires_edition: enterprise` (a PublishedLayer, no nested
+    # Layer-level `requires_enterprise: true` (a PublishedLayer, no nested
     # repos) must fail under community — exercises the layer-level gating branch.
     manifest = Manifest.model_validate(
         _base_kwargs(
             layers=[
                 {
                     "type": "published",
-                    "name": "enterprise",
+                    "name": "enterprise-addons",
                     "source": "registry://example/odoo-ee",
                     "version": "19.0.1",
-                    "requires_edition": "enterprise",
+                    "requires_enterprise": True,
                 },
             ],
         )
     )
 
-    with pytest.raises(CompositionError, match="enterprise"):
+    with pytest.raises(CompositionError, match="enterprise-addons"):
         compose(manifest)
 
 
@@ -238,15 +266,16 @@ def test_enterprise_manifest_accepts_same_repo() -> None:
     manifest = Manifest.model_validate(
         _base_kwargs(
             edition="enterprise",
+            enterprise={"url": "https://github.com/odoo/enterprise.git", "ref": "19.0"},
             layers=[
                 {
                     "type": "git",
                     "name": "localization",
+                    "requires_enterprise": True,
                     "repos": [
                         {
                             "url": "https://github.com/ingadhoc/odoo-argentina-ee.git",
                             "ref": "19.0",
-                            "requires_edition": "enterprise",
                         }
                     ],
                 },
@@ -256,7 +285,9 @@ def test_enterprise_manifest_accepts_same_repo() -> None:
 
     chain = compose(manifest)
 
-    assert len(chain) == 3
+    # core, enterprise singleton, localization layer, client.
+    assert len(chain) == 4
+    assert isinstance(chain[1], EnterpriseLayer)
 
 
 def test_override_missing_layer_raises_no_io() -> None:
