@@ -181,11 +181,13 @@ class TestClassifyRoot:
             _git_layer(requires_enterprise=True),
         ],
     )
-    def test_never_returns_worktrees(self, layer: object) -> None:
+    def test_never_returns_worktrees(
+        self, layer: CoreLayer | EnterpriseLayer | GitLayer | PublishedLayer
+    ) -> None:
         # `classify_root` is statically typed to never return "worktrees";
         # this asserts that runtime invariant, so the comparison is
         # intentionally always-true to mypy.
-        assert classify_root(layer) != "worktrees"  # type: ignore[arg-type, comparison-overlap]
+        assert classify_root(layer) != "worktrees"
 
 
 class TestPlanProjection:
