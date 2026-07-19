@@ -47,6 +47,7 @@ MountRoot = str
 # configurable (resolved at the CLI composition root, `odoo_forge_cli.main`).
 CONTAINER_MOUNT_BASE: Path = Path("/mnt")
 
+
 def build_mount_roots(base: Path, manifest: Manifest | None = None) -> dict[str, Path]:
     """Build the mount-root table rooted at `base`. Pure, zero I/O.
 

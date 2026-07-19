@@ -129,8 +129,7 @@ class TestPlanBackend:
         # mount_priority entry first, then default order (system roots, then
         # remaining custom categories sorted). Consumed by entrypoint.sh.
         assert plan.odoo.env["FORGE_ADDONS_PATH_ORDER"] == (
-            "/mnt/custom/overrides,/mnt/worktrees,/mnt/community,"
-            "/mnt/enterprise,/mnt/custom/oca"
+            "/mnt/custom/overrides,/mnt/worktrees,/mnt/community,/mnt/enterprise,/mnt/custom/oca"
         )
 
     def test_mounts_only_validated_repositories_at_canonical_targets(self) -> None:
