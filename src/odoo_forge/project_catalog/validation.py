@@ -51,6 +51,10 @@ def validate_record(record: CatalogRecord) -> ValidatedCatalogRecord | InvalidCa
             reason_code=invalid_catalog_reason_code(invalid_fields),
         )
 
+    # The guard above proves both required string outputs are present and
+    # non-blank; assert it so the type narrows from `str | None` to `str`.
+    assert data_policy is not None and target is not None
+
     return ValidatedCatalogRecord(
         record_id=record.record_id,
         manifest_ref=manifest_ref,
