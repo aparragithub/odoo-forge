@@ -81,8 +81,13 @@ RUN groupadd -g ${ODOO_GID} odoo \
 # /mnt/worktrees is the Phase 2 workspace-projection mount point (per-worktree
 # addons scanned by entrypoint.sh's build_addons_path); created here so both
 # phases share the same directory layout.
-RUN mkdir -p /mnt/worktrees /mnt/custom /mnt/community /mnt/localization /mnt/enterprise /var/lib/odoo /etc/odoo \
-    && chown -R odoo:odoo /mnt/worktrees /mnt/custom /mnt/community /mnt/localization /mnt/enterprise /var/lib/odoo /etc/odoo
+#
+# System/structural roots are ONLY community, enterprise, worktrees, plus the
+# `custom` parent namespace for arbitrary user-declared categories (each
+# category subdir, e.g. /mnt/custom/oca/, is created at mount time by the
+# caller, not pre-created here per-category).
+RUN mkdir -p /mnt/community /mnt/enterprise /mnt/worktrees /mnt/custom /var/lib/odoo /etc/odoo \
+    && chown -R odoo:odoo /mnt/community /mnt/enterprise /mnt/worktrees /mnt/custom /var/lib/odoo /etc/odoo
 
 COPY --chown=odoo:odoo --from=builder /opt/venv /opt/venv
 COPY --chown=odoo:odoo --from=builder /opt/odoo /opt/odoo

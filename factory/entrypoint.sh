@@ -112,16 +112,37 @@ upsert_conf() {
 # ─── Build dynamic addons_path ──────────────────────────────
 # Scan mounted layer dirs for Odoo modules (__manifest__.py). A base image
 # ships none of these populated; higher layers / the local backend mount them.
+#
+# Ordering/precedence (manifest-derived mount-root model): the fixed system
+# roots come first — `worktrees` FIRST, then community, then enterprise —
+# then arbitrary user categories declared under /mnt/custom/<category>/,
+# scanned in sorted order; then /opt/odoo/addons last. `worktrees` leads on
+# purpose: Odoo resolves duplicate module names by FIRST match in
+# addons_path, so an `unlock`-promoted writable worktree must precede the
+# read-only projection of the same repo to shadow it. `localization` is NOT a
+# system root — it is an ordinary user category (/mnt/custom/localization) if
+# ever declared. A root/category that exists but has no modules is skipped
+# without error.
 build_addons_path() {
     local paths=""
-    local base dir
-    for base in /mnt/worktrees /mnt/custom /mnt/community /mnt/localization /mnt/enterprise; do
+    local base dir category_dir
+
+    for base in /mnt/worktrees /mnt/community /mnt/enterprise; do
         if [ -d "$base" ]; then
             while IFS= read -r dir; do
                 paths="${paths}${dir},"
             done < <(find "$base" -name '__manifest__.py' -type f 2>/dev/null | while read -r manifest; do dirname "$(dirname "$manifest")"; done | sort -u)
         fi
     done
+
+    if [ -d /mnt/custom ]; then
+        while IFS= read -r category_dir; do
+            while IFS= read -r dir; do
+                paths="${paths}${dir},"
+            done < <(find "$category_dir" -name '__manifest__.py' -type f 2>/dev/null | while read -r manifest; do dirname "$(dirname "$manifest")"; done | sort -u)
+        done < <(find /mnt/custom -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
+    fi
+
     paths="${paths}/opt/odoo/addons"
     echo "$paths"
 }
