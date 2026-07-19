@@ -99,7 +99,9 @@ def ordered_addons_roots(manifest: Manifest, base: Path = CONTAINER_MOUNT_BASE) 
     `/opt/odoo/addons` is appended by the entrypoint, not here.
     """
     roots = build_mount_roots(base, manifest)
-    default_order = [key for key in ("worktrees", "community", "enterprise") if key in roots]
+    default_order: list[str] = [
+        key for key in ("worktrees", "community", "enterprise") if key in roots
+    ]
     default_order += sorted(key for key in roots if key.startswith("custom/"))
     ordered = list(manifest.mount_priority)
     ordered += [key for key in default_order if key not in manifest.mount_priority]
