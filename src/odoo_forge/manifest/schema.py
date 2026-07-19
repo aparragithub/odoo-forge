@@ -7,44 +7,81 @@ in later slices.
 
 import ipaddress
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_REQUIRES_EDITION_MIGRATION_ERROR = (
+    "'requires_edition' has been removed. Use the top-level 'enterprise:' block "
+    "to declare the enterprise source, and 'requires_enterprise: true' on a "
+    "layer to declare it needs enterprise present as a precondition."
+)
 
 
-class GitRepo(BaseModel):
+class _LegacyEditionKeyRejector(BaseModel):
+    """Base mixin for models that could carry the removed `requires_edition`
+    key. Rejects it with an actionable migration error instead of the generic
+    `extra="forbid"` message. Subclasses opt into `extra="forbid"` themselves."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_legacy_requires_edition(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "requires_edition" in data:
+            raise ValueError(_REQUIRES_EDITION_MIGRATION_ERROR)
+        return data
+
+
+class GitRepo(_LegacyEditionKeyRejector):
+    model_config = ConfigDict(extra="forbid")
+
     url: str
     ref: str
-    requires_edition: Literal["enterprise"] | None = None
 
 
 class CoreLayer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["core"] = "core"
     url: str = "https://github.com/odoo/odoo.git"
     ref: str | None = None
 
 
+class EnterpriseLayer(BaseModel):
+    """Singleton enterprise source, sibling of `core:`. Never user-listed
+    under `layers:`; composed at chain position 2 (`core -> enterprise ->
+    layers -> client`) only when `Manifest.edition == "enterprise"`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["enterprise"] = "enterprise"
+    url: str
+    ref: str | None = None
+
+
 # Additive, optional projection-mount classification (Phase 2 Slice 3). Absent
 # on all Slice 1/2a/2b fixtures — defaults to `None`, which `classify_root`
-# treats as "custom". Distinct from `requires_edition`: `requires_edition ==
-# "enterprise"` always overrides `category` when classifying a mount root.
+# treats as "custom".
 LayerCategory = Literal["custom", "community", "localization", "enterprise"]
 
 
-class PublishedLayer(BaseModel):
+class PublishedLayer(_LegacyEditionKeyRejector):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["published"]
     name: str
     source: str
     version: str
-    requires_edition: Literal["enterprise"] | None = None
+    requires_enterprise: bool = False
     category: LayerCategory | None = None
 
 
-class GitLayer(BaseModel):
+class GitLayer(_LegacyEditionKeyRejector):
+    model_config = ConfigDict(extra="forbid")
+
     type: Literal["git"]
     name: str
     repos: list[GitRepo]
-    requires_edition: Literal["enterprise"] | None = None
+    requires_enterprise: bool = False
     category: LayerCategory | None = None
 
 
@@ -97,21 +134,35 @@ class BackendConfig(BaseModel):
 
 
 class Manifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     odoo_version: str
     edition: Literal["community", "enterprise"]
     core: CoreLayer = CoreLayer()
+    enterprise: EnterpriseLayer | None = None
     layers: list[Layer] = []
     client: Client
     overrides: list[Override] = []
     workspace: Workspace | None = None
     backend: BackendConfig | None = None
 
+    @model_validator(mode="after")
+    def _validate_enterprise_block(self) -> "Manifest":
+        if self.edition == "enterprise" and self.enterprise is None:
+            raise ValueError(
+                "edition 'enterprise' requires a top-level 'enterprise:' block (url, ref)"
+            )
+        if self.edition != "enterprise" and self.enterprise is not None:
+            raise ValueError("'enterprise:' block is only allowed when edition is 'enterprise'")
+        return self
+
 
 __all__ = [
     "GitRepo",
     "LayerCategory",
     "CoreLayer",
+    "EnterpriseLayer",
     "PublishedLayer",
     "GitLayer",
     "Layer",

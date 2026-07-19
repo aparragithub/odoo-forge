@@ -9,6 +9,7 @@ from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.schema import (
     Client,
     CoreLayer,
+    EnterpriseLayer,
     GitLayer,
     GitRepo,
     Manifest,
@@ -302,13 +303,14 @@ def test_core_shadowing_is_rejected_before_any_provider_call() -> None:
 def test_published_layers_omitted_from_lock() -> None:
     manifest = _manifest(
         edition="enterprise",
+        enterprise=EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="19.0"),
         layers=[
             PublishedLayer(
                 type="published",
                 name="enterprise",
                 source="registry://example/odoo-ee",
                 version="19.0.1",
-                requires_edition="enterprise",
+                requires_enterprise=True,
             )
         ],
     )
@@ -339,7 +341,7 @@ def test_composition_error_propagates_before_resolution() -> None:
                 name="enterprise",
                 source="registry://example/odoo-ee",
                 version="19.0.1",
-                requires_edition="enterprise",
+                requires_enterprise=True,
             )
         ],
     )

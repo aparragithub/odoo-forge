@@ -5,19 +5,21 @@ core:
   type: core
   url: https://github.com/odoo/odoo.git
   ref: "19.0"
+enterprise:
+  url: https://github.com/odoo/enterprise.git
+  ref: "19.0"
 layers:
   - type: published
     name: enterprise
     source: "registry://example/odoo-ee"
     version: "19.0.1"
-    requires_edition: enterprise
+    requires_enterprise: true
   - type: git
     name: localization
-    requires_edition: enterprise
+    requires_enterprise: true
     repos:
       - url: https://github.com/ingadhoc/odoo-argentina-ee.git
         ref: "19.0"
-        requires_edition: enterprise
 client:
   addons_path: client/addons
   python_requirements: client/requirements.txt
