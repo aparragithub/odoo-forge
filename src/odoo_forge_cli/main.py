@@ -334,6 +334,65 @@ def validate(
 
 
 @app.command()
+def onboard(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+) -> None:
+    """Validate local inputs, materialize the workspace, and print the next step."""
+    try:
+        data = _read_manifest_data(manifest)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        _render_validation_errors(exc)
+        raise typer.Exit(code=1) from exc
+
+    lock_path = manifest.parent / "project.lock"
+    try:
+        compose(parsed)
+        loaded_lock = _load_lock(lock_path)
+        if loaded_lock is None:
+            raise LockfileError(f"no lockfile found at '{lock_path}' — run `forge lock` first")
+
+        plan = plan_projection(parsed, loaded_lock, _HOST_ROOTS)
+        provider = _make_manifest_workspace_provider(parsed)
+        scanned = provider.scan(list(_HOST_ROOTS.values()))
+        materialized = materialize_state(scanned, _HOST_ROOTS)
+        preflight = detect_drift(parsed, loaded_lock, materialized)
+        blocking_drift = [
+            entry
+            for entry in preflight.manifest_lock_drift + preflight.lock_state_drift
+            if entry.kind != "not_materialized"
+        ]
+        if blocking_drift:
+            raise ManifestError(f"drift: {_format_drift(blocking_drift[0])}")
+
+        project_workspace(plan, provider)
+
+        scanned = provider.scan(list(_HOST_ROOTS.values()))
+        materialized = materialize_state(scanned, _HOST_ROOTS)
+        final_report = detect_drift(parsed, loaded_lock, materialized)
+        if not final_report.is_clean:
+            drift_entry = (
+                final_report.manifest_lock_drift[0]
+                if final_report.manifest_lock_drift
+                else final_report.lock_state_drift[0]
+            )
+            raise ManifestError(f"drift: {_format_drift(drift_entry)}")
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(f"onboarded workspace with {len(plan.steps)} repo(s) from {lock_path}")
+    typer.echo(f"next: run `forge validate --manifest {manifest}`")
+
+
+@app.command()
 def lock(
     manifest: Path = typer.Option(
         Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
