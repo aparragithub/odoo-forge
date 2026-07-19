@@ -92,6 +92,31 @@ def _normalize_category(value: str | None) -> str:
 LayerCategory = Annotated[str, BeforeValidator(_normalize_category)]
 
 
+# System/structural mount roots (see `projection.build_mount_roots`). Declared
+# here — alongside the category type — so `Manifest` can validate
+# `mount_priority` keys without importing `projection` (which imports this
+# module). `worktrees` is reserved for `unlock`-promoted worktrees.
+_SYSTEM_MOUNT_ROOTS = ("worktrees", "community", "enterprise")
+
+_DEFAULT_CUSTOM_CATEGORY_DIR = "default"
+
+
+def _custom_category_folder(category: str) -> str:
+    """Map a validated layer `category` to its subfolder name under
+    `/mnt/custom/`. Single source of truth for the folder mapping: the schema
+    default `"custom"` (and an explicit `category: custom`) both resolve to
+    the `"default"` subfolder, pinned so the two are indistinguishable on disk.
+    """
+    return _DEFAULT_CUSTOM_CATEGORY_DIR if category == "custom" else category
+
+
+def _custom_root_key(category: str) -> str:
+    """Map a validated layer `category` to its mount-root dict key
+    (`custom/<folder>`). Pure mount model: every non-system layer nests under
+    `/mnt/custom/`."""
+    return f"custom/{_custom_category_folder(category)}"
+
+
 class PublishedLayer(_LegacyEditionKeyRejector):
     model_config = ConfigDict(extra="forbid")
 
@@ -174,6 +199,11 @@ class Manifest(BaseModel):
     overrides: list[Override] = []
     workspace: Workspace | None = None
     backend: BackendConfig | None = None
+    # Ordered list of mount-root keys (`worktrees`/`community`/`enterprise` or a
+    # declared `custom/<category>`) that take precedence in the runtime
+    # `addons_path`. Entries appear first, in this exact order; unlisted roots
+    # follow in the default order. Empty (default) preserves prior behavior.
+    mount_priority: list[str] = []
 
     @model_validator(mode="after")
     def _validate_enterprise_block(self) -> "Manifest":
@@ -183,6 +213,23 @@ class Manifest(BaseModel):
             )
         if self.edition != "enterprise" and self.enterprise is not None:
             raise ValueError("'enterprise:' block is only allowed when edition is 'enterprise'")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mount_priority(self) -> "Manifest":
+        valid = set(_SYSTEM_MOUNT_ROOTS)
+        for layer in self.layers:
+            valid.add(_custom_root_key(layer.category))
+        seen: set[str] = set()
+        for key in self.mount_priority:
+            if key not in valid:
+                raise ValueError(
+                    f"mount_priority entry {key!r} is not a known mount root for this "
+                    f"manifest; valid roots: {sorted(valid)}"
+                )
+            if key in seen:
+                raise ValueError(f"mount_priority contains a duplicate entry {key!r}")
+            seen.add(key)
         return self
 
 

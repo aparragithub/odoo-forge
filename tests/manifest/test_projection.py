@@ -181,11 +181,13 @@ class TestClassifyRoot:
             _git_layer(requires_enterprise=True),
         ],
     )
-    def test_never_returns_worktrees(self, layer: object) -> None:
+    def test_never_returns_worktrees(
+        self, layer: CoreLayer | EnterpriseLayer | GitLayer | PublishedLayer
+    ) -> None:
         # `classify_root` is statically typed to never return "worktrees";
         # this asserts that runtime invariant, so the comparison is
         # intentionally always-true to mypy.
-        assert classify_root(layer) != "worktrees"  # type: ignore[arg-type, comparison-overlap]
+        assert classify_root(layer) != "worktrees"
 
 
 class TestPlanProjection:
@@ -926,3 +928,65 @@ class TestPlanUnlock:
         assert plan.branch == "unlock/custom-x/partner-fork"
         with pytest.raises(ProjectionError, match="does not belong to layer 'custom-x'"):
             plan_unlock(manifest, "custom-x", fork_url)
+
+
+class TestOrderedAddonsRoots:
+    def test_default_order_when_no_priority(self) -> None:
+        manifest = _manifest(
+            layers=[
+                _git_layer(name="oca", category="oca"),
+                _git_layer(name="adhoc", category="adhoc"),
+            ]
+        )
+
+        result = projection.ordered_addons_roots(manifest)
+
+        assert result == [
+            Path("/mnt/worktrees"),
+            Path("/mnt/community"),
+            Path("/mnt/enterprise"),
+            Path("/mnt/custom/adhoc"),
+            Path("/mnt/custom/oca"),
+        ]
+
+    def test_priority_entries_come_first_in_declared_order(self) -> None:
+        manifest = _manifest(
+            layers=[
+                _git_layer(name="ov", category="overrides"),
+                _git_layer(name="oca", category="oca"),
+            ],
+            mount_priority=["custom/overrides", "worktrees"],
+        )
+
+        result = projection.ordered_addons_roots(manifest)
+
+        # Listed roots first (exact order), then the rest in default order.
+        assert result == [
+            Path("/mnt/custom/overrides"),
+            Path("/mnt/worktrees"),
+            Path("/mnt/community"),
+            Path("/mnt/enterprise"),
+            Path("/mnt/custom/oca"),
+        ]
+
+    def test_a_custom_category_can_outrank_every_system_root(self) -> None:
+        manifest = _manifest(
+            layers=[_git_layer(name="ov", category="overrides")],
+            mount_priority=["custom/overrides"],
+        )
+
+        result = projection.ordered_addons_roots(manifest)
+
+        assert result[0] == Path("/mnt/custom/overrides")
+
+    def test_honors_injected_base(self) -> None:
+        manifest = _manifest(layers=[_git_layer(name="oca", category="oca")])
+
+        result = projection.ordered_addons_roots(manifest, base=Path("/opt/mnt"))
+
+        assert result == [
+            Path("/opt/mnt/worktrees"),
+            Path("/opt/mnt/community"),
+            Path("/opt/mnt/enterprise"),
+            Path("/opt/mnt/custom/oca"),
+        ]

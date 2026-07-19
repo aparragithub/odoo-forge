@@ -113,35 +113,39 @@ upsert_conf() {
 # Scan mounted layer dirs for Odoo modules (__manifest__.py). A base image
 # ships none of these populated; higher layers / the local backend mount them.
 #
-# Ordering/precedence (manifest-derived mount-root model): the fixed system
-# roots come first — `worktrees` FIRST, then community, then enterprise —
-# then arbitrary user categories declared under /mnt/custom/<category>/,
-# scanned in sorted order; then /opt/odoo/addons last. `worktrees` leads on
-# purpose: Odoo resolves duplicate module names by FIRST match in
-# addons_path, so an `unlock`-promoted writable worktree must precede the
-# read-only projection of the same repo to shadow it. `localization` is NOT a
-# system root — it is an ordinary user category (/mnt/custom/localization) if
-# ever declared. A root/category that exists but has no modules is skipped
-# without error.
+# Root ORDER controls precedence: Odoo resolves duplicate module names by the
+# FIRST match in addons_path, so earlier roots win.
+#   - When `FORGE_ADDONS_PATH_ORDER` is set (comma-separated container roots),
+#     forge injected the manifest-derived order — honoring the manifest's
+#     `mount_priority` (a user category can be placed ahead of the system
+#     roots). Roots are scanned in exactly that order.
+#   - When it is unset (e.g. the image run standalone, without forge), fall
+#     back to the fixed default: `worktrees` FIRST (so an unlock-promoted
+#     worktree shadows the read-only copy), then community, then enterprise,
+#     then sorted /mnt/custom/<category>.
+# `/opt/odoo/addons` is always last; `localization` is not a system root; a
+# root that exists but has no modules is skipped without error.
 build_addons_path() {
-    local paths=""
-    local base dir category_dir
+    local paths="" root dir category_dir
+    local -a roots=()
 
-    for base in /mnt/worktrees /mnt/community /mnt/enterprise; do
-        if [ -d "$base" ]; then
-            while IFS= read -r dir; do
-                paths="${paths}${dir},"
-            done < <(find "$base" -name '__manifest__.py' -type f 2>/dev/null | while read -r manifest; do dirname "$(dirname "$manifest")"; done | sort -u)
+    if [ -n "${FORGE_ADDONS_PATH_ORDER:-}" ]; then
+        IFS=',' read -r -a roots <<<"${FORGE_ADDONS_PATH_ORDER}" || true
+    else
+        roots=(/mnt/worktrees /mnt/community /mnt/enterprise)
+        if [ -d /mnt/custom ]; then
+            while IFS= read -r category_dir; do
+                roots+=("$category_dir")
+            done < <(find /mnt/custom -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
         fi
-    done
-
-    if [ -d /mnt/custom ]; then
-        while IFS= read -r category_dir; do
-            while IFS= read -r dir; do
-                paths="${paths}${dir},"
-            done < <(find "$category_dir" -name '__manifest__.py' -type f 2>/dev/null | while read -r manifest; do dirname "$(dirname "$manifest")"; done | sort -u)
-        done < <(find /mnt/custom -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort)
     fi
+
+    for root in "${roots[@]}"; do
+        [ -d "$root" ] || continue
+        while IFS= read -r dir; do
+            paths="${paths}${dir},"
+        done < <(find "$root" -name '__manifest__.py' -type f 2>/dev/null | while read -r manifest; do dirname "$(dirname "$manifest")"; done | sort -u)
+    done
 
     paths="${paths}/opt/odoo/addons"
     echo "$paths"
