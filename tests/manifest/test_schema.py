@@ -453,9 +453,7 @@ def test_mount_priority_rejects_system_root_typo() -> None:
     # `localization` is no longer a system root (pure mount model); it is only
     # valid as `custom/localization` and only when actually declared.
     with pytest.raises(ValidationError, match="mount_priority"):
-        Manifest.model_validate(
-            {**_base_manifest_kwargs(), "mount_priority": ["localization"]}
-        )
+        Manifest.model_validate({**_base_manifest_kwargs(), "mount_priority": ["localization"]})
 
 
 def test_mount_priority_rejects_duplicate_entries() -> None:
