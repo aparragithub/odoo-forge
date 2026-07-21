@@ -352,6 +352,70 @@ def test_ls_remote_disables_interactive_prompts_and_pins_locale(
     assert captured_kwargs["check"] is False
 
 
+def test_env_overlay_merges_over_non_interactive_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+    sha = "b" * 40
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        captured_kwargs.update(kwargs)
+        return _FakeCompletedProcess(0, stdout=f"{sha}\trefs/heads/main\n")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GitSourceProvider()
+    provider.resolve_ref(URL, "main", env_overlay={"GIT_ASKPASS": "/tmp/askpass.py"})
+
+    env = captured_kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["GIT_ASKPASS"] == "/tmp/askpass.py"
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+    assert env["LANG"] == "C"
+
+
+def test_no_env_overlay_preserves_exact_current_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_kwargs: dict[str, object] = {}
+    sha = "b" * 40
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        captured_kwargs.update(kwargs)
+        return _FakeCompletedProcess(0, stdout=f"{sha}\trefs/heads/main\n")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GitSourceProvider()
+    provider.resolve_ref(URL, "main")
+
+    env = captured_kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["GIT_ASKPASS"] == ""
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_env_overlay_secret_never_leaks_into_error_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "askpass-injected-secret-marker"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        assert env["GIT_ASKPASS_SECRET_MARKER"] == secret
+        return _FakeCompletedProcess(128, stderr="fatal: Authentication failed")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(AuthenticationError) as exc_info:
+        GitSourceProvider().resolve_ref(
+            SECRET_URL, "main", env_overlay={"GIT_ASKPASS_SECRET_MARKER": secret}
+        )
+
+    _assert_safe_error(exc_info.value, secret)
+
+
 def test_uppercase_bare_sha_passthrough_no_subprocess_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
