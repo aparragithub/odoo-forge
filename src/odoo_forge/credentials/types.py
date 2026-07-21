@@ -1,10 +1,17 @@
 """Opaque values owned by the credential capability."""
 
+from collections.abc import Callable
 from typing import Literal, NewType
 
 from pydantic import BaseModel, ConfigDict
 
 CredentialHandle = NewType("CredentialHandle", str)
+
+# Single source of truth for the handle->plaintext resolver shape. Every
+# adapter that resolves a `CredentialHandle` against the SOPS+age store
+# (git askpass injection, Docker env-file injection, the doctor check) must
+# import this alias rather than redefine it locally.
+CredentialResolver = Callable[[CredentialHandle], str]
 
 
 class _OpaqueCredentialValue(BaseModel):
@@ -34,5 +41,6 @@ __all__ = [
     "BackendCredentialBindings",
     "CredentialHandle",
     "CredentialInjectionDescriptor",
+    "CredentialResolver",
     "TargetContext",
 ]

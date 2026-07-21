@@ -42,5 +42,34 @@ jobs:
       - name: Type check (mypy strict)
         run: uv run mypy
 
+      # CI age-key delivery (source-credentials-model design, Slice 6): the enterprise
+      # source credential is decrypted through the same sops/age code path used locally.
+      # CI supplies the private age key via the encrypted repo secret
+      # SOPS_AGE_KEY_ENTERPRISE, written here to a keyfile under $RUNNER_TEMP so the
+      # existing SopsCommandResolver picks it up through SOPS_AGE_KEY_FILE exactly as it
+      # would a local ~/.config/sops/age/keys.txt. Forked-repo pull requests do not have
+      # access to repo secrets, so this step deliberately no-ops (does not fail the job)
+      # when the secret is empty — any subsequent step that actually needs to decrypt the
+      # enterprise credential will fail on its own in that case. This step is verified
+      # manually once pushed with the secret configured; it has no unit test coverage
+      # (per the design's testing strategy, YAML infra is not unit-testable).
+      - name: Write enterprise age key to runner keyfile
+        env:
+          SOPS_AGE_KEY_ENTERPRISE: ${{ secrets.SOPS_AGE_KEY_ENTERPRISE }}
+        run: |
+          if [ -z "$SOPS_AGE_KEY_ENTERPRISE" ]; then
+            echo "SOPS_AGE_KEY_ENTERPRISE secret not set (likely a fork PR) — skipping keyfile write."
+            exit 0
+          fi
+          KEYFILE="$RUNNER_TEMP/enterprise-age-key.txt"
+          printf '%s' "$SOPS_AGE_KEY_ENTERPRISE" > "$KEYFILE"
+          chmod 0600 "$KEYFILE"
+          echo "SOPS_AGE_KEY_FILE=$KEYFILE" >> "$GITHUB_ENV"
+
       - name: Run tests
         run: uv run pytest
+
+      - name: Remove enterprise age keyfile
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/enterprise-age-key.txt"
