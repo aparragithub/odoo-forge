@@ -31,6 +31,8 @@ def build_lock(
     compose(manifest)
 
     git_layers: list[ResolvedLayer] = [_resolve_core(manifest, provider)]
+    if manifest.enterprise is not None:
+        git_layers.append(_resolve_enterprise(manifest, provider))
     published_layers: list[ResolvedPublishedLayer] = []
 
     overrides = {(override.layer, override.repo): override for override in manifest.overrides}
@@ -62,6 +64,17 @@ def _resolve_core(manifest: Manifest, provider: SourceProvider) -> ResolvedLayer
     return ResolvedLayer(
         name="core",
         repos=[ResolvedRepo(url=core.url, ref=ref, commit=commit)],
+    )
+
+
+def _resolve_enterprise(manifest: Manifest, provider: SourceProvider) -> ResolvedLayer:
+    enterprise = manifest.enterprise
+    assert enterprise is not None  # narrows for mypy; caller already guards
+    ref = resolve_default_ref(enterprise, manifest.odoo_version)
+    commit = provider.resolve_ref(enterprise.url, ref)
+    return ResolvedLayer(
+        name="enterprise",
+        repos=[ResolvedRepo(url=enterprise.url, ref=ref, commit=commit)],
     )
 
 
