@@ -156,11 +156,14 @@ def test_lock_then_validate_round_trip_no_drift(
     assert lock_result.exit_code == 0
 
     lock = Lockfile.from_json((tmp_path / "project.lock").read_text())
-    assert [layer.name for layer in lock.layers] == ["core", "localization"]
+    assert [layer.name for layer in lock.layers] == ["core", "enterprise", "localization"]
     core_layer = lock.layers[0]
     assert len(core_layer.repos) == 1
     assert core_layer.repos[0].commit == "sha-19.0"
-    localization_layer = lock.layers[1]
+    enterprise_layer = lock.layers[1]
+    assert enterprise_layer.repos[0].url == "https://github.com/odoo/enterprise.git"
+    assert enterprise_layer.repos[0].commit == "sha-19.0"
+    localization_layer = lock.layers[2]
     assert [repo.url for repo in localization_layer.repos] == [
         "https://github.com/acme/odoo-argentina-ee.git"
     ]
@@ -180,6 +183,11 @@ def test_lock_then_validate_round_trip_no_drift(
                 ScannedRepo(
                     path=Path("/mnt/community/core/odoo"),
                     url="https://github.com/odoo/odoo.git",
+                    commit="sha-19.0",
+                ),
+                ScannedRepo(
+                    path=Path("/mnt/enterprise/enterprise/enterprise"),
+                    url="https://github.com/odoo/enterprise.git",
                     commit="sha-19.0",
                 ),
                 ScannedRepo(

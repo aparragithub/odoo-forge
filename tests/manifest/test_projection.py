@@ -307,6 +307,37 @@ class TestPlanProjection:
 
         assert plan.steps[0].target_path == roots["community"] / "core" / "odoo"
 
+    def test_routes_a_resolved_enterprise_singleton_layer_to_its_mount(self) -> None:
+        manifest = _manifest(
+            edition="enterprise",
+            enterprise=EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="19.0"),
+        )
+        lock = Lockfile(
+            generated_from="hash",
+            git_layers=[
+                ResolvedLayer(
+                    name="core",
+                    repos=[ResolvedRepo(url=manifest.core.url, ref="19.0", commit="sha-core")],
+                ),
+                ResolvedLayer(
+                    name="enterprise",
+                    repos=[
+                        ResolvedRepo(
+                            url="https://github.com/odoo/enterprise.git",
+                            ref="19.0",
+                            commit="sha-ee",
+                        )
+                    ],
+                ),
+            ],
+        )
+
+        plan = plan_projection(manifest, lock)
+
+        assert [step.layer for step in plan.steps] == ["core", "enterprise"]
+        assert [step.mount_root for step in plan.steps] == ["community", "enterprise"]
+        assert [step.commit for step in plan.steps] == ["sha-core", "sha-ee"]
+
     def test_orphaned_lock_layer_raises_and_returns_no_partial_plan(self) -> None:
         manifest = _manifest()
         lock = Lockfile(
@@ -900,6 +931,18 @@ class TestPlanUnlock:
 
         assert plan.source == roots["custom/default"] / "custom-x" / "odoo-partner"
         assert plan.dest == roots["worktrees"] / "custom-x" / "odoo-partner"
+
+    def test_routes_the_enterprise_singleton_layer(self) -> None:
+        manifest = _manifest(
+            edition="enterprise",
+            enterprise=EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="19.0"),
+        )
+
+        plan = plan_unlock(manifest, "enterprise", "https://github.com/odoo/enterprise.git")
+
+        assert plan.source == Path("/mnt/enterprise/enterprise/enterprise")
+        assert plan.dest == Path("/mnt/worktrees/enterprise/enterprise")
+        assert plan.branch == "unlock/enterprise/enterprise"
 
     def test_unknown_layer_raises_projection_error(self) -> None:
         manifest = _manifest()
