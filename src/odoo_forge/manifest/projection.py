@@ -190,9 +190,11 @@ def plan_projection(
     if roots is None:
         roots = _default_container_roots(manifest)
 
-    manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
+    manifest_layers_by_name: dict[str, CoreLayer | EnterpriseLayer | GitLayer | PublishedLayer] = {
         "core": manifest.core,
     }
+    if manifest.enterprise is not None:
+        manifest_layers_by_name["enterprise"] = manifest.enterprise
     for layer in manifest.layers:
         manifest_layers_by_name[layer.name] = layer
 
@@ -237,9 +239,11 @@ def plan_unlock(
     if roots is None:
         roots = _default_container_roots(manifest)
 
-    manifest_layers_by_name: dict[str, CoreLayer | GitLayer | PublishedLayer] = {
+    manifest_layers_by_name: dict[str, CoreLayer | EnterpriseLayer | GitLayer | PublishedLayer] = {
         "core": manifest.core,
     }
+    if manifest.enterprise is not None:
+        manifest_layers_by_name["enterprise"] = manifest.enterprise
     for layer in manifest.layers:
         manifest_layers_by_name[layer.name] = layer
 
@@ -249,7 +253,7 @@ def plan_unlock(
 
     declared_urls = (
         [matched_layer.url]
-        if isinstance(matched_layer, CoreLayer)
+        if isinstance(matched_layer, CoreLayer | EnterpriseLayer)
         else [repo.url for repo in matched_layer.repos]
         if isinstance(matched_layer, GitLayer)
         else []

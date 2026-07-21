@@ -4,7 +4,11 @@ import pytest
 
 from odoo_forge.manifest.artifacts import PublishedArtifactResolution
 from odoo_forge.manifest.errors import CompositionError, RefNotFoundError
-from odoo_forge.manifest.lockfile import ResolvedPublishedLayer, compute_manifest_hash
+from odoo_forge.manifest.lockfile import (
+    ResolvedPublishedLayer,
+    ResolvedRepo,
+    compute_manifest_hash,
+)
 from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.schema import (
     Client,
@@ -318,8 +322,61 @@ def test_published_layers_omitted_from_lock() -> None:
 
     lock = build_lock(manifest, provider, _FakePublishedArtifactResolver())
 
-    assert all(layer.name != "enterprise" for layer in lock.layers)
-    # Only the core layer is resolved — the published layer never calls the provider.
+    # The `PublishedLayer` named "enterprise" is never resolved into a git
+    # layer — only the `EnterpriseLayer` singleton is (as its own
+    # `git_layers` entry, distinct from `lock.published_layers`).
+    assert lock.published_layers[0].name == "enterprise"
+    assert [layer.name for layer in lock.layers] == ["core", "enterprise"]
+    assert provider.calls == [
+        (manifest.core.url, "19.0"),
+        ("https://github.com/odoo/enterprise.git", "19.0"),
+    ]
+
+
+def test_enterprise_layer_resolved_into_a_dedicated_git_layer() -> None:
+    manifest = _manifest(
+        edition="enterprise",
+        enterprise=EnterpriseLayer(url="https://github.com/odoo/enterprise.git"),
+    )
+    provider = _FakeSourceProvider()
+
+    lock = build_lock(manifest, provider, _FakePublishedArtifactResolver())
+
+    enterprise_layer = next(layer for layer in lock.git_layers if layer.name == "enterprise")
+    assert enterprise_layer.repos == [
+        ResolvedRepo(
+            url="https://github.com/odoo/enterprise.git",
+            ref="19.0",
+            commit="sha-19.0",
+        )
+    ]
+    assert provider.calls == [
+        (manifest.core.url, "19.0"),
+        ("https://github.com/odoo/enterprise.git", "19.0"),
+    ]
+
+
+def test_explicit_enterprise_ref_used_directly() -> None:
+    manifest = _manifest(
+        edition="enterprise",
+        enterprise=EnterpriseLayer(url="https://github.com/odoo/enterprise.git", ref="17.0-custom"),
+    )
+    provider = _FakeSourceProvider()
+
+    lock = build_lock(manifest, provider, _FakePublishedArtifactResolver())
+
+    enterprise_layer = next(layer for layer in lock.git_layers if layer.name == "enterprise")
+    assert enterprise_layer.repos[0].ref == "17.0-custom"
+    assert enterprise_layer.repos[0].commit == "sha-17.0-custom"
+
+
+def test_no_enterprise_layer_added_when_manifest_enterprise_is_none() -> None:
+    manifest = _manifest()
+    provider = _FakeSourceProvider()
+
+    lock = build_lock(manifest, provider, _FakePublishedArtifactResolver())
+
+    assert all(layer.name != "enterprise" for layer in lock.git_layers)
     assert provider.calls == [(manifest.core.url, "19.0")]
 
 
