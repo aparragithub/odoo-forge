@@ -10,15 +10,12 @@ resolved secret material in a `DoctorCheckResult`/`RotationResult` message.
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from odoo_forge.credentials.conventions import ENTERPRISE_SOURCE_CREDENTIAL_HANDLE
 from odoo_forge.credentials.errors import CredentialError
-from odoo_forge.credentials.types import CredentialHandle
-
-CredentialResolver = Callable[[CredentialHandle], str]
+from odoo_forge.credentials.types import CredentialResolver
 
 _AGE_KEY_MARKER = "AGE-SECRET-KEY-"
 _DEFAULT_AGE_KEY_FILE = Path.home() / ".config" / "sops" / "age" / "keys.txt"
@@ -144,6 +141,7 @@ def rotate_enterprise_credential(
 
 
 __all__ = [
+    "CredentialResolver",
     "DoctorCheckResult",
     "DoctorReport",
     "RotationResult",
