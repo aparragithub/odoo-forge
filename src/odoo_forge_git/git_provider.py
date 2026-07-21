@@ -8,6 +8,7 @@ the only place in the codebase that shells out to `git`.
 import os
 import re
 import subprocess
+from collections.abc import Mapping
 from urllib.parse import urlsplit, urlunsplit
 
 from odoo_forge.manifest.errors import (
@@ -79,11 +80,20 @@ class GitSourceProvider:
     def __init__(self, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self._timeout = timeout
 
-    def resolve_ref(self, url: str, ref: str) -> str:
+    def resolve_ref(self, url: str, ref: str, env_overlay: Mapping[str, str] | None = None) -> str:
+        """Resolve `ref` against `url`, merging `env_overlay` over the non-interactive env.
+
+        `env_overlay` is applied on top of `_non_interactive_env()` (e.g. a
+        short-lived `GIT_ASKPASS` from `GitCredentialInjector`); when `None`
+        the resulting env is byte-for-byte identical to today's behavior.
+        Overlay values are never logged, never placed in `_safe_url`, and
+        never interpolated into any raised error/exception message.
+        """
         if _BARE_SHA.fullmatch(ref):
             return ref
 
         public_url = _safe_url(url)
+        env = {**_non_interactive_env(), **(env_overlay or {})}
         deferred_error: ResolutionError | None = None
         try:
             result = subprocess.run(
@@ -92,7 +102,7 @@ class GitSourceProvider:
                 text=True,
                 check=False,
                 timeout=self._timeout,
-                env=_non_interactive_env(),
+                env=env,
             )
         except FileNotFoundError:
             deferred_error = ResolutionError("git executable not found")

@@ -132,6 +132,85 @@ def test_checkout_replaces_existing_clean_checkout_at_wrong_commit(
     assert not (dest / "stale-marker.txt").exists()
 
 
+def test_checkout_env_overlay_merges_over_non_interactive_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dest = tmp_path / "custom" / "acme" / "odoo"
+    captured_envs: list[dict[str, object]] = []
+    fake_run = _fake_run_factory(rev_parse_output=COMMIT)
+
+    def _recording_fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured_envs.append(env)
+        return fake_run(argv, **kwargs)  # type: ignore[operator, no-any-return]
+
+    monkeypatch.setattr(subprocess, "run", _recording_fake_run)
+
+    provider = GitWorkspaceProvider()
+    provider.checkout(URL, COMMIT, dest, env_overlay={"GIT_ASKPASS": "/tmp/askpass.py"})
+
+    assert captured_envs
+    for env in captured_envs:
+        assert env["GIT_ASKPASS"] == "/tmp/askpass.py"
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_checkout_no_env_overlay_preserves_exact_current_env(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dest = tmp_path / "custom" / "acme" / "odoo"
+    captured_envs: list[dict[str, object]] = []
+    fake_run = _fake_run_factory(rev_parse_output=COMMIT)
+
+    def _recording_fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        captured_envs.append(env)
+        return fake_run(argv, **kwargs)  # type: ignore[operator, no-any-return]
+
+    monkeypatch.setattr(subprocess, "run", _recording_fake_run)
+
+    provider = GitWorkspaceProvider()
+    provider.checkout(URL, COMMIT, dest)
+
+    assert captured_envs
+    for env in captured_envs:
+        assert env["GIT_ASKPASS"] == ""
+        assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_checkout_env_overlay_secret_never_leaks_into_error_messages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    dest = tmp_path / "custom" / "acme" / "odoo"
+    secret = "askpass-injected-secret-marker"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        assert env["GIT_ASKPASS_SECRET_MARKER"] == secret
+        if "clone" in argv:
+            return _FakeCompletedProcess(128, stderr="fatal: Authentication failed")
+        return _FakeCompletedProcess(0, stdout="")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    provider = GitWorkspaceProvider()
+
+    with pytest.raises(CheckoutError) as exc_info:
+        provider.checkout(
+            SECRET_URL, COMMIT, dest, env_overlay={"GIT_ASKPASS_SECRET_MARKER": secret}
+        )
+
+    message = str(exc_info.value)
+    assert secret not in message
+    rendered_traceback = "".join(
+        traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb)
+    )
+    assert secret not in rendered_traceback
+
+
 def test_missing_git_binary_raises_checkout_error(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -16,7 +16,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from odoo_forge.manifest.errors import (
@@ -50,7 +50,13 @@ class GitWorkspaceProvider:
     def __init__(self, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> None:
         self._timeout = timeout
 
-    def checkout(self, url: str, commit: str, dest: Path) -> None:
+    def checkout(
+        self,
+        url: str,
+        commit: str,
+        dest: Path,
+        env_overlay: Mapping[str, str] | None = None,
+    ) -> None:
         """Check out `url` at `commit` into `dest`, atomically.
 
         Idempotent: a no-op when `dest` already exists at `commit`. Refuses
@@ -61,6 +67,12 @@ class GitWorkspaceProvider:
         renamed to a sibling backup, the fresh clone is `os.replace`d into
         `dest`, and only then is the backup removed. If the final swap fails
         the backup is restored, so `dest` is never left absent or half-cloned.
+
+        `env_overlay` is merged over `_non_interactive_env()` for every git
+        subprocess this checkout runs (e.g. a short-lived `GIT_ASKPASS` from
+        `GitCredentialInjector`); when `None` the resulting env is
+        byte-for-byte identical to today's behavior. Overlay values are
+        never logged and never interpolated into any raised error message.
         """
         if dest.exists():
             if _is_linked_worktree(dest):
@@ -73,7 +85,7 @@ class GitWorkspaceProvider:
             if self._is_dirty(dest):
                 raise CheckoutError(f"refusing to overwrite dirty checkout at {dest}")
 
-        self._clone_and_replace(url, commit, dest)
+        self._clone_and_replace(url, commit, dest, env_overlay)
 
     def scan(self, roots: Sequence[Path]) -> list[ScannedRepo]:
         """Walk `roots` and return one `ScannedRepo` per on-disk git checkout.
@@ -131,23 +143,34 @@ class GitWorkspaceProvider:
             error_cls=PromotionError,
         )
 
-    def _clone_and_replace(self, url: str, commit: str, dest: Path) -> None:
+    def _clone_and_replace(
+        self,
+        url: str,
+        commit: str,
+        dest: Path,
+        env_overlay: Mapping[str, str] | None = None,
+    ) -> None:
         dest.parent.mkdir(parents=True, exist_ok=True)
         tmp_dir = tempfile.mkdtemp(dir=dest.parent)
         clone_path = Path(tmp_dir)
         try:
-            self._clone(url, clone_path)
+            self._clone(url, clone_path, env_overlay)
             # `git checkout` has no clean end-of-options form for a revision,
             # so we rely on `commit` already being a resolved 40-char SHA and
             # pass `--detach` to keep the checkout headless.
-            self._run(["git", "-C", str(clone_path), "checkout", "--detach", commit])
+            self._run(
+                ["git", "-C", str(clone_path), "checkout", "--detach", commit],
+                env_overlay=env_overlay,
+            )
         except BaseException:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
 
         self._atomic_swap(clone_path, dest)
 
-    def _clone(self, url: str, clone_path: Path) -> None:
+    def _clone(
+        self, url: str, clone_path: Path, env_overlay: Mapping[str, str] | None = None
+    ) -> None:
         """Clone `url` into `clone_path`, preferring a partial clone.
 
         Attempts `git clone --filter=blob:none --no-checkout` first, so only
@@ -170,7 +193,8 @@ class GitWorkspaceProvider:
                     "--",
                     url,
                     str(clone_path),
-                ]
+                ],
+                env_overlay=env_overlay,
             )
             return
         except CheckoutError:
@@ -179,7 +203,10 @@ class GitWorkspaceProvider:
         # Retry outside the `except` block so a second failure does not
         # implicitly chain onto the first via `__context__`.
         shutil.rmtree(clone_path, ignore_errors=True)
-        self._run(["git", "clone", "--no-checkout", "--", url, str(clone_path)])
+        self._run(
+            ["git", "clone", "--no-checkout", "--", url, str(clone_path)],
+            env_overlay=env_overlay,
+        )
 
     @staticmethod
     def _atomic_swap(clone_path: Path, dest: Path) -> None:
@@ -212,9 +239,13 @@ class GitWorkspaceProvider:
         return bool(result.stdout.strip())
 
     def _run(
-        self, argv: list[str], error_cls: type[WorkspaceError] = CheckoutError
+        self,
+        argv: list[str],
+        error_cls: type[WorkspaceError] = CheckoutError,
+        env_overlay: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         timeout_error: WorkspaceError | None = None
+        env = {**_non_interactive_env(), **(env_overlay or {})}
         try:
             result = subprocess.run(
                 argv,
@@ -222,7 +253,7 @@ class GitWorkspaceProvider:
                 text=True,
                 check=False,
                 timeout=self._timeout,
-                env=_non_interactive_env(),
+                env=env,
             )
         except FileNotFoundError as exc:
             raise error_cls(f"git executable not found: {exc}") from exc
