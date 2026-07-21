@@ -22,6 +22,12 @@ from odoo_forge.credentials.conventions import (
     ENTERPRISE_SOURCE_CREDENTIAL_HANDLE,
     ENTERPRISE_SOURCE_TARGET,
 )
+from odoo_forge.credentials.doctor import (
+    rotate_enterprise_credential as _rotate_enterprise_credential,
+)
+from odoo_forge.credentials.doctor import (
+    run_doctor,
+)
 from odoo_forge.credentials.errors import CredentialError
 from odoo_forge.credentials.materialization import materialize_for_target
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
@@ -249,6 +255,17 @@ def _bind_enterprise_workspace_provider(
         return provider
     assert manifest.enterprise is not None  # guaranteed by `Manifest._validate_enterprise_block`
     return _EnterpriseCredentialWorkspaceProvider(provider, manifest.enterprise.url, resolver)
+
+
+def _doctor_age_key_file() -> Path | None:
+    """Composition root: the age keyfile path `forge doctor` checks.
+
+    Honors `SOPS_AGE_KEY_FILE` when set (mirrors `sops`'s own env var);
+    returns `None` otherwise so `check_age_key_present` falls back to its
+    own default (`~/.config/sops/age/keys.txt`).
+    """
+    override = os.environ.get("SOPS_AGE_KEY_FILE")
+    return Path(override) if override else None
 
 
 def _resolve_mount_base() -> Path:
@@ -902,6 +919,49 @@ def exec_(
     if result.stderr:
         typer.echo(result.stderr, err=True)
     raise typer.Exit(code=result.exit_code)
+
+
+@app.command(name="doctor")
+def doctor(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+) -> None:
+    """Check local Enterprise credential prerequisites: age key + conventional SOPS entry.
+
+    Thin CLI wiring only — both checks' logic lives in
+    `odoo_forge.credentials.doctor.run_doctor`. Reports both checks
+    independently and never prints secret material.
+    """
+    resolver = _make_enterprise_credential_resolver(
+        credentials_file=manifest.resolve().parent / "credentials.sops.yaml"
+    )
+    report = run_doctor(resolver=resolver, age_key_file=_doctor_age_key_file())
+    for check in (report.age_key, report.enterprise_credential):
+        status = "ok" if check.ok else "FAIL"
+        typer.echo(f"{status}: {check.name}: {check.message}")
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@app.command(name="rotate-enterprise-credential")
+def rotate_enterprise_credential(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    ),
+) -> None:
+    """Rotate the conventional Enterprise source credential's SOPS keys.
+
+    Thin CLI wiring only — the `sops updatekeys` wrapper itself lives in
+    `odoo_forge.credentials.doctor.rotate_enterprise_credential`. Touches no
+    schema/state file; only `credentials.sops.yaml` is rewritten by `sops`.
+    """
+    credentials_file = manifest.resolve().parent / "credentials.sops.yaml"
+    result = _rotate_enterprise_credential(credentials_file=credentials_file)
+    if not result.ok:
+        typer.echo(f"error: {result.message}", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(result.message)
 
 
 __all__ = ["app"]
