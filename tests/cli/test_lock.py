@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from odoo_forge.credentials.types import CredentialHandle
 from odoo_forge.manifest.artifacts import PublishedArtifactResolution
 from odoo_forge.manifest.errors import RefNotFoundError
 from odoo_forge.manifest.lockfile import Lockfile
@@ -15,6 +16,24 @@ from odoo_forge_cli.main import app
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 runner = CliRunner()
+
+
+def _fake_enterprise_credential_resolver(handle: CredentialHandle) -> str:
+    """Stand-in for the real SOPS+age resolver: `valid.project.yaml` declares
+    `edition: enterprise`, so `lock`'s fail-fast preflight check now resolves
+    the conventional Enterprise credential before writing anything — this
+    fake always succeeds so pre-existing tests keep exercising the same
+    `build_lock`/write behavior, unrelated to Slice 4's own coverage."""
+    return "fake-enterprise-credential-for-tests"
+
+
+@pytest.fixture(autouse=True)
+def enterprise_credential_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        main,
+        "_make_enterprise_credential_resolver",
+        lambda **kwargs: _fake_enterprise_credential_resolver,
+    )
 
 
 class _FakeSourceProvider:
