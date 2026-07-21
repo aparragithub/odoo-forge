@@ -3,6 +3,7 @@ out to `git`. Kept as a sibling package to `odoo_forge` so core stays free of
 `subprocess`/`git` imports (enforced by the 3rd import-linter contract).
 """
 
+from odoo_forge_git.git_credential_injector import GitCredentialInjector
 from odoo_forge_git.git_provider import GitSourceProvider
 
-__all__ = ["GitSourceProvider"]
+__all__ = ["GitCredentialInjector", "GitSourceProvider"]
