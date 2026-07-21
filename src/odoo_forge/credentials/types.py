@@ -19,7 +19,7 @@ class BackendCredentialBindings(_OpaqueCredentialValue):
 
 
 class TargetContext(_OpaqueCredentialValue):
-    kind: Literal["database", "backend", "identity", "pipeline"]
+    kind: Literal["database", "backend", "identity", "pipeline", "source"]
     target_id: str
 
 

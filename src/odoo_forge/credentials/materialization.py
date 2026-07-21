@@ -7,7 +7,7 @@ from odoo_forge.credentials.types import (
     TargetContext,
 )
 
-_SOPS_REF_CAPABLE_TARGET_KINDS = frozenset({"database"})
+_SOPS_REF_CAPABLE_TARGET_KINDS = frozenset({"database", "source"})
 
 
 def materialize_for_target(

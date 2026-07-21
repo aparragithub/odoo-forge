@@ -108,3 +108,25 @@ def test_non_ref_capable_target_fails_closed_without_exposing_diagnostic() -> No
         )
 
     assert str(excinfo.value) == "credential target does not accept an opaque reference"
+
+
+def test_source_target_is_sops_ref_capable_for_enterprise_credential_convention() -> None:
+    from odoo_forge.credentials.conventions import (
+        ENTERPRISE_SOURCE_CREDENTIAL_HANDLE,
+        ENTERPRISE_SOURCE_TARGET,
+    )
+
+    descriptor = materialize_for_target(
+        ENTERPRISE_SOURCE_CREDENTIAL_HANDLE,
+        ENTERPRISE_SOURCE_TARGET,
+    )
+
+    assert descriptor.store_ref == "sops://enterprise/source-git"
+    assert descriptor.target_kind == "source"
+
+
+def test_sops_store_ref_locks_the_conventional_enterprise_source_key() -> None:
+    from odoo_forge.credentials.conventions import ENTERPRISE_SOURCE_CREDENTIAL_HANDLE
+    from odoo_forge.credentials.materialization import _sops_store_ref
+
+    assert _sops_store_ref(ENTERPRISE_SOURCE_CREDENTIAL_HANDLE) == "sops://enterprise/source-git"
