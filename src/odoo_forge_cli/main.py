@@ -18,6 +18,12 @@ from pydantic import ValidationError
 from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole, plan_backend
 from odoo_forge.backend.status import InstanceRef, derive_instance_ref
+from odoo_forge.credentials.conventions import (
+    ENTERPRISE_SOURCE_CREDENTIAL_HANDLE,
+    ENTERPRISE_SOURCE_TARGET,
+)
+from odoo_forge.credentials.errors import CredentialError
+from odoo_forge.credentials.materialization import materialize_for_target
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError
 from odoo_forge.image_registry.reference import (
@@ -36,6 +42,7 @@ from odoo_forge.manifest.errors import (
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.projection import (
+    ScannedRepo,
     build_mount_planning_view,
     build_mount_roots,
     materialize_state,
@@ -50,6 +57,7 @@ from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
+from odoo_forge_git.git_credential_injector import CredentialResolver, GitCredentialInjector
 from odoo_forge_git.git_provider import GitSourceProvider
 from odoo_forge_registry import GhcrImageRegistryProvider, PublishedArtifactRegistryResolver
 from odoo_forge_workspace.provider import GitWorkspaceProvider
@@ -103,6 +111,144 @@ def _make_backend_provider(
 def _make_image_registry_provider() -> GhcrImageRegistryProvider:
     """Composition root: the ONE place the concrete registry adapter is built."""
     return GhcrImageRegistryProvider()
+
+
+def _make_enterprise_credential_resolver(
+    *, credentials_file: Path = Path("credentials.sops.yaml")
+) -> CredentialResolver:
+    """Composition root: the ONE place the Enterprise source credential
+    resolver is built — reuses `SopsCommandResolver`, the same handle ->
+    plaintext resolver already used for Docker/backend secrets, since both
+    resolve opaque handles from the same `credentials.sops.yaml` document.
+    """
+    return SopsCommandResolver(credentials_file)
+
+
+def _preflight_enterprise_source_credential(
+    manifest: Manifest, resolver: CredentialResolver
+) -> None:
+    """Fail fast, before any git fetch, when `manifest.edition == 'enterprise'`.
+
+    Resolves the conventional Enterprise source credential
+    (`ENTERPRISE_SOURCE_CREDENTIAL_HANDLE`/`ENTERPRISE_SOURCE_TARGET`)
+    through the exact same askpass lifecycle a real fetch would use
+    (`materialize_for_target` + `GitCredentialInjector.askpass_env`), then
+    immediately discards the resulting env overlay — this call's only
+    purpose is to surface `CredentialUnavailableError`/
+    `CredentialTargetRejectedError` (both subclasses of `CredentialError`)
+    before `lock`/`onboard` do anything else, identically whether the
+    underlying adapter would have been `GitSourceProvider` or
+    `GitWorkspaceProvider`. A no-op for every non-enterprise edition; never
+    attempts an unauthenticated fetch first.
+    """
+    if manifest.edition != "enterprise":
+        return
+    descriptor = materialize_for_target(
+        ENTERPRISE_SOURCE_CREDENTIAL_HANDLE, ENTERPRISE_SOURCE_TARGET
+    )
+    with GitCredentialInjector().askpass_env(descriptor, resolver):
+        pass
+
+
+class _EnterpriseCredentialSourceProvider:
+    """Wrap a `SourceProvider`, threading the conventional Enterprise source
+    credential's askpass env into `resolve_ref` only when `url` matches the
+    manifest's Enterprise source URL. Every other URL passes through
+    untouched — no credential concern for community/custom layers.
+
+    Fail-fast: the credential is resolved BEFORE the wrapped `resolve_ref`
+    call, so a missing SOPS entry or an unusable age key aborts before any
+    fetch attempt for that URL — never an unauthenticated fetch first.
+    """
+
+    def __init__(
+        self, inner: SourceProvider, enterprise_url: str, resolver: CredentialResolver
+    ) -> None:
+        self._inner = inner
+        self._enterprise_url = enterprise_url
+        self._resolver = resolver
+        self._injector = GitCredentialInjector()
+
+    def resolve_ref(self, url: str, ref: str) -> str:
+        if url != self._enterprise_url:
+            return self._inner.resolve_ref(url, ref)
+
+        descriptor = materialize_for_target(
+            ENTERPRISE_SOURCE_CREDENTIAL_HANDLE, ENTERPRISE_SOURCE_TARGET
+        )
+        with self._injector.askpass_env(descriptor, self._resolver) as env_overlay:
+            # `SourceProvider` is a structural Protocol that never declares
+            # `env_overlay`; only the concrete git adapter this composition
+            # root actually wires accepts it. See `git_provider.GitSourceProvider.resolve_ref`.
+            return self._inner.resolve_ref(  # type: ignore[call-arg]
+                url, ref, env_overlay=env_overlay
+            )
+
+
+class _EnterpriseCredentialWorkspaceProvider:
+    """Wrap a `WorkspaceProvider`, threading the conventional Enterprise
+    source credential's askpass env into `checkout` only when `url` matches
+    the manifest's Enterprise source URL. `scan`/`promote` pass through
+    unchanged — no credential concern there. Same fail-fast contract as
+    `_EnterpriseCredentialSourceProvider`.
+    """
+
+    def __init__(
+        self, inner: WorkspaceProvider, enterprise_url: str, resolver: CredentialResolver
+    ) -> None:
+        self._inner = inner
+        self._enterprise_url = enterprise_url
+        self._resolver = resolver
+        self._injector = GitCredentialInjector()
+
+    def checkout(self, url: str, commit: str, dest: Path) -> None:
+        if url != self._enterprise_url:
+            self._inner.checkout(url, commit, dest)
+            return
+
+        descriptor = materialize_for_target(
+            ENTERPRISE_SOURCE_CREDENTIAL_HANDLE, ENTERPRISE_SOURCE_TARGET
+        )
+        with self._injector.askpass_env(descriptor, self._resolver) as env_overlay:
+            # See the matching note in `_EnterpriseCredentialSourceProvider.resolve_ref`.
+            self._inner.checkout(  # type: ignore[call-arg]
+                url, commit, dest, env_overlay=env_overlay
+            )
+
+    def scan(self, roots: object) -> list[ScannedRepo]:
+        return self._inner.scan(roots)  # type: ignore[arg-type]
+
+    def promote(self, source: Path, dest: Path, branch: str) -> None:
+        self._inner.promote(source, dest, branch)
+
+
+def _bind_enterprise_source_provider(
+    manifest: Manifest, provider: SourceProvider, resolver: CredentialResolver
+) -> SourceProvider:
+    """Bind `provider` to the conventional Enterprise credential when (and
+    only when) `manifest.edition == 'enterprise'`. Identical wiring is used
+    whether `provider` is a `GitSourceProvider` (`lock`'s `ls-remote`
+    resolution) or wraps one — see `_bind_enterprise_workspace_provider` for
+    the `onboard`/`checkout` counterpart.
+    """
+    if manifest.edition != "enterprise":
+        return provider
+    assert manifest.enterprise is not None  # guaranteed by `Manifest._validate_enterprise_block`
+    return _EnterpriseCredentialSourceProvider(provider, manifest.enterprise.url, resolver)
+
+
+def _bind_enterprise_workspace_provider(
+    manifest: Manifest, provider: WorkspaceProvider, resolver: CredentialResolver
+) -> WorkspaceProvider:
+    """Bind `provider` to the conventional Enterprise credential when (and
+    only when) `manifest.edition == 'enterprise'`. See
+    `_bind_enterprise_source_provider` for the `lock`/`resolve_ref`
+    counterpart.
+    """
+    if manifest.edition != "enterprise":
+        return provider
+    assert manifest.enterprise is not None  # guaranteed by `Manifest._validate_enterprise_block`
+    return _EnterpriseCredentialWorkspaceProvider(provider, manifest.enterprise.url, resolver)
 
 
 def _resolve_mount_base() -> Path:
@@ -356,6 +502,13 @@ def onboard(
 
     lock_path = manifest.parent / "project.lock"
     try:
+        resolver = _make_enterprise_credential_resolver(
+            credentials_file=manifest.resolve().parent / "credentials.sops.yaml"
+        )
+        # Fail fast BEFORE any fetch (community or Enterprise): identical
+        # contract to `lock`'s preflight check — see that comment.
+        _preflight_enterprise_source_credential(parsed, resolver)
+
         compose(parsed)
         loaded_lock = _load_lock(lock_path)
         if loaded_lock is None:
@@ -363,7 +516,8 @@ def onboard(
 
         host_roots = _host_roots(parsed)
         plan = plan_projection(parsed, loaded_lock, host_roots)
-        provider = _make_manifest_workspace_provider(parsed)
+        provider: WorkspaceProvider = _make_manifest_workspace_provider(parsed)
+        provider = _bind_enterprise_workspace_provider(parsed, provider, resolver)
         scanned = provider.scan(list(host_roots.values()))
         materialized = materialize_state(scanned, host_roots)
         preflight = detect_drift(parsed, loaded_lock, materialized)
@@ -389,6 +543,9 @@ def onboard(
             raise ManifestError(f"drift: {_format_drift(drift_entry)}")
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except CredentialError as exc:
+        typer.echo(f"error: Enterprise credential required but unavailable: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     typer.echo(f"onboarded workspace with {len(plan.steps)} repo(s) from {lock_path}")
@@ -422,12 +579,24 @@ def lock(
     # leaves a pre-existing lock byte-identical.
     lock_path = manifest.parent / "project.lock"
     try:
-        provider = _make_provider()
+        provider: SourceProvider = _make_provider()
+        resolver = _make_enterprise_credential_resolver(
+            credentials_file=manifest.resolve().parent / "credentials.sops.yaml"
+        )
+        # Fail fast BEFORE any fetch (community or Enterprise): a missing
+        # SOPS entry or an unusable age key must abort `lock` immediately,
+        # never fall through to an unauthenticated fetch attempt. No-op for
+        # non-enterprise editions.
+        _preflight_enterprise_source_credential(parsed, resolver)
+        provider = _bind_enterprise_source_provider(parsed, provider, resolver)
         artifact_resolver = _make_published_artifact_resolver()
         lockfile = build_lock(parsed, provider, artifact_resolver)
         _write_lock_atomic(lock_path, lockfile.to_canonical_json())
     except (ManifestError, ResolutionError, OSError) as exc:
         typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except CredentialError as exc:
+        typer.echo(f"error: Enterprise credential required but unavailable: {exc}", err=True)
         raise typer.Exit(code=1) from exc
 
     typer.echo(f"wrote {lock_path}")
