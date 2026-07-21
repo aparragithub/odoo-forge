@@ -186,11 +186,22 @@ def test_published_layer_rejects_legacy_requires_edition_key() -> None:
     assert "requires_enterprise" in str(exc_info.value)
 
 
-def test_enterprise_edition_requires_enterprise_block() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        Manifest.model_validate({**_base_manifest_kwargs(), "edition": "enterprise"})
+def test_enterprise_edition_defaults_to_official_enterprise_repo() -> None:
+    manifest = Manifest.model_validate({**_base_manifest_kwargs(), "edition": "enterprise"})
 
-    assert "enterprise" in str(exc_info.value)
+    assert isinstance(manifest.enterprise, EnterpriseLayer)
+    assert manifest.enterprise.url == "https://github.com/odoo/enterprise.git"
+    assert manifest.enterprise.ref is None
+
+
+def test_enterprise_block_without_url_uses_official_default() -> None:
+    manifest = Manifest.model_validate(
+        {**_base_manifest_kwargs(), "edition": "enterprise", "enterprise": {"ref": "19.0"}}
+    )
+
+    assert manifest.enterprise is not None
+    assert manifest.enterprise.url == "https://github.com/odoo/enterprise.git"
+    assert manifest.enterprise.ref == "19.0"
 
 
 def test_community_edition_forbids_enterprise_block() -> None:

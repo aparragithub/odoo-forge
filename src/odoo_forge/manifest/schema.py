@@ -55,7 +55,7 @@ class EnterpriseLayer(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["enterprise"] = "enterprise"
-    url: str
+    url: str = "https://github.com/odoo/enterprise.git"
     ref: str | None = None
 
 
@@ -208,9 +208,10 @@ class Manifest(BaseModel):
     @model_validator(mode="after")
     def _validate_enterprise_block(self) -> "Manifest":
         if self.edition == "enterprise" and self.enterprise is None:
-            raise ValueError(
-                "edition 'enterprise' requires a top-level 'enterprise:' block (url, ref)"
-            )
+            # The official Odoo Enterprise repo is a system-provided source, not a
+            # user choice: default it here so `edition: enterprise` needs no block.
+            # A declared block (e.g. a fork) still overrides via its own `url`.
+            self.enterprise = EnterpriseLayer()
         if self.edition != "enterprise" and self.enterprise is not None:
             raise ValueError("'enterprise:' block is only allowed when edition is 'enterprise'")
         return self
