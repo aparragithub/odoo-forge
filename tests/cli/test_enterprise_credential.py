@@ -225,24 +225,41 @@ def test_lock_and_onboard_fail_identically_on_missing_credential(
 def test_lock_resolves_and_threads_credential_into_enterprise_fetch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Integrated contract (post-`enterprise-resolution-projection`
+    prerequisite): `build_lock` now genuinely resolves `manifest.enterprise`,
+    and that resolution flows THROUGH `_EnterpriseCredentialSourceProvider`,
+    so the enterprise `resolve_ref` call carries the askpass `env_overlay`
+    while the untouched `core` call does not. The credential itself is still
+    resolved exactly ONCE per `lock` invocation — the fail-fast preflight
+    check and the wrapped enterprise fetch share the same memoized resolver
+    (`_make_enterprise_credential_resolver`'s real contract), so this test
+    wraps the counting resolver in the same `_MemoizingCredentialResolver` the
+    production factory always returns."""
     fake_provider = _FakeSourceProvider()
-    calls, resolver = _succeeding_resolver_calls()
+    calls, raw_resolver = _succeeding_resolver_calls()
+    memoized_resolver = ec._MemoizingCredentialResolver(raw_resolver)
     monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
-    monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
+    monkeypatch.setattr(
+        main, "_make_enterprise_credential_resolver", lambda **kwargs: memoized_resolver
+    )
     manifest_path = _write_manifest(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
 
     result = runner.invoke(app, ["lock", "--manifest", str(manifest_path)])
 
     assert result.exit_code == 0
-    # The preflight check resolves the conventional handle exactly once
-    # before `build_lock` runs. `build_lock` itself never emits a
-    # `resolve_ref` call for the Enterprise URL yet (external prerequisite,
-    # out of this change's scope — see `test_bind_enterprise_source_provider_
-    # threads_overlay_before_fetch` for the direct proof that the bound
-    # provider WOULD thread `env_overlay` into that call once it exists);
-    # the `core` layer call it does make is untouched (no overlay).
+    # Resolved exactly once (memoized), even though both the preflight check
+    # and the wrapped enterprise fetch ask for it.
     assert calls == [ENTERPRISE_SOURCE_CREDENTIAL_HANDLE]
-    assert fake_provider.calls == [("https://github.com/odoo/odoo.git", "19.0", None)]
+
+    calls_by_url = {url: env_overlay for url, _ref, env_overlay in fake_provider.calls}
+    assert calls_by_url == {
+        "https://github.com/odoo/odoo.git": None,
+        _ENTERPRISE_URL: calls_by_url[_ENTERPRISE_URL],
+    }
+    enterprise_overlay = calls_by_url[_ENTERPRISE_URL]
+    assert enterprise_overlay is not None
+    assert enterprise_overlay["GIT_ASKPASS"]
+    assert enterprise_overlay["GIT_TERMINAL_PROMPT"] == "0"
 
 
 def test_lock_skips_credential_resolution_for_non_enterprise_edition(
