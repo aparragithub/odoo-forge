@@ -1,18 +1,16 @@
-"""Doctor check + rotation helper logic, independent of the CLI.
+"""Doctor check logic, independent of the CLI.
 
-Fake resolvers / monkeypatched `subprocess.run` only — never real `sops`/`age`.
+Fake resolvers only — never real `sops`/`age`. The rotation helper's tests
+live in `tests/adapters/test_credential_injection.py`.
 """
 
 from pathlib import Path
-
-import pytest
 
 from odoo_forge.credentials.conventions import ENTERPRISE_SOURCE_CREDENTIAL_HANDLE
 from odoo_forge.credentials.doctor import (
     CredentialResolver,
     check_age_key_present,
     check_enterprise_credential_resolves,
-    rotate_enterprise_credential,
     run_doctor,
 )
 from odoo_forge.credentials.errors import CredentialUnavailableError
@@ -139,73 +137,7 @@ def test_run_doctor_reports_success_on_both_checks(tmp_path: Path) -> None:
     assert report.ok is True
 
 
-# ---------------------------------------------------------------------------
-# rotate_enterprise_credential: thin sops updatekeys wrapper
-# ---------------------------------------------------------------------------
-
-
-def test_rotate_enterprise_credential_invokes_sops_updatekeys(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    credentials_file = tmp_path / "credentials.sops.yaml"
-    recorded_argv: list[str] = []
-
-    class _FakeCompletedProcess:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
-        recorded_argv.extend(argv)
-        return _FakeCompletedProcess()
-
-    monkeypatch.setattr("odoo_forge.credentials.doctor.subprocess.run", fake_run)
-
-    result = rotate_enterprise_credential(credentials_file=credentials_file)
-
-    assert result.ok is True
-    assert recorded_argv[0] == "sops"
-    assert "updatekeys" in recorded_argv
-    assert str(credentials_file) in recorded_argv
-
-
-def test_rotate_enterprise_credential_fails_fast_on_nonzero_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    credentials_file = tmp_path / "credentials.sops.yaml"
-
-    class _FakeCompletedProcess:
-        returncode = 1
-        stdout = ""
-        stderr = "boom"
-
-    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
-        return _FakeCompletedProcess()
-
-    monkeypatch.setattr("odoo_forge.credentials.doctor.subprocess.run", fake_run)
-
-    result = rotate_enterprise_credential(credentials_file=credentials_file)
-
-    assert result.ok is False
-    assert "sops" in result.message.lower()
-    assert not credentials_file.exists()
-
-
-def test_rotate_enterprise_credential_never_leaks_secret_marker(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    credentials_file = tmp_path / "credentials.sops.yaml"
-
-    class _FakeCompletedProcess:
-        returncode = 1
-        stdout = f"leaked {_SECRET_MARKER}"
-        stderr = f"leaked {_SECRET_MARKER}"
-
-    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
-        return _FakeCompletedProcess()
-
-    monkeypatch.setattr("odoo_forge.credentials.doctor.subprocess.run", fake_run)
-
-    result = rotate_enterprise_credential(credentials_file=credentials_file)
-
-    assert _SECRET_MARKER not in result.message
+# `rotate_enterprise_credential`'s tests now live in
+# `tests/adapters/test_credential_injection.py`, alongside its new home in
+# `odoo_forge_docker.credential_injection` — core (`odoo_forge`) may not
+# import `subprocess`, so the `sops updatekeys` wrapper cannot live here.

@@ -49,7 +49,7 @@ def test_rotate_enterprise_credential_invokes_sops_updatekeys(
         recorded_argv.extend(argv)
         return _FakeCompletedProcess(returncode=0)
 
-    monkeypatch.setattr("odoo_forge.credentials.doctor.subprocess.run", fake_run)
+    monkeypatch.setattr("odoo_forge_docker.credential_injection.subprocess.run", fake_run)
     manifest_path = _write_manifest(tmp_path)
     (tmp_path / "project.lock").write_text("untouched")
 
@@ -69,7 +69,7 @@ def test_rotate_enterprise_credential_fails_fast_on_nonzero_exit(
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(returncode=1, stdout=_SECRET_MARKER, stderr=_SECRET_MARKER)
 
-    monkeypatch.setattr("odoo_forge.credentials.doctor.subprocess.run", fake_run)
+    monkeypatch.setattr("odoo_forge_docker.credential_injection.subprocess.run", fake_run)
     manifest_path = _write_manifest(tmp_path)
 
     result = runner.invoke(app, ["rotate-enterprise-credential", "--manifest", str(manifest_path)])

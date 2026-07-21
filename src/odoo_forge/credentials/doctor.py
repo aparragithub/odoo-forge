@@ -1,15 +1,20 @@
-"""Enterprise credential doctor check + rotation helper (Slice 5).
+"""Enterprise credential doctor check (Slice 5).
 
-Both the doctor check and the rotation helper are pure/testable-via-fakes
-logic that lives here, independent of the CLI — `odoo_forge_cli.main` only
-wires two thin Typer commands (`doctor`, `rotate-enterprise-credential`)
-that call into this module. Neither function ever logs, returns, or embeds
-resolved secret material in a `DoctorCheckResult`/`RotationResult` message.
+The doctor check is pure/testable-via-fakes logic that lives here,
+independent of the CLI — `odoo_forge_cli.main` only wires a thin Typer
+command (`doctor`) that calls into this module. Never logs, returns, or
+embeds resolved secret material in a `DoctorCheckResult` message.
+
+The rotation helper (`rotate_enterprise_credential`) used to live here too,
+but it shells out via `subprocess`, which core (`odoo_forge`) is forbidden
+from importing — see the "Core never imports infrastructure or framework"
+import-linter contract. It now lives in
+`odoo_forge_docker.credential_injection`, alongside the other `sops`-shelling
+adapter (`SopsCommandResolver`).
 """
 
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,7 +24,6 @@ from odoo_forge.credentials.types import CredentialResolver
 
 _AGE_KEY_MARKER = "AGE-SECRET-KEY-"
 _DEFAULT_AGE_KEY_FILE = Path.home() / ".config" / "sops" / "age" / "keys.txt"
-_DEFAULT_CREDENTIALS_FILE = Path("credentials.sops.yaml")
 
 
 @dataclass(frozen=True)
@@ -41,14 +45,6 @@ class DoctorReport:
     @property
     def ok(self) -> bool:
         return self.age_key.ok and self.enterprise_credential.ok
-
-
-@dataclass(frozen=True)
-class RotationResult:
-    """The rotation helper's pass/fail outcome. Never echoes `sops` stdout/stderr."""
-
-    ok: bool
-    message: str
 
 
 def check_age_key_present(*, age_key_file: Path | None = None) -> DoctorCheckResult:
@@ -111,42 +107,11 @@ def run_doctor(*, resolver: CredentialResolver, age_key_file: Path | None = None
     )
 
 
-def rotate_enterprise_credential(
-    *, credentials_file: Path = _DEFAULT_CREDENTIALS_FILE
-) -> RotationResult:
-    """Wrap `sops updatekeys` for the conventional `credentials.sops.yaml` entry.
-
-    A thin shell-out via `subprocess.run` (never a shell, never real `sops`
-    in tests — monkeypatched). Surfaces success/failure only; `sops`
-    stdout/stderr is deliberately never reflected in the returned message,
-    since it may echo key material context.
-    """
-    try:
-        result = subprocess.run(
-            ["sops", "updatekeys", "--yes", str(credentials_file)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        return RotationResult(ok=False, message=f"failed to invoke sops updatekeys: {exc}")
-    if result.returncode != 0:
-        return RotationResult(
-            ok=False,
-            message=(
-                f"sops updatekeys failed for '{credentials_file}' (exit code {result.returncode})"
-            ),
-        )
-    return RotationResult(ok=True, message=f"rotated keys for '{credentials_file}'")
-
-
 __all__ = [
     "CredentialResolver",
     "DoctorCheckResult",
     "DoctorReport",
-    "RotationResult",
     "check_age_key_present",
     "check_enterprise_credential_resolves",
-    "rotate_enterprise_credential",
     "run_doctor",
 ]
