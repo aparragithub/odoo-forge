@@ -37,12 +37,16 @@ def enterprise_credential_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class _FakeSourceProvider:
-    def resolve_ref(self, url: str, ref: str) -> str:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, dict[str, str] | None]] = []
+
+    def resolve_ref(self, url: str, ref: str, env_overlay: dict[str, str] | None = None) -> str:
+        self.calls.append((url, ref, env_overlay))
         return f"sha-{ref}"
 
 
 class _FailingSourceProvider:
-    def resolve_ref(self, url: str, ref: str) -> str:
+    def resolve_ref(self, url: str, ref: str, env_overlay: dict[str, str] | None = None) -> str:
         raise RefNotFoundError(url, ref)
 
 
@@ -85,7 +89,8 @@ def test_valid_manifest_writes_canonical_lock(
     monkeypatch: pytest.MonkeyPatch,
     published_artifact_resolver: _FakePublishedArtifactResolver,
 ) -> None:
-    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
+    fake_provider = _FakeSourceProvider()
+    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
@@ -114,6 +119,17 @@ def test_valid_manifest_writes_canonical_lock(
         "digest": "sha256:" + "b" * 64,
     }
     assert published_artifact_resolver.calls == [("registry://example/odoo-ee", "19.0.1")]
+
+    # Integration proof: `edition: enterprise` now genuinely resolves the
+    # enterprise layer THROUGH the credential wrapper (the prerequisite that
+    # made `build_lock` resolve `manifest.enterprise` landed alongside the
+    # credential wrapper) — the enterprise `resolve_ref` call carries the
+    # askpass `env_overlay`, while the untouched `core` call does not.
+    calls_by_url = {url: env_overlay for url, _ref, env_overlay in fake_provider.calls}
+    assert calls_by_url["https://github.com/odoo/odoo.git"] is None
+    enterprise_overlay = calls_by_url["https://github.com/odoo/enterprise.git"]
+    assert enterprise_overlay is not None
+    assert enterprise_overlay["GIT_ASKPASS"]
 
 
 def test_core_ref_none_resolved_via_default_before_pinning(
