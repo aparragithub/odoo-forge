@@ -16,7 +16,7 @@ from typer.testing import CliRunner
 from odoo_forge.credentials.conventions import ENTERPRISE_SOURCE_CREDENTIAL_HANDLE
 from odoo_forge.credentials.errors import CredentialUnavailableError
 from odoo_forge.credentials.types import CredentialHandle
-from odoo_forge.manifest.errors import CheckoutError
+from odoo_forge.manifest.errors import CheckoutError, ManifestInputError
 from odoo_forge.manifest.lockfile import (
     Lockfile,
     ResolvedLayer,
@@ -25,6 +25,7 @@ from odoo_forge.manifest.lockfile import (
 )
 from odoo_forge.manifest.projection import ScannedRepo
 from odoo_forge.manifest.schema import Manifest
+from odoo_forge_cli import enterprise_credential as ec
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 from odoo_forge_git.git_credential_injector import CredentialResolver
@@ -58,6 +59,22 @@ _COMMUNITY_MANIFEST_TEXT = (
 )
 
 _ENTERPRISE_URL = "https://github.com/odoo/enterprise.git"
+
+
+def _enterprise_manifest_text(url: str) -> str:
+    return (
+        "name: enterprise-project\n"
+        "odoo_version: '19.0'\n"
+        "edition: enterprise\n"
+        "core:\n"
+        "  type: core\n"
+        "  url: https://github.com/odoo/odoo.git\n"
+        "  ref: '19.0'\n"
+        "enterprise:\n"
+        f"  url: {url}\n"
+        "client:\n"
+        "  addons_path: client/addons\n"
+    )
 
 
 class _FakeSourceProvider:
@@ -385,3 +402,184 @@ def test_secret_never_leaks_into_lock_output_on_checkout_style_failure(
 
     assert _SECRET_MARKER not in result.output
     assert "Traceback" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER fix: host allow-list before credential injection
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "malicious_url",
+    [
+        "https://attacker.example/x.git",
+        "https://github.com.attacker.com/odoo/enterprise.git",
+        "https://github.com@attacker.com/odoo/enterprise.git",
+        "https://githubXcom/odoo/enterprise.git",
+        "not a valid url at all",
+    ],
+)
+def test_bind_enterprise_source_provider_refuses_non_allow_listed_host(
+    malicious_url: str,
+) -> None:
+    fake_provider = _FakeSourceProvider()
+    calls, resolver = _succeeding_resolver_calls()
+    manifest = Manifest.model_validate(yaml.safe_load(_enterprise_manifest_text(malicious_url)))
+
+    with pytest.raises(ManifestInputError, match="not an allowed enterprise credential host"):
+        main._bind_enterprise_source_provider(manifest, fake_provider, resolver)
+
+    # No credential was ever resolved and no fetch was ever attempted.
+    assert calls == []
+    assert not fake_provider.calls
+
+
+@pytest.mark.parametrize(
+    "malicious_url",
+    [
+        "https://attacker.example/x.git",
+        "https://github.com.attacker.com/odoo/enterprise.git",
+        "https://github.com@attacker.com/odoo/enterprise.git",
+        "https://githubXcom/odoo/enterprise.git",
+        "not a valid url at all",
+    ],
+)
+def test_bind_enterprise_workspace_provider_refuses_non_allow_listed_host(
+    malicious_url: str,
+) -> None:
+    fake_provider = _FakeWorkspaceProvider()
+    calls, resolver = _succeeding_resolver_calls()
+    manifest = Manifest.model_validate(yaml.safe_load(_enterprise_manifest_text(malicious_url)))
+
+    with pytest.raises(ManifestInputError, match="not an allowed enterprise credential host"):
+        main._bind_enterprise_workspace_provider(manifest, fake_provider, resolver)
+
+    assert calls == []
+    assert not fake_provider.checkout_calls
+
+
+def test_lock_refuses_credential_injection_for_non_allow_listed_enterprise_url(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End-to-end: `lock` itself fails fast (never fetches) when
+    `manifest.enterprise.url` is not allow-listed."""
+    fake_provider = _FakeSourceProvider()
+    calls, resolver = _succeeding_resolver_calls()
+    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
+    manifest_path = _write_manifest(
+        tmp_path, _enterprise_manifest_text("https://attacker.example/x.git")
+    )
+
+    result = runner.invoke(app, ["lock", "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 1
+    assert "not an allowed enterprise credential host" in result.output
+    assert "Traceback" not in result.output
+    assert not fake_provider.calls
+    assert not (tmp_path / "project.lock").exists()
+
+
+@pytest.mark.parametrize(
+    "allowed_url",
+    [
+        _ENTERPRISE_URL,
+        "https://github.com/some-fork-org/enterprise.git",
+        "git@github.com:odoo/enterprise.git",
+    ],
+)
+def test_bind_enterprise_source_provider_allows_github_com_hosts(allowed_url: str) -> None:
+    fake_provider = _FakeSourceProvider()
+    calls, resolver = _succeeding_resolver_calls()
+    manifest = Manifest.model_validate(yaml.safe_load(_enterprise_manifest_text(allowed_url)))
+
+    bound = main._bind_enterprise_source_provider(manifest, fake_provider, resolver)
+    sha = bound.resolve_ref(allowed_url, "19.0")
+
+    assert sha == "sha-19.0"
+    assert calls == [ENTERPRISE_SOURCE_CREDENTIAL_HANDLE]
+
+
+def test_extract_host_rejects_unparseable_url() -> None:
+    assert ec._extract_host("not a valid url at all") is None
+
+
+def test_extract_host_handles_scp_like_git_url() -> None:
+    assert ec._extract_host("git@github.com:odoo/enterprise.git") == "github.com"
+
+
+def test_extract_host_strips_userinfo_tricks() -> None:
+    assert ec._extract_host("https://github.com@attacker.com/x.git") == "attacker.com"
+
+
+# ---------------------------------------------------------------------------
+# RESILIENCE fix: the credential is materialized exactly once per invocation
+# ---------------------------------------------------------------------------
+
+
+def test_enterprise_credential_resolved_exactly_once_for_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_provider = _FakeSourceProvider()
+    calls: list[CredentialHandle] = []
+
+    def counting_resolver(handle: CredentialHandle) -> str:
+        calls.append(handle)
+        return _SECRET_MARKER
+
+    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(
+        main,
+        "_make_enterprise_credential_resolver",
+        lambda **kwargs: ec._MemoizingCredentialResolver(counting_resolver),
+    )
+    manifest_path = _write_manifest(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
+
+    result = runner.invoke(app, ["lock", "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+
+
+def test_enterprise_credential_resolved_exactly_once_for_onboard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_provider = _FakeWorkspaceProvider()
+    calls: list[CredentialHandle] = []
+
+    def counting_resolver(handle: CredentialHandle) -> str:
+        calls.append(handle)
+        return _SECRET_MARKER
+
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(
+        main,
+        "_make_enterprise_credential_resolver",
+        lambda **kwargs: ec._MemoizingCredentialResolver(counting_resolver),
+    )
+    manifest_path = _write_onboard_lock(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
+
+    result = runner.invoke(app, ["onboard", "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 0
+    assert len(calls) == 1
+
+
+def test_real_enterprise_credential_resolver_memoizes_underlying_resolver() -> None:
+    """`_make_enterprise_credential_resolver` (the real production factory)
+    returns a resolver that only ever calls the underlying `SopsCommandResolver`
+    once, even when invoked multiple times with the same handle."""
+    calls: list[CredentialHandle] = []
+
+    class _CountingSopsCommandResolver:
+        def __call__(self, handle: CredentialHandle) -> str:
+            calls.append(handle)
+            return _SECRET_MARKER
+
+    resolver = ec._MemoizingCredentialResolver(_CountingSopsCommandResolver())
+
+    first = resolver(ENTERPRISE_SOURCE_CREDENTIAL_HANDLE)
+    second = resolver(ENTERPRISE_SOURCE_CREDENTIAL_HANDLE)
+
+    assert first == second == _SECRET_MARKER
+    assert len(calls) == 1

@@ -6,15 +6,13 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from odoo_forge.backend.plan import ContainerSpec
 from odoo_forge.credentials.errors import CredentialError, CredentialUnavailableError
-from odoo_forge.credentials.types import CredentialHandle
-
-CredentialResolver = Callable[[CredentialHandle], str]
+from odoo_forge.credentials.types import CredentialHandle, CredentialResolver
 
 
 class SopsCommandResolver:

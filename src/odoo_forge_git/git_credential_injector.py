@@ -15,14 +15,16 @@ from __future__ import annotations
 
 import os
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
 from odoo_forge.credentials.errors import CredentialError, CredentialUnavailableError
-from odoo_forge.credentials.types import CredentialHandle, CredentialInjectionDescriptor
-
-CredentialResolver = Callable[[CredentialHandle], str]
+from odoo_forge.credentials.types import (
+    CredentialHandle,
+    CredentialInjectionDescriptor,
+    CredentialResolver,
+)
 
 _ASKPASS_SCRIPT_TEMPLATE = """\
 #!/usr/bin/env python3
