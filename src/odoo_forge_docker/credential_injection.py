@@ -8,11 +8,14 @@ import subprocess
 import tempfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from odoo_forge.backend.plan import ContainerSpec
 from odoo_forge.credentials.errors import CredentialError, CredentialUnavailableError
 from odoo_forge.credentials.types import CredentialHandle, CredentialResolver
+
+_DEFAULT_CREDENTIALS_FILE = Path("credentials.sops.yaml")
 
 
 class SopsCommandResolver:
@@ -110,4 +113,52 @@ def _unavailable_resolver(_handle: CredentialHandle) -> str:
     raise CredentialUnavailableError()
 
 
-__all__ = ["CredentialResolver", "SopsCommandResolver", "SopsEnvFileInjector"]
+@dataclass(frozen=True)
+class RotationResult:
+    """The rotation helper's pass/fail outcome. Never echoes `sops` stdout/stderr."""
+
+    ok: bool
+    message: str
+
+
+def rotate_enterprise_credential(
+    *, credentials_file: Path = _DEFAULT_CREDENTIALS_FILE
+) -> RotationResult:
+    """Wrap `sops updatekeys` for the conventional `credentials.sops.yaml` entry.
+
+    A thin shell-out via `subprocess.run` (never a shell, never real `sops`
+    in tests — monkeypatched). Surfaces success/failure only; `sops`
+    stdout/stderr is deliberately never reflected in the returned message,
+    since it may echo key material context.
+
+    Lives here (the docker adapter, alongside `SopsCommandResolver`) rather
+    than in `odoo_forge.credentials.doctor` because core (`odoo_forge`) is
+    forbidden from importing `subprocess` — see the "Core never imports
+    infrastructure or framework" import-linter contract.
+    """
+    try:
+        result = subprocess.run(
+            ["sops", "updatekeys", "--yes", str(credentials_file)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return RotationResult(ok=False, message=f"failed to invoke sops updatekeys: {exc}")
+    if result.returncode != 0:
+        return RotationResult(
+            ok=False,
+            message=(
+                f"sops updatekeys failed for '{credentials_file}' (exit code {result.returncode})"
+            ),
+        )
+    return RotationResult(ok=True, message=f"rotated keys for '{credentials_file}'")
+
+
+__all__ = [
+    "CredentialResolver",
+    "RotationResult",
+    "SopsCommandResolver",
+    "SopsEnvFileInjector",
+    "rotate_enterprise_credential",
+]

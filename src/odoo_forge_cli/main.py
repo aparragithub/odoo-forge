@@ -18,12 +18,7 @@ from pydantic import ValidationError
 from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole, plan_backend
 from odoo_forge.backend.status import InstanceRef, derive_instance_ref
-from odoo_forge.credentials.doctor import (
-    rotate_enterprise_credential as _rotate_enterprise_credential,
-)
-from odoo_forge.credentials.doctor import (
-    run_doctor,
-)
+from odoo_forge.credentials.doctor import run_doctor
 from odoo_forge.credentials.errors import CredentialError
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError
@@ -61,7 +56,13 @@ from odoo_forge_cli.enterprise_credential import (
     _make_enterprise_credential_resolver,
     _preflight_enterprise_source_credential,
 )
-from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
+from odoo_forge_docker.credential_injection import (
+    SopsCommandResolver,
+    SopsEnvFileInjector,
+)
+from odoo_forge_docker.credential_injection import (
+    rotate_enterprise_credential as _rotate_enterprise_credential,
+)
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
 from odoo_forge_registry import GhcrImageRegistryProvider, PublishedArtifactRegistryResolver
@@ -814,8 +815,10 @@ def rotate_enterprise_credential(
     """Rotate the conventional Enterprise source credential's SOPS keys.
 
     Thin CLI wiring only — the `sops updatekeys` wrapper itself lives in
-    `odoo_forge.credentials.doctor.rotate_enterprise_credential`. Touches no
-    schema/state file; only `credentials.sops.yaml` is rewritten by `sops`.
+    `odoo_forge_docker.credential_injection.rotate_enterprise_credential`
+    (the docker adapter, since core is forbidden from importing
+    `subprocess`). Touches no schema/state file; only
+    `credentials.sops.yaml` is rewritten by `sops`.
     """
     credentials_file = manifest.resolve().parent / "credentials.sops.yaml"
     result = _rotate_enterprise_credential(credentials_file=credentials_file)
