@@ -253,3 +253,158 @@ def test_validate_scans_and_materializes_with_the_resolved_host_roots(
 
     assert result.exit_code == 0
     assert scan_calls == [list(custom_roots.values())]
+
+
+def _write_module(root: Path, name: str, content: str) -> None:
+    module_dir = root / name
+    module_dir.mkdir(parents=True, exist_ok=True)
+    (module_dir / "__manifest__.py").write_text(content, encoding="utf-8")
+
+
+def test_missing_module_dependency_reports_all_and_exits_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = FIXTURES_DIR / "valid.project.yaml"
+    manifest = Manifest.model_validate(yaml.safe_load(manifest_path.read_text()))
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(manifest_path.read_text())
+
+    fresh_lock = Lockfile(generated_from=compute_manifest_hash(manifest))
+    (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
+
+    base = tmp_path / "mount-base"
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+
+    _write_module(
+        base / "community",
+        "mod_a",
+        "{'name': 'Mod A', 'depends': ['mod_b', 'mod_c'], 'installable': True}",
+    )
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert "is valid" not in result.output
+    assert "mod_a" in result.output
+    assert "mod_b" in result.output
+    assert "mod_c" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_all_module_dependencies_satisfied_does_not_affect_existing_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = FIXTURES_DIR / "valid.project.yaml"
+    manifest = Manifest.model_validate(yaml.safe_load(manifest_path.read_text()))
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(manifest_path.read_text())
+
+    fresh_lock = Lockfile(generated_from=compute_manifest_hash(manifest))
+    (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
+
+    base = tmp_path / "mount-base"
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+
+    _write_module(
+        base / "community", "mod_b", "{'name': 'Mod B', 'depends': [], 'installable': True}"
+    )
+    _write_module(
+        base / "community",
+        "mod_a",
+        "{'name': 'Mod A', 'depends': ['mod_b'], 'installable': True}",
+    )
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert "no manifest/lock drift detected" in result.output
+
+
+def test_no_lock_skips_module_dependency_validator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = FIXTURES_DIR / "valid.project.yaml"
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(manifest_path.read_text())
+    # No project.lock file: `lock` resolves to None.
+
+    base = tmp_path / "mount-base"
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+
+    # Would report a missing dependency if the validator ran against it.
+    _write_module(
+        base / "community", "mod_a", "{'name': 'Mod A', 'depends': ['mod_b'], 'installable': True}"
+    )
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 0
+    assert f"{project_yaml} is valid" in result.output
+
+
+def test_unmaterialized_workspace_reports_clear_error_before_dependency_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mount root that does not exist yet (partial materialization) must
+    never silently read as "module missing" — it must be reported as a
+    distinct, clear "workspace not fully materialized" error instead of
+    running the dependency check against an incomplete addons_path."""
+    manifest_path = FIXTURES_DIR / "valid.project.yaml"
+    manifest = Manifest.model_validate(yaml.safe_load(manifest_path.read_text()))
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(manifest_path.read_text())
+
+    lock = Lockfile(
+        generated_from=compute_manifest_hash(manifest),
+        layers=[
+            ResolvedLayer(
+                name="core",
+                repos=[
+                    ResolvedRepo(
+                        url="https://github.com/odoo/odoo.git", ref="19.0", commit="core-sha"
+                    )
+                ],
+            ),
+        ],
+    )
+    (tmp_path / "project.lock").write_text(lock.to_canonical_json())
+
+    base = tmp_path / "mount-base-never-materialized"
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert "not fully materialized" in result.output
+    assert "is valid" not in result.output
+    assert "Traceback" not in result.output
+
+
+def test_malformed_manifest_in_addons_tree_exits_one_naming_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest_path = FIXTURES_DIR / "valid.project.yaml"
+    manifest = Manifest.model_validate(yaml.safe_load(manifest_path.read_text()))
+
+    project_yaml = tmp_path / "project.yaml"
+    project_yaml.write_text(manifest_path.read_text())
+
+    fresh_lock = Lockfile(generated_from=compute_manifest_hash(manifest))
+    (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
+
+    base = tmp_path / "mount-base"
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+
+    _write_module(base / "community", "broken_mod", "{'depends': ['base'")
+
+    result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
+
+    assert result.exit_code == 1
+    assert "error:" in result.output
+    assert "broken_mod" in result.output
+    assert str(base / "community" / "broken_mod" / "__manifest__.py") in result.output
+    assert "Traceback" not in result.output
