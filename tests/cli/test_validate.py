@@ -79,18 +79,17 @@ def test_malformed_yaml_syntax_clear_error_exit_one(tmp_path: Path) -> None:
 
 
 def test_composition_error_clear_error_exit_one(tmp_path: Path) -> None:
-    # Parses fine, but community edition + enterprise-requiring layer fails compose().
+    # Parses fine, but an override referencing an unknown layer fails compose().
     manifest = tmp_path / "project.yaml"
     manifest.write_text(
         "name: odoo-idp\n"
         "odoo_version: '19.0'\n"
         "edition: community\n"
-        "layers:\n"
-        "  - type: published\n"
-        "    name: enterprise\n"
-        "    source: registry://example/odoo-ee\n"
-        "    version: '19.0.1'\n"
-        "    requires_enterprise: true\n"
+        "overrides:\n"
+        "  - layer: does-not-exist\n"
+        "    repo: whatever\n"
+        "    fork: https://github.com/acme/fork.git\n"
+        "    ref: custom\n"
         "client:\n"
         "  addons_path: client/addons\n"
     )
@@ -99,7 +98,7 @@ def test_composition_error_clear_error_exit_one(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "error:" in result.output
-    assert "enterprise" in result.output
+    assert "does-not-exist" in result.output
     assert "is valid" not in result.output
     assert "Traceback" not in result.output
 
