@@ -2,15 +2,6 @@ name: forge-ar-enterprise
 odoo_version: "19.0"
 edition: enterprise
 
-core:
-  type: core
-  url: https://github.com/odoo/odoo.git
-  ref: "19.0"
-
-enterprise:
-  url: https://github.com/aparragithub/enterprise.git
-  ref: "19.0"
-
 layers:
   # --- OCA ------------------------------------------------------------------
   # `category` is a free-form user label (open categories, pure mount model):
