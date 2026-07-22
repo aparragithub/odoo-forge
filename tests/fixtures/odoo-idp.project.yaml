@@ -16,7 +16,6 @@ layers:
     requires_enterprise: true
   - type: git
     name: localization
-    requires_enterprise: true
     repos:
       - url: https://github.com/ingadhoc/odoo-argentina-ee.git
         ref: "19.0"

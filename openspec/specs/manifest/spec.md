@@ -54,34 +54,42 @@ never listed under `layers:`.
 - WHEN the manifest is validated
 - THEN validation MUST fail (symmetric guard)
 
-### Requirement: Enterprise-presence precondition (`requires_enterprise`)
+### Requirement: `requires_edition` is a removed key
 
-`GitLayer` and `PublishedLayer` MUST expose `requires_enterprise: bool = False`,
-used only as a coherence precondition (the layer needs the enterprise source
-present). It MUST NOT affect mount classification or chain position.
 `GitRepo.requires_edition` (and any layer-level `requires_edition`) has been
-**removed**; a manifest still setting it MUST be rejected at parse time with an
-actionable error naming `requires_enterprise` / the `enterprise:` block as the
-replacement.
-
-#### Scenario: Precondition violated under community edition
-- GIVEN a `community` manifest whose `adhoc-ee` `GitLayer` sets
-  `requires_enterprise: true`
-- WHEN the manifest is composed
-- THEN composition MUST raise a `CompositionError` naming the offending layer
-
-#### Scenario: Precondition satisfied under enterprise edition
-- GIVEN the same layer inside an `edition: "enterprise"` manifest (with the
-  `enterprise:` block present)
-- WHEN the manifest is composed
-- THEN composition succeeds and the layer mounts at its own category root,
-  never at `"enterprise"`
+**removed**; a manifest still setting it MUST be rejected at parse time with
+an actionable error naming the field as removed and pointing to the
+top-level `enterprise:` block as the replacement for declaring an enterprise
+source. (Note: the `requires_enterprise` field this error message used to
+point to has itself since been removed — see the Migration note below; the
+error message now points to the `module-dependency-validation` capability.)
 
 #### Scenario: Removed `requires_edition` key rejected
 - GIVEN a manifest with `requires_edition` set on a `GitRepo` or layer
 - WHEN the manifest is parsed
-- THEN parsing MUST fail with an error naming the field as removed and
-  pointing to `requires_enterprise`
+- THEN parsing MUST fail with an error naming the field as removed
+
+> **Migration note (Enterprise-presence precondition split by layer type):**
+> the former `requires_enterprise: bool = False` field and its
+> `_check_edition_coherence` composition-time check applied uniformly to
+> `GitLayer` and `PublishedLayer`, and were both **removed**, superseded by
+> the `module-dependency-validation` capability (see
+> `openspec/specs/module-dependency-validation/spec.md`), which derives
+> Enterprise-reachability from real `depends:` graphs over the materialized,
+> composed addons_path. A `GitLayer` still setting `requires_enterprise` MUST
+> be rejected at parse time (via `extra="forbid"`) with an actionable error —
+> its content IS git-checked-out and materialized, so it is fully covered by
+> the real validator.
+>
+> `PublishedLayer` content, however, is never git-checked-out (`plan_projection`
+> only builds `WorkspacePlanEntry` from `lock.git_layers`; published layers are
+> retained in the lock but have no Git checkout), so `build_module_index`
+> (which only scans on-disk `__manifest__.py` files) can never see or evaluate
+> a `PublishedLayer`'s modules under any command. For this reason,
+> `requires_enterprise: bool = False` and a coherence check scoped to
+> `PublishedLayer` only (`_check_published_layer_edition_coherence`) have been
+> **restored**, as the only enforcement mechanism left for this layer type.
+> `GitLayer` is NOT part of this restored check.
 
 ### Requirement: Explicit discriminated layer union
 
@@ -126,13 +134,24 @@ object. It MUST NOT read or hash raw file bytes.
 
 `compose(manifest) -> list[Layer]` MUST order the chain as
 `core -> enterprise -> layers -> client` — inserting the `enterprise` singleton
-immediately after `core` when present — and validate edition coherence
-(including `requires_enterprise`), override layers/repos, and final writable
-client. It MUST reject duplicates, unknown targets, invalid combinations,
-PublishedLayer/core targets before knowable I/O, and perform zero
-filesystem/network access.
+immediately after `core` when present — and validate override layers/repos,
+and final writable client. It MUST reject duplicates, unknown targets,
+invalid combinations, PublishedLayer/core targets before knowable I/O, and
+perform zero filesystem/network access. `GitLayer` edition coherence (a
+community manifest reaching an Enterprise-only module) is no longer checked
+at composition time; it is validated later, against the materialized
+addons_path, by the `module-dependency-validation` capability (see that
+spec). `PublishedLayer` edition coherence, however, IS still checked at
+composition time (`_check_published_layer_edition_coherence`): a community
+manifest declaring a `PublishedLayer` with `requires_enterprise: true` MUST
+still be rejected here, because `PublishedLayer` content is never
+git-checked-out and so can never be validated by the real
+`module-dependency-validation` capability (see the Migration note above).
 (Previously: chain was `core -> layers -> client` with no enterprise slot, and
-it did not validate override repositories, duplicates, or target combinations.)
+it did not validate override repositories, duplicates, or target
+combinations; it also validated "edition coherence (including
+`requires_enterprise`)" uniformly across `GitLayer` and `PublishedLayer` at
+composition time via `_check_edition_coherence`.)
 
 #### Scenario: Override referencing a missing layer fails
 - GIVEN an `Override` naming a layer not present in `manifest.layers`
@@ -142,8 +161,7 @@ it did not validate override repositories, duplicates, or target combinations.)
 #### Scenario: odoo-idp fire test composes cleanly
 - GIVEN a fixture manifest expressing odoo-idp (core odoo/odoo@19.0, a
   top-level `enterprise:` block, an `adhoc` category layer with ~17 ingadhoc
-  repos, and an `adhoc-ee` layer at `requires_enterprise: true`, edition:
-  enterprise)
+  repos, and an `adhoc-ee` layer, edition: enterprise)
 - WHEN `compose()` runs
 - THEN it returns an ordered `core -> enterprise -> layers -> client` chain
   with no errors
@@ -377,9 +395,11 @@ longer a closed `Literal`) MUST return: `"community"` for `CoreLayer`;
 `"enterprise"` for the `EnterpriseLayer` singleton; otherwise
 `"custom/<category>"` for any `GitLayer`/`PublishedLayer`, where an
 uncategorized layer (default `"custom"`) resolves to `"custom/default"`.
-`requires_enterprise` MUST NOT affect classification. `classify_root` MUST
-NEVER return `"worktrees"` — that root is reserved exclusively for
-`unlock`-promoted writable copies.
+`classify_root` MUST NEVER return `"worktrees"` — that root is reserved
+exclusively for `unlock`-promoted writable copies.
+(Previously: also stated "`requires_enterprise` MUST NOT affect
+classification" and included a scenario proving it; both are removed along
+with the field.)
 
 #### Scenario: Uncategorized layer nests under custom/default
 - GIVEN a `GitLayer` with no `category`
@@ -396,11 +416,6 @@ NEVER return `"worktrees"` — that root is reserved exclusively for
 - WHEN `classify_root(layer)` runs
 - THEN it returns `"custom/enterprise"` (a plain subfolder), never the
   `"enterprise"` system root
-
-#### Scenario: requires_enterprise does not change classification
-- GIVEN a layer with `category="adhoc"` and `requires_enterprise=True`
-- WHEN `classify_root(layer)` runs
-- THEN it returns `"custom/adhoc"`
 
 #### Scenario: Enterprise singleton classifies to enterprise
 - GIVEN the manifest's `enterprise: EnterpriseLayer` singleton

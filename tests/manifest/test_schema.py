@@ -115,24 +115,45 @@ def test_core_default_url_and_ref_none() -> None:
     assert manifest.core.ref is None
 
 
-def test_requires_enterprise_on_layer_defaults_to_false() -> None:
+def test_git_layer_rejects_requires_enterprise_field() -> None:
+    """`requires_enterprise` was removed (superseded by the
+    `module-dependency-validation` capability, which derives Enterprise
+    reachability from real `depends:` graphs). A manifest still setting it
+    on a `GitLayer` must be rejected at parse time via `extra="forbid"`."""
     repo = GitRepo(url="https://github.com/ingadhoc/odoo-argentina-ee.git", ref="19.0")
-    git_layer = GitLayer(type="git", name="localization", repos=[repo])
-    published_layer = PublishedLayer(
+
+    with pytest.raises(ValidationError) as exc_info:
+        GitLayer.model_validate(
+            {
+                "type": "git",
+                "name": "localization",
+                "repos": [repo],
+                "requires_enterprise": True,
+            }
+        )
+
+    assert "requires_enterprise" in str(exc_info.value)
+
+
+def test_published_layer_requires_enterprise_defaults_to_false() -> None:
+    """`requires_enterprise` is restored on `PublishedLayer` ONLY (not
+    `GitLayer` — see `test_git_layer_rejects_requires_enterprise_field`).
+    `PublishedLayer` content is never git-checked-out (`plan_projection` only
+    builds `WorkspacePlanEntry` from `lock.git_layers`), so the real
+    module-dependency validator can never see or evaluate it. The manual flag
+    is the only enforcement mechanism left for this layer type."""
+    layer = PublishedLayer(
         type="published",
         name="enterprise",
         source="registry://example/odoo-ee",
         version="19.0.1",
     )
 
-    assert git_layer.requires_enterprise is False
-    assert published_layer.requires_enterprise is False
+    assert layer.requires_enterprise is False
 
 
-def test_requires_enterprise_true_on_git_and_published_layer() -> None:
-    repo = GitRepo(url="https://github.com/ingadhoc/odoo-argentina-ee.git", ref="19.0")
-    git_layer = GitLayer(type="git", name="localization", repos=[repo], requires_enterprise=True)
-    published_layer = PublishedLayer(
+def test_published_layer_accepts_explicit_requires_enterprise_true() -> None:
+    layer = PublishedLayer(
         type="published",
         name="enterprise",
         source="registry://example/odoo-ee",
@@ -140,8 +161,7 @@ def test_requires_enterprise_true_on_git_and_published_layer() -> None:
         requires_enterprise=True,
     )
 
-    assert git_layer.requires_enterprise is True
-    assert published_layer.requires_enterprise is True
+    assert layer.requires_enterprise is True
 
 
 def test_git_repo_rejects_legacy_requires_edition_key() -> None:
@@ -257,7 +277,6 @@ def test_client_and_override_and_manifest_parse() -> None:
                 "name": "enterprise-addons",
                 "source": "registry://example/odoo-ee",
                 "version": "19.0.1",
-                "requires_enterprise": True,
             },
             {
                 "type": "git",
@@ -268,7 +287,6 @@ def test_client_and_override_and_manifest_parse() -> None:
                         "ref": "19.0",
                     }
                 ],
-                "requires_enterprise": True,
             },
         ],
         "client": {
@@ -382,7 +400,6 @@ def test_valid_fixture_parses_into_manifest() -> None:
 
     assert manifest.edition == "enterprise"
     assert isinstance(manifest.layers[1], GitLayer)
-    assert manifest.layers[1].requires_enterprise is True
 
 
 def test_malformed_fixture_yields_single_scoped_error() -> None:

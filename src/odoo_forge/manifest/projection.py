@@ -164,9 +164,7 @@ def classify_root(layer: CoreLayer | EnterpriseLayer | GitLayer | PublishedLayer
     namespace at `"custom/<category>"` (see `_custom_root_key`) — user
     layers can never target a system root, even when `category` is
     literally `"community"`/`"enterprise"`/`"worktrees"`; that string just
-    becomes a plain subfolder of `/mnt/custom/`. `requires_enterprise` is a
-    coherence precondition only and never affects mount classification.
-    Never returns `"worktrees"`.
+    becomes a plain subfolder of `/mnt/custom/`. Never returns `"worktrees"`.
     """
     if isinstance(layer, CoreLayer):
         return "community"

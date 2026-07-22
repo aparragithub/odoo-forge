@@ -44,7 +44,6 @@ layers:
   - type: git
     name: adhoc-ee
     category: adhoc
-    requires_enterprise: true
     repos:
       - url: https://github.com/ingadhoc/odoo-argentina-ee.git     # l10n_ar_account_reports
         ref: "19.0"
