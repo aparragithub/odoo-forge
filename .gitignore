@@ -33,3 +33,7 @@ htmlcov/
 # Local runnable example: keep the manifest, ignore the rest
 example/**
 !example/project.yaml
+
+# Local Enterprise credential smoke-test: keep the manifest, ignore the rest
+example-ar-ee/credentials.sops.yaml
+example-ar-ee/project.lock
