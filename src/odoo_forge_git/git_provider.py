@@ -106,6 +106,8 @@ class GitSourceProvider:
             )
         except FileNotFoundError:
             deferred_error = ResolutionError("git executable not found")
+        except OSError as exc:
+            deferred_error = ResolutionError(f"failed to execute git: {exc}")
         except subprocess.TimeoutExpired:
             deferred_error = NetworkError(
                 public_url,

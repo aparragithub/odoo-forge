@@ -400,15 +400,15 @@ class DockerPostgresqlDatabaseProvider:
     def _wait_ready(self, resource_id: str) -> None:
         deadline = self._monotonic() + self._readiness_timeout
         while True:
-            completed = self._runner(
-                ["docker", "exec", resource_id, "pg_isready", "-U", "postgres"],
-                timeout=self._timeout,
-            )
-            if completed.returncode == 0:
+            try:
+                self._run(
+                    ["docker", "exec", resource_id, "pg_isready", "-U", "postgres"]
+                )
                 return
-            if self._monotonic() >= deadline:
-                raise DatabaseReadinessError()
-            self._sleep(self._poll_interval)
+            except (DockerCommandFailedError, DockerCommandTimeoutError):
+                if self._monotonic() >= deadline:
+                    raise DatabaseReadinessError()
+                self._sleep(self._poll_interval)
 
     def _remove_owned(self, receipt: CreationReceipt, resource_id: str) -> None:
         self._validate_identifier(resource_id)
