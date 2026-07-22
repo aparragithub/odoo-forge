@@ -28,6 +28,16 @@ class LockfileError(ManifestError):
     """Raised when a `project.lock` cannot be read, decoded, or validated."""
 
 
+class ModuleDependencyError(ManifestError):
+    """Raised when one or more discovered modules have unsatisfied dependencies.
+
+    Covers both a missing-dependency report (module name -> missing dep names)
+    and a malformed `__manifest__.py` encountered while building the module
+    index — both are hard errors naming the offending module/file, never
+    silently skipped.
+    """
+
+
 class ResolutionError(Exception):
     """Base class for ref-resolution errors, separate from `ManifestError`.
 
@@ -105,6 +115,7 @@ __all__ = [
     "ManifestInputError",
     "CompositionError",
     "LockfileError",
+    "ModuleDependencyError",
     "ResolutionError",
     "RefNotFoundError",
     "AuthenticationError",
