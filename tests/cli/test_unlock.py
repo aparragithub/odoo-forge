@@ -4,7 +4,7 @@ import pytest
 from typer.testing import CliRunner
 
 from odoo_forge.manifest.errors import AlreadyUnlockedError
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition, _support
 from odoo_forge_cli.main import app
 
 runner = CliRunner()
@@ -55,7 +55,7 @@ def _write_manifest(tmp_path: Path) -> Path:
 
 def test_unlock_succeeds_and_prints_branch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -84,7 +84,7 @@ def test_unlock_core_layer_computes_community_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -113,9 +113,9 @@ def test_unlock_uses_the_resolved_host_roots(
     """`unlock` must plan against the resolved HOST mount base — not the
     fixed `/mnt` container table."""
     base = Path("/custom/state/odoo-forge")
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -142,7 +142,7 @@ def test_already_unlocked_exits_nonzero_single_cause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_provider = _FakeWorkspaceProvider(already_unlocked=True)
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -168,7 +168,7 @@ def test_unlock_unknown_layer_exits_clean_one_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml = _write_manifest(tmp_path)
 

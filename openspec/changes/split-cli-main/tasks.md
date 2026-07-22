@@ -33,17 +33,17 @@ Each PR merges to `main` before the next starts (stacked-to-main). Full suite
 
 ## PR1: `_composition.py` + `_presentation.py` + `_support.py`
 
-- [ ] 1.1 RED: run `uv run pytest tests/test_mount_base.py -v` to confirm current `from main import _resolve_mount_base` passes pre-move (baseline).
-- [ ] 1.2 Create `src/odoo_forge_cli/_composition.py`; move `_make_provider`, `_make_published_artifact_resolver`, `_make_workspace_provider`, `_make_manifest_workspace_provider`, `_make_backend_provider`, `_make_image_registry_provider`, `_doctor_age_key_file`, `GitWorkspaceProvider` import.
-- [ ] 1.3 Create `src/odoo_forge_cli/_presentation.py`; move `_format_drift`, `_format_missing_dependencies`, `_render_validation_errors`.
-- [ ] 1.4 Create `src/odoo_forge_cli/_support.py`; move `_resolve_mount_base`, `_host_roots`, `_read_manifest_data`, `_load_lock`, `_write_lock_atomic`, `_check_module_dependencies`.
-- [ ] 1.5 Update `main.py` call sites to module-qualified access (`_composition.make_backend_provider(...)`, not bare-name import), per design's module-qualified helper decision.
-- [ ] 1.6 Repoint `tests/test_mount_base.py`: `from main import _resolve_mount_base` → `from _support import resolve_mount_base`.
-- [ ] 1.7 Repoint `tests/test_lock.py` direct calls (lines ~297, 311) `main._load_lock(...)` → `_support._load_lock(...)`.
-- [ ] 1.8 Repoint any `main._make_provider`/`main._make_published_artifact_resolver`/`main._make_enterprise_credential_resolver` patches touched by this slice to `_composition.*`.
-- [ ] 1.9 GREEN: run full suite `uv run pytest`; confirm no `main.<moved-symbol>` patch targets remain unresolved.
-- [ ] 1.10 REFACTOR: remove now-dead imports from `main.py`; verify no re-export facade exists.
-- [ ] 1.11 Verify: `forge --help` unchanged output; `uv run lint-imports` passes; import smoke test for the 3 new modules (no cycle).
+- [x] 1.1 RED: run `uv run pytest tests/test_mount_base.py -v` to confirm current `from main import _resolve_mount_base` passes pre-move (baseline).
+- [x] 1.2 Create `src/odoo_forge_cli/_composition.py`; move `_make_provider`, `_make_published_artifact_resolver`, `_make_workspace_provider`, `_make_manifest_workspace_provider`, `_make_backend_provider`, `_make_image_registry_provider`, `_doctor_age_key_file`, `GitWorkspaceProvider` import.
+- [x] 1.3 Create `src/odoo_forge_cli/_presentation.py`; move `_format_drift`, `_format_missing_dependencies`, `_render_validation_errors`.
+- [x] 1.4 Create `src/odoo_forge_cli/_support.py`; move `_resolve_mount_base`, `_host_roots`, `_read_manifest_data`, `_load_lock`, `_write_lock_atomic`, `_check_module_dependencies`.
+- [x] 1.5 Update `main.py` call sites to module-qualified access (`_composition._make_backend_provider(...)`, not bare-name import), per design's module-qualified helper decision. Applied uniformly to ALL 16 command bodies remaining in `main.py` (not just `lock`), since each moved symbol now has exactly one canonical patch target.
+- [x] 1.6 Repoint `tests/test_mount_base.py`: `from main import _resolve_mount_base` → `from odoo_forge_cli import _support` + `_support._resolve_mount_base(...)` (kept the leading underscore for consistency with every other repoint in this PR and with PR4's own test inventory row for the same symbol — see Risks in apply-progress for the literal `resolve_mount_base` vs `_resolve_mount_base` naming deviation).
+- [x] 1.7 Repoint `tests/test_lock.py` direct calls (lines ~297, 311) `main._load_lock(...)` → `_support._load_lock(...)`.
+- [x] 1.8 Repoint any `main._make_provider`/`main._make_published_artifact_resolver`/`main._make_enterprise_credential_resolver` patches touched by this slice to `_composition.*`. Scope was widened beyond `test_lock.py`: since 1.5 qualifies every command's call sites, ALL test files patching a PR1-moved symbol needed repointing (test_lock, test_doctor, test_backend, test_validate, test_onboard, test_unlock, test_project, test_image_registry, test_enterprise_credential). `main._make_enterprise_credential_resolver` patches were left untouched — that symbol belongs to `enterprise_credential.py` (`ec`) and is out of PR1's scope.
+- [x] 1.9 GREEN: run full suite `uv run pytest`; confirm no `main.<moved-symbol>` patch targets remain unresolved. Result: 901 passed, 17 deselected (docker-daemon-integration tests, pre-existing marker exclusion), 0 failed.
+- [x] 1.10 REFACTOR: remove now-dead imports from `main.py`; verify no re-export facade exists. Dropped `os`, `json`, `tempfile`, `yaml`, `Lockfile`, `ManifestInputError`, `ModuleDependencyError`, `build_mount_roots`, `ordered_addons_roots`, `build_module_index`, `find_missing_dependencies`, `GitWorkspaceProvider`, `DriftEntry` from `main.py` (all now used only inside the new modules). The existing `__all__` block (ec symbols) is untouched — that's PR5b scope per the design's migration table, unrelated to this PR's 3 new modules.
+- [x] 1.11 Verify: `forge --help` unchanged output; `uv run lint-imports` passes; import smoke test for the 3 new modules (no cycle). All confirmed — see apply-progress.md for exact output.
 
 ## PR2: `commands/image.py`
 

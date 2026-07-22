@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 
 from odoo_forge.manifest.errors import CheckoutError
 from odoo_forge.manifest.lockfile import Lockfile, ResolvedLayer, ResolvedRepo
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition, _support
 from odoo_forge_cli.main import app
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
@@ -87,7 +87,7 @@ def _write_manifest_and_lock(
 
 def test_valid_lock_projects_every_layer(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml, _lock_path = _write_manifest_and_lock(tmp_path)
 
@@ -108,9 +108,9 @@ def test_project_checks_out_using_the_resolved_host_roots(
     """`project` must plan against the resolved HOST mount base — not the
     fixed `/mnt` container table."""
     base = Path("/custom/state/odoo-forge")
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml, _lock_path = _write_manifest_and_lock(tmp_path)
 
@@ -128,7 +128,7 @@ def test_mid_plan_checkout_failure_stops_cleanly_exits_nonzero(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_provider = _FakeWorkspaceProvider(fail_on_call=1)
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml, _lock_path = _write_manifest_and_lock(tmp_path)
 
@@ -171,7 +171,7 @@ def test_mid_plan_failure_names_repo_without_leaking_credentials(
     name the failing repo (spec: "exits non-zero naming the failing repo"),
     without ever surfacing the embedded credential in the error output."""
     fake_provider = _CredentialLeakSafeProvider(fail_url_substring="custom-x")
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text(_MANIFEST_TEXT)
@@ -223,7 +223,7 @@ def test_git_clone_stderr_credentials_do_not_reach_cli_output(
             GitWorkspaceProvider()._run(["git", "clone", "--", url, str(dest)])
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
-    monkeypatch.setattr(main, "_make_workspace_provider", _FailingGitWorkspaceProvider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", _FailingGitWorkspaceProvider)
     project_yaml, _lock_path = _write_manifest_and_lock(tmp_path)
 
     result = runner.invoke(app, ["project", "--manifest", str(project_yaml)])
@@ -239,7 +239,7 @@ def test_missing_lock_exits_clean_one_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text(_MANIFEST_TEXT)
@@ -273,7 +273,9 @@ def test_project_uses_manifest_workspace_checkout_timeout(
 
     project_yaml, _lock_path = _write_manifest_and_lock(tmp_path, _MANIFEST_TEXT_WITH_TIMEOUT)
 
-    monkeypatch.setitem(main.__dict__, "GitWorkspaceProvider", _RecordingGitWorkspaceProvider)
+    monkeypatch.setitem(
+        _composition.__dict__, "GitWorkspaceProvider", _RecordingGitWorkspaceProvider
+    )
     result = runner.invoke(app, ["project", "--manifest", str(project_yaml)])
 
     assert result.exit_code == 0

@@ -24,7 +24,7 @@ from odoo_forge.manifest.lockfile import (
 )
 from odoo_forge.manifest.projection import ScannedRepo, build_mount_roots
 from odoo_forge.manifest.schema import Manifest
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition, _support, main
 from odoo_forge_cli.main import app
 from odoo_forge_cli.main import plan_backend as original_plan_backend  # type: ignore[attr-defined]
 from odoo_forge_docker.credential_injection import SopsCommandResolver
@@ -149,8 +149,8 @@ def test_run_fails_closed_before_provider_for_invalid_workspace_evidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_backend = _FakeBackendProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: workspace)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: workspace)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
     project_yaml = _write_manifest(tmp_path)
 
     prepare(project_yaml)  # type: ignore[operator]
@@ -224,7 +224,7 @@ class _FakeBackendProvider:
 
 def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     expected_ref = InstanceRef(
         project="odoo-idp",
@@ -234,7 +234,7 @@ def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.Mo
         odoo_container="odoo-forge-odoo-idp-default-odoo",
     )
     fake_backend = _FakeBackendProvider(run_result=expected_ref)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -254,7 +254,7 @@ def test_run_scans_and_materializes_with_the_resolved_host_roots(
     container table — into
     `workspace_provider.scan`/`materialize_state`/`build_mount_planning_view`."""
     base = Path("/custom/state/odoo-forge")
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
     custom_roots = build_mount_roots(base, Manifest.model_validate(yaml.safe_load(_MANIFEST_TEXT)))
 
     scan_calls: list[object] = []
@@ -275,7 +275,9 @@ def test_run_scans_and_materializes_with_the_resolved_host_roots(
         def promote(self, source: Path, dest: Path, branch: str) -> None:
             raise NotImplementedError
 
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: _RecordingWorkspaceProvider())
+    monkeypatch.setattr(
+        _composition, "_make_workspace_provider", lambda: _RecordingWorkspaceProvider()
+    )
 
     expected_ref = InstanceRef(
         project="odoo-idp",
@@ -285,7 +287,7 @@ def test_run_scans_and_materializes_with_the_resolved_host_roots(
         odoo_container="odoo-forge-odoo-idp-default-odoo",
     )
     fake_backend = _FakeBackendProvider(run_result=expected_ref)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -299,7 +301,7 @@ def test_run_binds_opaque_credentials_at_the_composition_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     expected_ref = InstanceRef(
         project="odoo-idp",
@@ -309,7 +311,7 @@ def test_run_binds_opaque_credentials_at_the_composition_root(
         odoo_container="odoo-forge-odoo-idp-default-odoo",
     )
     fake_backend = _FakeBackendProvider(run_result=expected_ref)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     captured: dict[str, object] = {}
 
@@ -334,7 +336,7 @@ def test_default_backend_composition_configures_a_sops_resolver_for_the_manifest
 ) -> None:
     credentials_file = tmp_path / "project" / "credentials.sops.yaml"
 
-    provider = main._make_backend_provider(credentials_file=credentials_file)
+    provider = _composition._make_backend_provider(credentials_file=credentials_file)
 
     assert isinstance(provider, DockerBackendProvider)
     assert isinstance(provider._credential_injector._resolver, SopsCommandResolver)
@@ -345,7 +347,7 @@ def test_run_scopes_sops_resolution_to_the_selected_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
     expected_ref = InstanceRef(
         project="odoo-idp",
         instance="default",
@@ -359,7 +361,7 @@ def test_run_scopes_sops_resolution_to_the_selected_manifest(
         captured.update(kwargs)
         return _FakeBackendProvider(run_result=expected_ref)
 
-    monkeypatch.setattr(main, "_make_backend_provider", make_backend_provider)
+    monkeypatch.setattr(_composition, "_make_backend_provider", make_backend_provider)
     manifest_dir = tmp_path / "selected-project"
     manifest_dir.mkdir()
     manifest = _write_manifest(manifest_dir)
@@ -374,7 +376,7 @@ def test_run_with_odoo_image_ref_passes_canonical_digest_to_planner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     expected_ref = InstanceRef(
         project="odoo-idp",
@@ -384,7 +386,7 @@ def test_run_with_odoo_image_ref_passes_canonical_digest_to_planner(
         odoo_container="odoo-forge-odoo-idp-default-odoo",
     )
     fake_backend = _FakeBackendProvider(run_result=expected_ref)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
     odoo_image_ref = "ghcr.io/odoo/odoo@sha256:" + "b" * 64
@@ -404,7 +406,7 @@ def test_run_passes_manifest_configured_odoo_http_port_to_backend_plan(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     expected_ref = InstanceRef(
         project="odoo-idp",
@@ -414,7 +416,7 @@ def test_run_passes_manifest_configured_odoo_http_port_to_backend_plan(
         odoo_container="odoo-forge-odoo-idp-default-odoo",
     )
     fake_backend = _FakeBackendProvider(run_result=expected_ref)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest_with_backend_http_port(tmp_path, 18069)
 
@@ -429,10 +431,10 @@ def test_run_rejects_non_digest_odoo_image_ref_before_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider()
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -451,12 +453,12 @@ def test_run_docker_unavailable_single_line_exit1_no_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(
         run_error=DockerUnavailableError("docker daemon is not reachable")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -489,10 +491,10 @@ def test_run_pull_failures_exit_clean_single_line_and_keep_diagnostic(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(run_error=run_error)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -508,13 +510,13 @@ def test_status_reports_not_running_without_raising_for_absent_instance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     not_running = RoleStatus(running=False, state="exited", ready=False)
     fake_backend = _FakeBackendProvider(
         status_result=InstanceStatus(odoo=not_running, postgres=not_running)
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -535,8 +537,10 @@ def test_scan_error_from_corrupted_checkout_exits_clean_one_error(
     fake_workspace = _FakeWorkspaceProvider(
         scan_error=ScanError("cannot read materialized repo state at '/mnt/community/core'")
     )
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: _FakeBackendProvider())
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(
+        _composition, "_make_backend_provider", lambda **_kwargs: _FakeBackendProvider()
+    )
 
     project_yaml = _write_manifest(tmp_path)
     args = [command, "--manifest", str(project_yaml)]
@@ -563,8 +567,8 @@ def test_instance_commands_do_not_scan_workspace(
         logs_result="captured logs",
         exec_result=ExecResult(exit_code=0, stdout="captured output", stderr=""),
     )
-    monkeypatch.setattr(main, "_make_workspace_provider", fail_if_created)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", fail_if_created)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     args = [command, "--manifest", str(_write_manifest(tmp_path))]
     if command == "exec":
@@ -583,12 +587,12 @@ def test_run_instance_exists_exits_clean_one_error(
     # that path explicitly rather than relying on the generic
     # `DockerUnavailableError` test to stand in for the whole family.
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(
         run_error=InstanceExistsError("instance 'default' already exists")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda **_kwargs: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -641,7 +645,7 @@ def test_instance_command_manifest_validation_errors_are_field_oriented_and_safe
         backend_provider_created = True
         return _FakeBackendProvider()
 
-    monkeypatch.setattr(main, "_make_backend_provider", make_backend_provider)
+    monkeypatch.setattr(_composition, "_make_backend_provider", make_backend_provider)
     args = [command, "--manifest", str(invalid_manifest)]
     if command == "exec":
         args += ["--", "echo", "hi"]
@@ -671,7 +675,7 @@ def test_run_rejects_invalid_backend_bind_host_before_provider_creation(
         backend_provider_created = True
         return _FakeBackendProvider()
 
-    monkeypatch.setattr(main, "_make_backend_provider", make_backend_provider)
+    monkeypatch.setattr(_composition, "_make_backend_provider", make_backend_provider)
 
     result = runner.invoke(app, ["run", "--manifest", str(invalid_manifest)])
 
@@ -687,10 +691,10 @@ def test_stop_succeeds_calls_provider_with_derived_ref(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider()
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -705,12 +709,12 @@ def test_stop_unknown_instance_exits_nonzero_single_cause(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(
         stop_error=InstanceNotFoundError("instance 'default' does not exist")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -725,10 +729,10 @@ def test_logs_prints_role_selected_log_text(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(logs_result="2026-07-08T00:00:00 odoo booted")
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -742,10 +746,10 @@ def test_logs_prints_role_selected_log_text(
 
 def test_logs_defaults_to_odoo_role(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(logs_result="log text")
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -760,12 +764,12 @@ def test_logs_absent_instance_exits_clean_one_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(
         logs_error=InstanceNotFoundError("instance 'default' does not exist")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -780,12 +784,12 @@ def test_exec_prints_stdout_and_propagates_exit_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(
         exec_result=ExecResult(exit_code=3, stdout="out-line", stderr="err-line")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -804,12 +808,12 @@ def test_exec_absent_instance_exits_clean_one_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(
         exec_error=InstanceNotFoundError("instance 'default' does not exist")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -824,8 +828,8 @@ def test_logs_invalid_role_exits_clean_usage_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: _FakeBackendProvider())
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: _FakeBackendProvider())
 
     project_yaml = _write_manifest(tmp_path)
 
@@ -839,12 +843,12 @@ def test_exec_success_exits_zero_prints_stdout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_workspace = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_workspace)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_workspace)
 
     fake_backend = _FakeBackendProvider(
         exec_result=ExecResult(exit_code=0, stdout="all good", stderr="")
     )
-    monkeypatch.setattr(main, "_make_backend_provider", lambda: fake_backend)
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda: fake_backend)
 
     project_yaml = _write_manifest(tmp_path)
 

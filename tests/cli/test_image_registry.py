@@ -7,7 +7,7 @@ from odoo_forge.image_registry.errors import (
     RegistryAuthenticationError,
     RegistryImageNotFoundError,
 )
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition
 from odoo_forge_cli.main import app
 
 runner = CliRunner()
@@ -76,7 +76,7 @@ def test_image_resolve_prints_canonical_digest_ref(
     fake_provider = _FakeImageRegistryProvider(
         resolved_ref="ghcr.io/acme/widget@sha256:" + "c" * 64
     )
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(app, ["image-resolve", "--ref", "ghcr.io/acme/widget:latest"])
 
@@ -89,7 +89,7 @@ def test_image_publish_prints_digest_ref(monkeypatch: pytest.MonkeyPatch) -> Non
     fake_provider = _FakeImageRegistryProvider(
         published_ref="ghcr.io/acme/widget@sha256:" + "d" * 64
     )
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(app, ["image-publish", "--ref", "ghcr.io/acme/widget:latest"])
 
@@ -102,7 +102,7 @@ def test_image_publish_rejects_digest_refs_before_provider_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_provider = _FakeImageRegistryProvider()
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(
         app,
@@ -116,7 +116,7 @@ def test_image_publish_rejects_digest_refs_before_provider_call(
 
 def test_image_pull_prints_local_handle(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_provider = _FakeImageRegistryProvider(pulled_ref="ghcr.io/acme/widget@sha256:" + "e" * 64)
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(
         app,
@@ -130,7 +130,7 @@ def test_image_pull_prints_local_handle(monkeypatch: pytest.MonkeyPatch) -> None
 
 def test_image_exists_prints_boolean(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_provider = _FakeImageRegistryProvider(exists_value=False)
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(
         app,
@@ -184,7 +184,7 @@ def test_image_commands_render_single_cause_registry_errors(
         pull_error=error if command == "image-pull" else None,
         exists_error=error if command == "image-exists" else None,
     )
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(app, [command, "--ref", ref])
 
@@ -209,7 +209,7 @@ def test_image_commands_fail_fast_on_usage_boundary_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_provider = _FakeImageRegistryProvider()
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(app, [command, "--ref", ref])
 
@@ -226,7 +226,7 @@ def test_image_exists_reports_present_digest(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     fake_provider = _FakeImageRegistryProvider(exists_value=True)
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
 
     result = runner.invoke(
         app,
@@ -257,8 +257,8 @@ def test_registry_commands_do_not_invoke_backend_provider(
     def _fail_backend_provider() -> object:
         raise AssertionError("backend provider must not be built")
 
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
-    monkeypatch.setattr(main, "_make_backend_provider", _fail_backend_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_backend_provider", _fail_backend_provider)
 
     result = runner.invoke(app, [command, "--ref", ref])
 
@@ -273,7 +273,7 @@ def test_successful_registry_commands_leave_project_lock_untouched(
     fake_provider = _FakeImageRegistryProvider(
         published_ref="ghcr.io/acme/widget@sha256:" + "d" * 64
     )
-    monkeypatch.setattr(main, "_make_image_registry_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_image_registry_provider", lambda: fake_provider)
     monkeypatch.chdir(tmp_path)
 
     lock_path = tmp_path / "project.lock"
