@@ -162,11 +162,10 @@ class GitWorkspaceProvider:
                 ["git", "-C", str(clone_path), "checkout", "--detach", commit],
                 env_overlay=env_overlay,
             )
+            self._atomic_swap(clone_path, dest)
         except BaseException:
             shutil.rmtree(tmp_dir, ignore_errors=True)
             raise
-
-        self._atomic_swap(clone_path, dest)
 
     def _clone(
         self, url: str, clone_path: Path, env_overlay: Mapping[str, str] | None = None
@@ -212,11 +211,14 @@ class GitWorkspaceProvider:
     def _atomic_swap(clone_path: Path, dest: Path) -> None:
         """Move `clone_path` onto `dest` without ever leaving `dest` absent."""
         backup_path: Path | None = None
+        temp_dir: Path | None = None
         if dest.exists():
             # Reserve a guaranteed-free sibling path on the same filesystem.
+            # Move `dest` into the temp directory to avoid TOCTOU race:
+            # the directory remains exclusively-owned the whole time.
             reserved = tempfile.mkdtemp(dir=dest.parent)
-            os.rmdir(reserved)
-            backup_path = Path(reserved)
+            temp_dir = Path(reserved)
+            backup_path = temp_dir / dest.name
             os.replace(dest, backup_path)
 
         try:
@@ -227,8 +229,8 @@ class GitWorkspaceProvider:
             shutil.rmtree(clone_path, ignore_errors=True)
             raise
 
-        if backup_path is not None:
-            shutil.rmtree(backup_path, ignore_errors=True)
+        if temp_dir is not None:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
     def _current_head(self, dest: Path) -> str:
         result = self._run(["git", "-C", str(dest), "rev-parse", "HEAD"])

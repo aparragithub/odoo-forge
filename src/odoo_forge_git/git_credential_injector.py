@@ -55,8 +55,8 @@ class GitCredentialInjector:
         fd, raw_path = tempfile.mkstemp(prefix="odoo-forge-askpass-", suffix=".py")
         path = Path(raw_path)
         try:
-            os.fchmod(fd, 0o700)
             with os.fdopen(fd, "w", encoding="utf-8") as script_file:
+                os.fchmod(fd, 0o700)
                 script_file.write(_ASKPASS_SCRIPT_TEMPLATE.format(secret=value))
             yield {
                 "GIT_ASKPASS": str(path),
