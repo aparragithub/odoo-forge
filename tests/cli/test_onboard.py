@@ -244,6 +244,57 @@ def test_onboard_reports_scan_failure_without_checkout(
     assert not provider.checkout_calls
 
 
+def _write_module(root: Path, name: str, content: str) -> None:
+    module_dir = root / name
+    module_dir.mkdir(parents=True, exist_ok=True)
+    (module_dir / "__manifest__.py").write_text(content, encoding="utf-8")
+
+
+def test_onboard_rejects_missing_module_dependency_after_materialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`forge onboard` is a valid path to a fully materialized workspace that
+    never goes through `forge validate` — it MUST run the same
+    module-dependency check once the workspace is confirmed materialized, not
+    leave it to an optional later `forge validate` call."""
+    base = tmp_path / "mount-base"
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    provider = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    manifest = _write_manifest_and_lock(tmp_path)
+
+    _write_module(base / "community", "mod_a", "{'name': 'Mod A', 'depends': ['mod_missing']}")
+
+    result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
+
+    assert result.exit_code == 1
+    assert "mod_a" in result.output
+    assert "mod_missing" in result.output
+    # The workspace WAS fully materialized (checkout ran) before the
+    # dependency check rejected it — this proves the check runs against the
+    # real, projected addons_path, not before materialization.
+    assert provider.checkout_calls
+    assert "next" not in result.output.lower()
+
+
+def test_onboard_succeeds_when_module_dependencies_are_satisfied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = tmp_path / "mount-base"
+    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    provider = _FakeWorkspaceProvider()
+    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    manifest = _write_manifest_and_lock(tmp_path)
+
+    _write_module(base / "community", "mod_b", "{'name': 'Mod B'}")
+    _write_module(base / "community", "mod_a", "{'name': 'Mod A', 'depends': ['mod_b']}")
+
+    result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
+
+    assert result.exit_code == 0
+    assert "next" in result.output.lower()
+
+
 def test_onboard_reports_checkout_failure_without_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
