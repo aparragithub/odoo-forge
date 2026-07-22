@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 from odoo_forge.credentials.conventions import (
     ENTERPRISE_SOURCE_CREDENTIAL_HANDLE,
     ENTERPRISE_SOURCE_TARGET,
+    ENTERPRISE_SOURCE_URL,
 )
 from odoo_forge.credentials.materialization import materialize_for_target
 from odoo_forge.credentials.types import CredentialHandle, CredentialResolver
@@ -36,11 +37,12 @@ from odoo_forge_git.git_credential_injector import GitCredentialInjector
 
 # The only host the conventional Enterprise credential may ever be injected
 # against. Derived from the official (and, today, only) Enterprise source
-# URL. No user-facing configuration surface exists for this yet — that is a
-# deliberate follow-up, out of scope here.
-_DEFAULT_ENTERPRISE_URL = "https://github.com/odoo/enterprise.git"
+# URL — the trusted anchor imported from `credentials.conventions`, never an
+# overridable default. No user-facing configuration surface exists for this
+# yet — that is a deliberate follow-up, out of scope here.
+_OFFICIAL_ENTERPRISE_URL = ENTERPRISE_SOURCE_URL
 _ALLOWED_ENTERPRISE_CREDENTIAL_HOSTS = frozenset(
-    host for host in (urlsplit(_DEFAULT_ENTERPRISE_URL).hostname,) if host
+    host for host in (urlsplit(_OFFICIAL_ENTERPRISE_URL).hostname,) if host
 )
 
 

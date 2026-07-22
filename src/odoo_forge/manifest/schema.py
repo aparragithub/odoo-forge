@@ -12,6 +12,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
+from odoo_forge.credentials.conventions import ENTERPRISE_SOURCE_URL
+
 _REQUIRES_EDITION_MIGRATION_ERROR = (
     "'requires_edition' has been removed. Use the top-level 'enterprise:' block "
     "to declare the enterprise source. Enterprise-reachability is no longer a "
@@ -57,7 +59,7 @@ class EnterpriseLayer(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["enterprise"] = "enterprise"
-    url: str = "https://github.com/odoo/enterprise.git"
+    url: str = ENTERPRISE_SOURCE_URL
     ref: str | None = None
 
 
