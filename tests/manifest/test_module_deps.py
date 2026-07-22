@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from odoo_forge.manifest.errors import ManifestError, ModuleDependencyError
 from odoo_forge.manifest.module_deps import (
     OdooModule,
     build_module_index,
@@ -248,3 +249,25 @@ def test_find_missing_dependencies_community_chain_reaches_enterprise_only(
     missing = find_missing_dependencies(index)
 
     assert missing == {"l10n_ar_reports": frozenset({"account_reports"})}
+
+
+def test_module_dependency_error_is_a_manifest_error_with_sorted_multi_entry_message() -> None:
+    missing: dict[str, frozenset[str]] = {
+        "my_module": frozenset({"bar", "foo"}),
+        "l10n_ar_reports": frozenset({"account_reports"}),
+    }
+
+    error = ModuleDependencyError(
+        "missing module dependencies:\n"
+        "  l10n_ar_reports -> account_reports\n"
+        "  my_module -> bar, foo"
+    )
+
+    assert isinstance(error, ManifestError)
+    assert str(error) == (
+        "missing module dependencies:\n"
+        "  l10n_ar_reports -> account_reports\n"
+        "  my_module -> bar, foo"
+    )
+    # Sanity: the fixture mapping itself matches the shape the CLI wiring formats.
+    assert set(missing) == {"my_module", "l10n_ar_reports"}

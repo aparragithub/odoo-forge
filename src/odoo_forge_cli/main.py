@@ -33,14 +33,17 @@ from odoo_forge.manifest.errors import (
     LockfileError,
     ManifestError,
     ManifestInputError,
+    ModuleDependencyError,
     ResolutionError,
 )
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.locking import build_lock
+from odoo_forge.manifest.module_deps import build_module_index, find_missing_dependencies
 from odoo_forge.manifest.projection import (
     build_mount_planning_view,
     build_mount_roots,
     materialize_state,
+    ordered_addons_roots,
     plan_projection,
     plan_unlock,
     project_workspace,
@@ -251,6 +254,38 @@ def _format_drift(entry: DriftEntry) -> str:
     return f"unrecognized drift entry: {entry.kind}"
 
 
+def _format_missing_dependencies(missing: dict[str, frozenset[str]]) -> str:
+    """Render every module's missing dependencies as one sorted, multi-line message."""
+    lines = [f"  {name} -> {', '.join(sorted(deps))}" for name, deps in sorted(missing.items())]
+    return "missing module dependencies:\n" + "\n".join(lines)
+
+
+def _check_module_dependencies(parsed: Manifest, base: Path) -> None:
+    """Run module-dependency validation against the materialized addons_path.
+
+    Shared by `validate` (after drift detection confirms the workspace is
+    materialized) and `onboard` (right after `project_workspace` completes
+    and the post-projection drift check confirms a clean, fully materialized
+    tree) — both are commands whose flow ends with a real addons_path on
+    disk. `forge lock` deliberately does NOT call this: it only resolves refs
+    and writes `project.lock`, it never checks out a workspace itself, so
+    there is no addons_path to inspect at that point (running this check
+    there would only see stale evidence from a previous `onboard`, if any).
+
+    Raises `ModuleDependencyError` (caught by the existing
+    `except ManifestError` handler) for both a malformed `__manifest__.py`
+    and any missing dependency.
+    """
+    addons_roots = ordered_addons_roots(parsed, base=base)
+    try:
+        index = build_module_index(addons_roots)
+    except ValueError as exc:
+        raise ModuleDependencyError(str(exc)) from exc
+    missing = find_missing_dependencies(index)
+    if missing:
+        raise ModuleDependencyError(_format_missing_dependencies(missing))
+
+
 def _render_validation_errors(exc: ValidationError) -> None:
     for error in exc.errors():
         location = ".".join(str(part) for part in error["loc"])
@@ -340,6 +375,23 @@ def validate(
         scanned = provider.scan(list(host_roots.values()))
         materialized = materialize_state(scanned, host_roots)
         report = detect_drift(parsed, lock, materialized)
+        if lock is not None:
+            # A mount root that is not yet materialized (partial
+            # `forge onboard`/`forge project`) must never silently read as
+            # "module missing" — build_module_index would just see an empty
+            # or partial addons_path and misreport it. Fail loud and
+            # distinctly instead of running the dependency check at all.
+            not_materialized = [
+                entry
+                for entry in report.manifest_lock_drift + report.lock_state_drift
+                if entry.kind == "not_materialized"
+            ]
+            if not_materialized:
+                raise ManifestError(
+                    "workspace not fully materialized — run `forge onboard` "
+                    "(or `forge project`) before module-dependency validation can run"
+                )
+            _check_module_dependencies(parsed, _resolve_mount_base())
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -420,6 +472,13 @@ def onboard(
                 else final_report.lock_state_drift[0]
             )
             raise ManifestError(f"drift: {_format_drift(drift_entry)}")
+
+        # The workspace is now confirmed materialized and drift-free — the
+        # same real module-dependency check `forge validate` runs, so a user
+        # who never calls `forge validate` still gets it here. `forge lock`
+        # does NOT get this check (see `_check_module_dependencies`'s
+        # docstring): it never materializes a workspace itself.
+        _check_module_dependencies(parsed, _resolve_mount_base())
     except ManifestError as exc:
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
