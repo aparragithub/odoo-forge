@@ -103,50 +103,6 @@ def test_compose_empty_layers_chain_is_core_then_client() -> None:
     assert chain[1] is manifest.client
 
 
-def test_community_rejects_layer_with_requires_enterprise() -> None:
-    manifest = Manifest.model_validate(
-        _base_kwargs(
-            layers=[
-                {
-                    "type": "git",
-                    "name": "localization",
-                    "requires_enterprise": True,
-                    "repos": [
-                        {
-                            "url": "https://github.com/ingadhoc/odoo-argentina-ee.git",
-                            "ref": "19.0",
-                        }
-                    ],
-                },
-            ],
-        )
-    )
-
-    with pytest.raises(CompositionError, match="localization"):
-        compose(manifest)
-
-
-def test_community_rejects_layer_level_enterprise_published() -> None:
-    # Layer-level `requires_enterprise: true` (a PublishedLayer, no nested
-    # repos) must fail under community — exercises the layer-level gating branch.
-    manifest = Manifest.model_validate(
-        _base_kwargs(
-            layers=[
-                {
-                    "type": "published",
-                    "name": "enterprise-addons",
-                    "source": "registry://example/odoo-ee",
-                    "version": "19.0.1",
-                    "requires_enterprise": True,
-                },
-            ],
-        )
-    )
-
-    with pytest.raises(CompositionError, match="enterprise-addons"):
-        compose(manifest)
-
-
 def test_override_targeting_git_layer_repo_is_accepted() -> None:
     manifest = Manifest.model_validate(
         _base_kwargs(
@@ -262,6 +218,51 @@ def test_override_targeting_published_layer_is_rejected() -> None:
         compose(manifest)
 
 
+def test_community_rejects_published_layer_with_requires_enterprise() -> None:
+    """Restored, scoped-to-`PublishedLayer` coherence check: `PublishedLayer`
+    content is never git-checked-out, so the real module-dependency validator
+    can never see it. `GitLayer` is NOT covered by this check anymore — it is
+    covered by the real dependency validator once its content is materialized."""
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            layers=[
+                {
+                    "type": "published",
+                    "name": "extra",
+                    "source": "registry://example/extra",
+                    "version": "1.0.0",
+                    "requires_enterprise": True,
+                },
+            ],
+        )
+    )
+
+    with pytest.raises(CompositionError, match="extra"):
+        compose(manifest)
+
+
+def test_enterprise_edition_allows_published_layer_requiring_enterprise() -> None:
+    manifest = Manifest.model_validate(
+        _base_kwargs(
+            edition="enterprise",
+            enterprise={"url": "https://github.com/odoo/enterprise.git", "ref": "19.0"},
+            layers=[
+                {
+                    "type": "published",
+                    "name": "extra",
+                    "source": "registry://example/extra",
+                    "version": "1.0.0",
+                    "requires_enterprise": True,
+                },
+            ],
+        )
+    )
+
+    chain = compose(manifest)
+
+    assert len(chain) == 4
+
+
 def test_enterprise_manifest_accepts_same_repo() -> None:
     manifest = Manifest.model_validate(
         _base_kwargs(
@@ -271,7 +272,6 @@ def test_enterprise_manifest_accepts_same_repo() -> None:
                 {
                     "type": "git",
                     "name": "localization",
-                    "requires_enterprise": True,
                     "repos": [
                         {
                             "url": "https://github.com/ingadhoc/odoo-argentina-ee.git",

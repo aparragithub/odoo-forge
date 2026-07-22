@@ -122,13 +122,6 @@ class TestClassifyRoot:
 
         assert classify_root(layer) == "custom/partners"
 
-    def test_requires_enterprise_does_not_affect_mount_classification(self) -> None:
-        # `requires_enterprise` is a coherence precondition only (Slice 1);
-        # it must NOT influence mount classification anymore.
-        layer = _git_layer(category="partners", requires_enterprise=True)
-
-        assert classify_root(layer) == "custom/partners"
-
     def test_core_always_classifies_to_community(self) -> None:
         assert classify_root(CoreLayer()) == "community"
 
@@ -178,7 +171,6 @@ class TestClassifyRoot:
             _git_layer(category="custom"),
             _git_layer(category="localization"),
             _git_layer(category="enterprise"),
-            _git_layer(requires_enterprise=True),
         ],
     )
     def test_never_returns_worktrees(
@@ -203,7 +195,6 @@ class TestPlanProjection:
                     name="enterprise-addons",
                     source="registry://example/odoo-ee",
                     version="19.0.1",
-                    requires_enterprise=True,
                 ),
             ],
         )
@@ -247,7 +238,6 @@ class TestPlanProjection:
                     source="registry://example/odoo-ee",
                     version="19.0.1",
                     category="enterprise",
-                    requires_enterprise=True,
                 ),
             ],
         )

@@ -14,8 +14,10 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_valida
 
 _REQUIRES_EDITION_MIGRATION_ERROR = (
     "'requires_edition' has been removed. Use the top-level 'enterprise:' block "
-    "to declare the enterprise source, and 'requires_enterprise: true' on a "
-    "layer to declare it needs enterprise present as a precondition."
+    "to declare the enterprise source. Enterprise-reachability is no longer a "
+    "manually-declared precondition ('requires_enterprise' has also been removed); "
+    "it is derived from the module dependency graph by the "
+    "module-dependency-validation capability, which runs as part of `forge validate`."
 )
 
 
@@ -124,8 +126,16 @@ class PublishedLayer(_LegacyEditionKeyRejector):
     name: str
     source: str
     version: str
-    requires_enterprise: bool = False
     category: LayerCategory = Field(default="custom", validate_default=True)
+    # Restored for `PublishedLayer` ONLY (never `GitLayer`): a published
+    # layer's content is never git-checked-out (`plan_projection` only builds
+    # `WorkspacePlanEntry` from `lock.git_layers`), so the real
+    # module-dependency validator (`odoo_forge.manifest.module_deps`) — which
+    # only scans on-disk `__manifest__.py` files — can never see or evaluate
+    # it under any command. This manual flag is the only enforcement
+    # mechanism left for this layer type; see
+    # `_check_published_layer_edition_coherence` in `composition.py`.
+    requires_enterprise: bool = False
 
 
 class GitLayer(_LegacyEditionKeyRejector):
@@ -134,7 +144,6 @@ class GitLayer(_LegacyEditionKeyRejector):
     type: Literal["git"]
     name: str
     repos: list[GitRepo]
-    requires_enterprise: bool = False
     category: LayerCategory = Field(default="custom", validate_default=True)
 
 

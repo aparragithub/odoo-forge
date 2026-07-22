@@ -314,7 +314,6 @@ def test_published_layers_omitted_from_lock() -> None:
                 name="enterprise",
                 source="registry://example/odoo-ee",
                 version="19.0.1",
-                requires_enterprise=True,
             )
         ],
     )
@@ -390,15 +389,16 @@ def test_generated_from_matches_manifest_hash() -> None:
 
 
 def test_composition_error_propagates_before_resolution() -> None:
+    # `core` is a reserved layer name (see `_check_reserved_layer_names`) —
+    # using a `PublishedLayer` avoids requiring any repos.
     manifest = _manifest(
         edition="community",
         layers=[
             PublishedLayer(
                 type="published",
-                name="enterprise",
+                name="core",
                 source="registry://example/odoo-ee",
                 version="19.0.1",
-                requires_enterprise=True,
             )
         ],
     )
