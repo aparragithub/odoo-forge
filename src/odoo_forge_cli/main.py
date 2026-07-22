@@ -18,11 +18,7 @@ from odoo_forge.credentials.doctor import run_doctor
 from odoo_forge.credentials.errors import CredentialError
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError
-from odoo_forge.image_registry.reference import (
-    normalize_digest_image_reference,
-    normalize_image_reference,
-    normalize_publishable_image_reference,
-)
+from odoo_forge.image_registry.reference import normalize_image_reference
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import detect_drift
 from odoo_forge.manifest.errors import (
@@ -42,6 +38,7 @@ from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_cli import _composition, _presentation, _support
+from odoo_forge_cli.commands import image
 from odoo_forge_cli.enterprise_credential import (
     _bind_enterprise_source_provider,
     _bind_enterprise_workspace_provider,
@@ -60,58 +57,7 @@ def _forge_callback() -> None:
     """Odoo Forge — decentralized project manifest tooling."""
 
 
-@app.command(name="image-resolve")
-def image_resolve(ref: str = typer.Option(..., "--ref", help="Image reference to resolve")) -> None:
-    """Resolve a supported GHCR image reference to a canonical digest ref."""
-    try:
-        normalized_ref = normalize_publishable_image_reference(ref)
-        provider = _composition._make_image_registry_provider()
-        typer.echo(provider.resolve_digest(normalized_ref))
-    except RegistryError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-
-
-@app.command(name="image-publish")
-def image_publish(
-    ref: str = typer.Option(..., "--ref", help="Image reference to publish"),
-) -> None:
-    """Publish a built GHCR image and print its immutable digest ref."""
-    try:
-        normalized_ref = normalize_publishable_image_reference(ref)
-        provider = _composition._make_image_registry_provider()
-        typer.echo(provider.publish(normalized_ref))
-    except RegistryError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-
-
-@app.command(name="image-pull")
-def image_pull(
-    ref: str = typer.Option(..., "--ref", help="Digest image reference to prefetch"),
-) -> None:
-    """Prefetch a digest image into the local Docker daemon."""
-    try:
-        normalized_ref = normalize_digest_image_reference(ref)
-        provider = _composition._make_image_registry_provider()
-        typer.echo(provider.pull(normalized_ref))
-    except RegistryError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-
-
-@app.command(name="image-exists")
-def image_exists(
-    ref: str = typer.Option(..., "--ref", help="Digest image reference to check"),
-) -> None:
-    """Check whether a digest image exists in the registry."""
-    try:
-        normalized_ref = normalize_digest_image_reference(ref)
-        provider = _composition._make_image_registry_provider()
-        typer.echo(str(provider.exists(normalized_ref)).lower())
-    except RegistryError as exc:
-        typer.echo(f"error: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
+image.register(app)
 
 
 @app.command()

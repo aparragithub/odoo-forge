@@ -141,10 +141,117 @@ New files (not yet tracked by git, awaiting orchestrator commit):
  src/odoo_forge_cli/_support.py       (123 lines)
 ```
 
+## PR2 — `commands/image.py` — COMPLETE
+
+Status: all 7 tasks (2.1-2.7) done. Full suite green (unchanged count vs
+PR1 baseline), `lint-imports` green, `forge --help` shows all 16 commands,
+CLI surface byte-identical, no circular imports.
+
+### What changed
+
+- Created `src/odoo_forge_cli/commands/__init__.py` (new package, docstring
+  only).
+- Created `src/odoo_forge_cli/commands/image.py`: moved `image_resolve`,
+  `image_publish`, `image_pull`, `image_exists` verbatim (bodies unchanged,
+  same module-qualified `_composition._make_image_registry_provider()`
+  calls carried over from PR1); added `register(app: typer.Typer) -> None`
+  that binds all four via `app.command(name=...)` with the exact
+  pre-existing flat hyphenated names (`image-resolve`, `image-publish`,
+  `image-pull`, `image-exists`). Imports only `typer`,
+  `odoo_forge.image_registry` (errors + reference normalizers), and
+  `odoo_forge_cli._composition` — no import of `odoo_forge_cli.main`,
+  confirmed via `rg`.
+- `main.py`: removed the four `@app.command` bodies (63 lines); added
+  `from odoo_forge_cli.commands import image` and a single `image.register(app)`
+  call placed immediately after the `_forge_callback`. Trimmed now-unused
+  imports `normalize_digest_image_reference` /
+  `normalize_publishable_image_reference` (both only used by the moved
+  commands); kept `RegistryError` and `normalize_image_reference` since
+  `run`/`status` (still in `main.py`) use them.
+- `main.py` now has 12 `@app.command` decorators (down from 16); the four
+  image commands live in `commands/image.py`.
+
+### Test repoint (task 2.4) — already satisfied by PR1
+
+`tests/cli/test_image_registry.py` already patches
+`_composition._make_image_registry_provider` and
+`_composition._make_backend_provider` (not `main.*`) — task 1.8 in PR1
+widened the module-qualification repoint to every test file touching a
+PR1-moved symbol, including this one, ahead of schedule. Since
+`commands/image.py` calls these factories module-qualified from
+`_composition` (identical call-site shape to the pre-PR2 `main.py` body),
+the existing patch targets remain the single canonical binding — no edit
+was needed. Verified by inspection (`rg` showing all patches already target
+`_composition`) and by the full green run below (a stale/no-op patch would
+have surfaced as a passing-but-unexercised test; the fake-provider
+assertions on `resolve_calls`/`publish_calls`/etc. would fail if the real
+provider had been invoked instead).
+
+### Verification (real output)
+
+```
+$ uv run pytest tests/cli/test_image_registry.py -v   # RED baseline, pre-move
+19 passed
+```
+
+```
+$ uv run pytest -q   # GREEN, full suite post-move
+901 passed, 17 deselected in 6.74s
+```
+(Identical to PR1's post-verification count — zero regressions, zero new
+skips.)
+
+```
+$ uv run lint-imports
+Analyzed 106 files, 334 dependencies.
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Core never imports the docker adapter KEPT
+Core never imports the registry adapter KEPT
+Contracts: 6 kept, 0 broken.
+```
+
+```
+$ uv run python -c "import odoo_forge_cli.commands.image; import odoo_forge_cli.main"
+no cycle, ok
+```
+
+```
+$ rg -c "@app.command" src/odoo_forge_cli/main.py
+12
+```
+
+```
+$ uv run forge --help
+exit=0, all 16 commands listed unchanged, same order, same help text
+$ uv run forge image-resolve --help
+$ uv run forge image-publish --help
+$ uv run forge image-pull --help
+$ uv run forge image-exists --help
+all four byte-identical to pre-PR2 output (same options, same required
+--ref flag, same help strings)
+```
+
+`uv run ruff check` and `uv run ruff format --check` both clean on
+`src/odoo_forge_cli/`.
+
+### Diffstat
+
+```
+ openspec/changes/split-cli-main/tasks.md |   14 +-
+ src/odoo_forge_cli/main.py               |   72 +------
+ 2 files changed (tracked)
+
+New files (not yet tracked by git, awaiting orchestrator commit):
+ src/odoo_forge_cli/commands/__init__.py  (2 lines)
+ src/odoo_forge_cli/commands/image.py     (62 lines)
+```
+
 ## Not started
 
-PR2 (`commands/image.py`), PR3 (`commands/maintenance.py`), PR4
-(`commands/backend.py`), PR5a/PR5b (`commands/manifest.py`) — all deferred
-per PR1-only scope instruction. No `@app.command` body has been touched;
-they remain verbatim in `main.py`, now calling the three new modules
-module-qualified instead of via bare names.
+PR3 (`commands/maintenance.py`), PR4 (`commands/backend.py`), PR5a/PR5b
+(`commands/manifest.py`) — all deferred per PR2-only scope instruction. No
+further `@app.command` body has been touched beyond the four image
+commands; the remaining 12 commands stay verbatim in `main.py`.

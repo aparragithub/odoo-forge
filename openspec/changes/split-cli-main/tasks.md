@@ -47,13 +47,13 @@ Each PR merges to `main` before the next starts (stacked-to-main). Full suite
 
 ## PR2: `commands/image.py`
 
-- [ ] 2.1 RED: run `uv run pytest tests/test_image_registry.py -v` pre-move (baseline).
-- [ ] 2.2 Create `src/odoo_forge_cli/commands/image.py`; move `image_resolve`, `image_publish`, `image_pull`, `image_exists`; add `def register(app: typer.Typer) -> None` binding all four via `app.command(name=...)`.
-- [ ] 2.3 In `main.py`, import `commands.image` and call `register(app)`; remove the four command bodies.
-- [ ] 2.4 Repoint `tests/test_image_registry.py`: `main._make_image_registry_provider` → `_composition.make_image_registry_provider`; `main._make_backend_provider` (l.261) → `_composition.make_backend_provider`.
-- [ ] 2.5 GREEN: `uv run pytest` full suite green.
-- [ ] 2.6 REFACTOR: confirm `commands/image.py` imports helper modules only (no `from odoo_forge_cli.main import ...`).
-- [ ] 2.7 Verify: `forge image-resolve/-publish/-pull/-exists --help` byte-identical; `uv run lint-imports` passes; no cycle.
+- [x] 2.1 RED: run `uv run pytest tests/test_image_registry.py -v` pre-move (baseline). Result: 19 passed.
+- [x] 2.2 Create `src/odoo_forge_cli/commands/image.py`; move `image_resolve`, `image_publish`, `image_pull`, `image_exists`; add `def register(app: typer.Typer) -> None` binding all four via `app.command(name=...)`.
+- [x] 2.3 In `main.py`, import `commands.image` and call `register(app)`; remove the four command bodies.
+- [x] 2.4 Repoint `tests/test_image_registry.py`: `main._make_image_registry_provider` → `_composition.make_image_registry_provider`; `main._make_backend_provider` (l.261) → `_composition.make_backend_provider`. Already satisfied by PR1's wider module-qualification scope (task 1.8) — the test already patches `_composition._make_image_registry_provider`/`_composition._make_backend_provider`, which remain the correct canonical targets since `commands/image.py` calls them module-qualified from `_composition`. No further edit needed; verified both patches still intercept (test green).
+- [x] 2.5 GREEN: `uv run pytest` full suite green. Result: 901 passed, 17 deselected (unchanged from PR1 baseline).
+- [x] 2.6 REFACTOR: confirm `commands/image.py` imports helper modules only (no `from odoo_forge_cli.main import ...`). Confirmed via `rg`.
+- [x] 2.7 Verify: `forge image-resolve/-publish/-pull/-exists --help` byte-identical; `uv run lint-imports` passes; no cycle.
 
 ## PR3: `commands/maintenance.py`
 
