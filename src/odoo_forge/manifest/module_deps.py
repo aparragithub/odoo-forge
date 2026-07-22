@@ -7,6 +7,11 @@ delegates parsing to `parse_manifest_source`. Manifests are parsed via
 `ast.literal_eval` only — `exec`/`eval` are never used, and a manifest that
 isn't a valid dict literal (or has wrongly-typed `depends`/`installable`) is
 a hard parse error naming the offending file path, never silently skipped.
+A pathological manifest that makes `ast.literal_eval` raise `RecursionError`/
+`MemoryError` is treated the same way. Any `OSError` encountered while
+walking the addons tree (permission denied, symlink loop, a directory
+disappearing mid-scan) is likewise converted to the same clean `ValueError`,
+naming the offending path — never a raw traceback.
 """
 
 import ast
@@ -43,7 +48,7 @@ def parse_manifest_source(text: str, path: Path) -> OdooModule:
     """
     try:
         manifest_dict = ast.literal_eval(text)
-    except (SyntaxError, ValueError) as exc:
+    except (SyntaxError, ValueError, RecursionError, MemoryError) as exc:
         raise ValueError(f"malformed manifest at {path}: {exc}") from exc
 
     if not isinstance(manifest_dict, dict):
@@ -70,20 +75,48 @@ def build_module_index(roots: Sequence[Path]) -> ModuleIndex:
     `parse_manifest_source`. Roots are processed in the given order; a module
     name found in an earlier root wins over the same name found in a later
     root (mirrors Odoo's first-match-wins `addons_path` precedence).
+
+    Every filesystem call (`is_dir`, `iterdir`, `is_file`, `read_text`) is
+    guarded against `OSError`: a permission-denied directory, a symlink loop,
+    or a TOCTOU race (a module directory disappearing mid-scan) raises a
+    clean `ValueError` naming the offending path instead of an unhandled
+    traceback.
     """
     index: ModuleIndex = {}
     for root in roots:
-        if not root.is_dir():
-            continue
-        for entry in sorted(root.iterdir()):
-            if not entry.is_dir():
+        try:
+            if not root.is_dir():
                 continue
+        except OSError as exc:
+            raise ValueError(f"cannot inspect addons root {root}: {exc}") from exc
+
+        try:
+            entries = sorted(root.iterdir())
+        except OSError as exc:
+            raise ValueError(f"cannot list addons root {root}: {exc}") from exc
+
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError as exc:
+                raise ValueError(f"cannot inspect module directory {entry}: {exc}") from exc
+
             manifest_path = entry / "__manifest__.py"
-            if not manifest_path.is_file():
-                continue
+            try:
+                if not manifest_path.is_file():
+                    continue
+            except OSError as exc:
+                raise ValueError(f"cannot inspect manifest file {manifest_path}: {exc}") from exc
+
             if entry.name in index:
                 continue
-            text = manifest_path.read_text(encoding="utf-8")
+
+            try:
+                text = manifest_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                raise ValueError(f"cannot read manifest file {manifest_path}: {exc}") from exc
+
             index[entry.name] = parse_manifest_source(text, manifest_path)
     return index
 
