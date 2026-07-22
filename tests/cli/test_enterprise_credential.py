@@ -24,7 +24,7 @@ from odoo_forge.manifest.lockfile import (
     compute_manifest_hash,
 )
 from odoo_forge.manifest.projection import ScannedRepo
-from odoo_forge.manifest.schema import Manifest
+from odoo_forge.manifest.schema import EnterpriseLayer, Manifest
 from odoo_forge_cli import enterprise_credential as ec
 from odoo_forge_cli import main
 from odoo_forge_cli.main import app
@@ -515,6 +515,22 @@ def test_bind_enterprise_source_provider_allows_github_com_hosts(allowed_url: st
 
     assert sha == "sha-19.0"
     assert calls == [ENTERPRISE_SOURCE_CREDENTIAL_HANDLE]
+
+
+def test_schema_enterprise_default_url_host_is_credential_allow_listed() -> None:
+    """Drift guard: the two literals that must stay in sync — the manifest
+    `EnterpriseLayer.url` default and the credential host allow-list seed —
+    are anchored to the same canonical URL in
+    `odoo_forge.credentials.conventions`. This invariant fails if either
+    literal drifts: the host of the schema default MUST be a member of the
+    credential injection allow-list, otherwise `edition: enterprise` with the
+    default source would be refused by `_assert_allowed_enterprise_host`.
+    """
+    default_url = EnterpriseLayer().url
+    host = ec._extract_host(default_url)
+
+    assert host is not None
+    assert host in ec._ALLOWED_ENTERPRISE_CREDENTIAL_HOSTS
 
 
 def test_extract_host_rejects_unparseable_url() -> None:
