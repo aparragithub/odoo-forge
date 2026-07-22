@@ -69,6 +69,22 @@ Measured against `https://github.com/odoo/odoo.git` (real network, no `allowFilt
 - **`_clone` fallback structure**: the design's pseudocode implies the retry lives inside the `except CheckoutError:` branch. During GREEN, the pre-existing test `test_timeout_raises_checkout_error_without_leaking_url` failed because Python implicitly sets `__context__` on any exception raised while another is being handled (even with `raise ... from None`, which only sets `__suppress_context__`, not `__context__` itself) — confirmed via a standalone Python repro. Fixed by restructuring `_clone` so the `except CheckoutError:` block only records "the primary attempt failed" (via `pass`) and the retry call executes after the block has exited, not inside it. Behavior (retry-once-on-any-clone-failure) is unchanged; this is purely an implementation detail to preserve the byte-identical existing error contract.
 - No other deviations. `checkout()`, `promote()`, `_atomic_swap`, idempotency, dirty-checkout refusal, and linked-worktree refusal are byte-identical to before.
 
+## Post-Apply Note: `_atomic_swap` drift (out of scope)
+
+After this change was applied, commit `8e88f4e` ("fix(adapters): close TOCTOU race,
+resource leaks, and error-contract gaps") independently modified
+`src/odoo_forge_workspace/provider.py` **outside this SDD's scope**:
+
+- Rewrote `_atomic_swap` so `dest` moves into a still-held temp directory (TOCTOU fix).
+- Moved the `_atomic_swap` call inside the `try/except` of `_clone_and_replace` (tmp_dir leak fix).
+
+Consequence: the "byte-identical `_atomic_swap`" claims in tasks 2.4 / 4.1 and in the
+Deviations section below are **no longer literally true against current `main`**. This is
+out-of-scope narrative drift, not a spec violation — the SDD's actual surface (`_clone`
+partial-clone + fallback) remains byte-identical, and the observable atomic-swap contract
+(dest never absent, atomic replace) is preserved. Verify (Engram #3262) confirmed the full
+regression suite green on `main @ 8e88f4e`.
+
 ## Issues Found
 
 None.
