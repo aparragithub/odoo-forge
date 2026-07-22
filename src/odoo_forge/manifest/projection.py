@@ -438,6 +438,18 @@ def _validate_lock_structure(manifest: Manifest, lock: Lockfile) -> None:
     expected_git: list[tuple[str, tuple[tuple[str, str], ...]]] = [
         ("core", ((manifest.core.url, resolve_default_ref(manifest.core, manifest.odoo_version)),))
     ]
+    if manifest.enterprise is not None:
+        expected_git.append(
+            (
+                "enterprise",
+                (
+                    (
+                        manifest.enterprise.url,
+                        resolve_default_ref(manifest.enterprise, manifest.odoo_version),
+                    ),
+                ),
+            )
+        )
     expected_published: list[tuple[str, str, str]] = []
     for layer in manifest.layers:
         if isinstance(layer, GitLayer):
