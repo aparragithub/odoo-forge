@@ -1,18 +1,37 @@
-"""Pure onion composition: ordering + coherence validation, zero I/O.
+"""Pure onion composition: ordering + validation, zero I/O.
 
 `compose(manifest)` returns the ordered chain
 `core -> enterprise -> layers... -> client` (the enterprise singleton is
-inserted at chain position 2 only when present) after validating edition
-coherence and override targets. Never touches the filesystem or network.
+inserted at chain position 2 only when present) after validating reserved
+layer names, `PublishedLayer` edition coherence, and override targets. Never
+touches the filesystem or network.
+
+Edition coherence for `GitLayer` (a community manifest whose dependency
+chain reaches an Enterprise-only module) is no longer checked here — it is
+validated later, against the materialized addons_path, by the
+`module-dependency-validation` capability (see
+`odoo_forge.manifest.module_deps`). `PublishedLayer` content is never
+git-checked-out, so that real validator can never see it; its edition
+coherence is still checked here, scoped to `PublishedLayer` only, via the
+restored `requires_enterprise` flag (see
+`_check_published_layer_edition_coherence`).
 """
 
 from odoo_forge.manifest.errors import CompositionError
-from odoo_forge.manifest.schema import Client, CoreLayer, EnterpriseLayer, GitLayer, Layer, Manifest
+from odoo_forge.manifest.schema import (
+    Client,
+    CoreLayer,
+    EnterpriseLayer,
+    GitLayer,
+    Layer,
+    Manifest,
+    PublishedLayer,
+)
 
 
 def compose(manifest: Manifest) -> list[CoreLayer | EnterpriseLayer | Layer | Client]:
     _check_reserved_layer_names(manifest)
-    _check_edition_coherence(manifest)
+    _check_published_layer_edition_coherence(manifest)
     _check_overrides(manifest)
 
     chain: list[CoreLayer | EnterpriseLayer | Layer | Client] = [manifest.core]
@@ -28,12 +47,17 @@ def _check_reserved_layer_names(manifest: Manifest) -> None:
         raise CompositionError("layer name 'core' is reserved for the singleton core layer")
 
 
-def _check_edition_coherence(manifest: Manifest) -> None:
+def _check_published_layer_edition_coherence(manifest: Manifest) -> None:
+    """Reject a community manifest declaring a `PublishedLayer` that flags
+    itself `requires_enterprise`. Scoped to `PublishedLayer` ONLY —
+    `GitLayer` has no `requires_enterprise` field anymore (rejected at parse
+    time via `extra="forbid"`) and is instead covered by the real
+    module-dependency validator once its content is materialized."""
     if manifest.edition == "enterprise":
         return
 
     for layer in manifest.layers:
-        if layer.requires_enterprise:
+        if isinstance(layer, PublishedLayer) and layer.requires_enterprise:
             raise CompositionError(
                 f"layer '{layer.name}' requires enterprise edition "
                 "but manifest edition is 'community'"
