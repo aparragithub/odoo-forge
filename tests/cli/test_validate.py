@@ -13,7 +13,7 @@ from odoo_forge.manifest.lockfile import (
 )
 from odoo_forge.manifest.projection import ScannedRepo, build_mount_roots
 from odoo_forge.manifest.schema import Manifest
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition, _support
 from odoo_forge_cli.main import app
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -195,7 +195,7 @@ def test_drift_detected_against_real_scanned_workspace(
     (tmp_path / "project.lock").write_text(lock.to_canonical_json())
 
     monkeypatch.setattr(
-        main,
+        _composition,
         "_make_workspace_provider",
         lambda: _FakeScanningWorkspaceProvider(
             [
@@ -230,7 +230,7 @@ def test_validate_scans_and_materializes_with_the_resolved_host_roots(
     (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
 
     base = Path("/custom/state/odoo-forge")
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
     custom_roots = build_mount_roots(base, manifest)
 
     scan_calls: list[object] = []
@@ -246,7 +246,9 @@ def test_validate_scans_and_materializes_with_the_resolved_host_roots(
         def promote(self, source: Path, dest: Path, branch: str) -> None:
             raise NotImplementedError
 
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: _RecordingWorkspaceProvider())
+    monkeypatch.setattr(
+        _composition, "_make_workspace_provider", lambda: _RecordingWorkspaceProvider()
+    )
 
     result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
 
@@ -273,7 +275,7 @@ def test_missing_module_dependency_reports_all_and_exits_one(
     (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
 
     base = tmp_path / "mount-base"
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
 
     _write_module(
         base / "community",
@@ -304,7 +306,7 @@ def test_all_module_dependencies_satisfied_does_not_affect_existing_output(
     (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
 
     base = tmp_path / "mount-base"
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
 
     _write_module(
         base / "community", "mod_b", "{'name': 'Mod B', 'depends': [], 'installable': True}"
@@ -331,7 +333,7 @@ def test_no_lock_skips_module_dependency_validator(
     # No project.lock file: `lock` resolves to None.
 
     base = tmp_path / "mount-base"
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
 
     # Would report a missing dependency if the validator ran against it.
     _write_module(
@@ -373,7 +375,7 @@ def test_unmaterialized_workspace_reports_clear_error_before_dependency_check(
     (tmp_path / "project.lock").write_text(lock.to_canonical_json())
 
     base = tmp_path / "mount-base-never-materialized"
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
 
     result = runner.invoke(app, ["validate", "--manifest", str(project_yaml)])
 
@@ -396,7 +398,7 @@ def test_malformed_manifest_in_addons_tree_exits_one_naming_file(
     (tmp_path / "project.lock").write_text(json.dumps(fresh_lock.model_dump(mode="json")))
 
     base = tmp_path / "mount-base"
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
 
     _write_module(base / "community", "broken_mod", "{'depends': ['base'")
 

@@ -13,7 +13,7 @@ from odoo_forge.manifest.lockfile import (
 )
 from odoo_forge.manifest.projection import ScannedRepo, build_mount_roots
 from odoo_forge.manifest.schema import Manifest
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition, _support
 from odoo_forge_cli.main import app
 
 runner = CliRunner()
@@ -42,7 +42,7 @@ _MANIFEST_TEXT = (
 # `custom-x` layer defaults to the `custom` category, nesting under
 # `custom/default` in the pure mount model.
 _HOST_ROOTS = build_mount_roots(
-    main._resolve_mount_base(), Manifest.model_validate(yaml.safe_load(_MANIFEST_TEXT))
+    _support._resolve_mount_base(), Manifest.model_validate(yaml.safe_load(_MANIFEST_TEXT))
 )
 
 
@@ -130,7 +130,7 @@ def test_onboard_projects_valid_local_inputs_and_prints_next_step(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path)
 
     result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
@@ -147,7 +147,7 @@ def test_onboard_rejects_missing_lock_before_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = tmp_path / "project.yaml"
     manifest.write_text(_MANIFEST_TEXT)
 
@@ -172,7 +172,7 @@ def test_onboard_rejects_malformed_local_inputs(
     lock_text: str | None,
 ) -> None:
     provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = tmp_path / "project.yaml"
     manifest.write_text(manifest_text)
     if lock_text is not None:
@@ -189,7 +189,7 @@ def test_onboard_rejects_manifest_lock_drift_before_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path, generated_from="stale-manifest-hash")
 
     result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
@@ -203,7 +203,7 @@ def test_onboard_rejects_stale_checkout_evidence_before_project(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _FakeWorkspaceProvider(stale_checkout=True)
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path)
 
     result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
@@ -217,7 +217,7 @@ def test_onboard_reports_post_projection_drift_as_safety_net(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _FakeWorkspaceProvider(post_checkout_stale=True)
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path)
 
     result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
@@ -234,7 +234,7 @@ def test_onboard_reports_scan_failure_without_checkout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _FakeWorkspaceProvider(scan_error=True)
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path)
 
     result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])
@@ -258,9 +258,9 @@ def test_onboard_rejects_missing_module_dependency_after_materialization(
     module-dependency check once the workspace is confirmed materialized, not
     leave it to an optional later `forge validate` call."""
     base = tmp_path / "mount-base"
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
     provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path)
 
     _write_module(base / "community", "mod_a", "{'name': 'Mod A', 'depends': ['mod_missing']}")
@@ -281,9 +281,9 @@ def test_onboard_succeeds_when_module_dependencies_are_satisfied(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     base = tmp_path / "mount-base"
-    monkeypatch.setattr(main, "_resolve_mount_base", lambda: base)
+    monkeypatch.setattr(_support, "_resolve_mount_base", lambda: base)
     provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path)
 
     _write_module(base / "community", "mod_b", "{'name': 'Mod B'}")
@@ -299,7 +299,7 @@ def test_onboard_reports_checkout_failure_without_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     provider = _FakeWorkspaceProvider(fail_checkout=True)
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: provider)
     manifest = _write_manifest_and_lock(tmp_path)
 
     result = runner.invoke(app, ["onboard", "--manifest", str(manifest)])

@@ -10,7 +10,7 @@ from odoo_forge.manifest.artifacts import PublishedArtifactResolution
 from odoo_forge.manifest.errors import RefNotFoundError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.projection import ScannedRepo
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition, _support, main
 from odoo_forge_cli.main import app
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -62,7 +62,7 @@ class _FakePublishedArtifactResolver:
 @pytest.fixture(autouse=True)
 def published_artifact_resolver(monkeypatch: pytest.MonkeyPatch) -> _FakePublishedArtifactResolver:
     resolver = _FakePublishedArtifactResolver()
-    monkeypatch.setattr(main, "_make_published_artifact_resolver", lambda: resolver)
+    monkeypatch.setattr(_composition, "_make_published_artifact_resolver", lambda: resolver)
     return resolver
 
 
@@ -90,7 +90,7 @@ def test_valid_manifest_writes_canonical_lock(
     published_artifact_resolver: _FakePublishedArtifactResolver,
 ) -> None:
     fake_provider = _FakeSourceProvider()
-    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
@@ -135,7 +135,7 @@ def test_valid_manifest_writes_canonical_lock(
 def test_core_ref_none_resolved_via_default_before_pinning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
+    monkeypatch.setattr(_composition, "_make_provider", lambda: _FakeSourceProvider())
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text(
@@ -160,7 +160,7 @@ def test_core_ref_none_resolved_via_default_before_pinning(
 def test_resolution_error_exits_one_with_clean_message_no_traceback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(main, "_make_provider", lambda: _FailingSourceProvider())
+    monkeypatch.setattr(_composition, "_make_provider", lambda: _FailingSourceProvider())
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
@@ -182,7 +182,7 @@ def test_lock_then_validate_round_trip_no_drift(
     the *content* of the written lock, so a direct structural assertion on
     the lock's layers is added below to prove the lock itself is correct.
     """
-    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
+    monkeypatch.setattr(_composition, "_make_provider", lambda: _FakeSourceProvider())
 
     project_yaml = tmp_path / "project.yaml"
     project_yaml.write_text((FIXTURES_DIR / "valid.project.yaml").read_text())
@@ -211,7 +211,7 @@ def test_lock_then_validate_round_trip_no_drift(
     # the lock exactly — reports no drift; an unprojected workspace would
     # correctly report `not_materialized` instead (see test_validate.py).
     monkeypatch.setattr(
-        main,
+        _composition,
         "_make_workspace_provider",
         lambda: _FakeProjectedWorkspaceProvider(
             [
@@ -245,7 +245,7 @@ def test_write_failure_exits_clean_no_traceback(
 ) -> None:
     """An OSError during the atomic write is mapped to the same clean error
     contract as resolution/manifest failures — never a raw traceback."""
-    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
+    monkeypatch.setattr(_composition, "_make_provider", lambda: _FakeSourceProvider())
 
     def _raise_os_error(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")
@@ -268,7 +268,7 @@ def test_write_failure_preserves_existing_lock_byte_identical(
 ) -> None:
     """If a valid `project.lock` already exists, a failed re-write must leave
     it byte-identical — the atomic rename never truncates the original."""
-    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
+    monkeypatch.setattr(_composition, "_make_provider", lambda: _FakeSourceProvider())
 
     def _raise_os_error(*args: object, **kwargs: object) -> None:
         raise OSError("disk full")
@@ -294,7 +294,7 @@ def test_load_lock_uses_from_json_roundtrip(tmp_path: Path) -> None:
     lock_path = tmp_path / "project.lock"
     lock_path.write_text(lock.to_canonical_json())
 
-    loaded = main._load_lock(lock_path)
+    loaded = _support._load_lock(lock_path)
 
     assert loaded is not None
     assert loaded.generated_from == "deadbeef"
@@ -308,7 +308,7 @@ def test_load_lock_rejects_invalid_json(tmp_path: Path) -> None:
     lock_path.write_text("{ not valid json")
 
     with pytest.raises(LockfileError):
-        main._load_lock(lock_path)
+        _support._load_lock(lock_path)
 
 
 @pytest.mark.parametrize("schema_version", [3, "two"])

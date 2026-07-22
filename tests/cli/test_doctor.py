@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from odoo_forge.credentials.errors import CredentialUnavailableError
 from odoo_forge.credentials.types import CredentialHandle
-from odoo_forge_cli import main
+from odoo_forge_cli import _composition, main
 from odoo_forge_cli.main import app
 
 runner = CliRunner()
@@ -49,7 +49,7 @@ def test_doctor_fails_and_reports_missing_age_key(
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: _succeeding_resolver
     )
-    monkeypatch.setattr(main, "_doctor_age_key_file", lambda: missing_key_file)
+    monkeypatch.setattr(_composition, "_doctor_age_key_file", lambda: missing_key_file)
     manifest_path = _write_manifest(tmp_path)
 
     result = runner.invoke(app, ["doctor", "--manifest", str(manifest_path)])
@@ -71,7 +71,7 @@ def test_doctor_fails_and_reports_missing_enterprise_credential(
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver
     )
-    monkeypatch.setattr(main, "_doctor_age_key_file", lambda: key_file)
+    monkeypatch.setattr(_composition, "_doctor_age_key_file", lambda: key_file)
     manifest_path = _write_manifest(tmp_path)
 
     result = runner.invoke(app, ["doctor", "--manifest", str(manifest_path)])
@@ -91,7 +91,7 @@ def test_doctor_reports_success_on_both_checks(
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: _succeeding_resolver
     )
-    monkeypatch.setattr(main, "_doctor_age_key_file", lambda: key_file)
+    monkeypatch.setattr(_composition, "_doctor_age_key_file", lambda: key_file)
     manifest_path = _write_manifest(tmp_path)
 
     result = runner.invoke(app, ["doctor", "--manifest", str(manifest_path)])

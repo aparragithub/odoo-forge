@@ -25,8 +25,8 @@ from odoo_forge.manifest.lockfile import (
 )
 from odoo_forge.manifest.projection import ScannedRepo
 from odoo_forge.manifest.schema import EnterpriseLayer, Manifest
+from odoo_forge_cli import _composition, main
 from odoo_forge_cli import enterprise_credential as ec
-from odoo_forge_cli import main
 from odoo_forge_cli.main import app
 from odoo_forge_git.git_credential_injector import CredentialResolver
 
@@ -156,7 +156,7 @@ def test_lock_fails_fast_when_enterprise_credential_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_provider = _FakeSourceProvider()
-    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
     )
@@ -175,7 +175,7 @@ def test_onboard_fails_fast_when_enterprise_credential_unavailable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     fake_provider = _FakeWorkspaceProvider()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
     )
@@ -195,8 +195,8 @@ def test_lock_and_onboard_fail_identically_on_missing_credential(
     """Both commands hit the same error class/message shape regardless of
     which concrete git adapter (`GitSourceProvider`/`GitWorkspaceProvider`)
     would otherwise have performed the fetch."""
-    monkeypatch.setattr(main, "_make_provider", lambda: _FakeSourceProvider())
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: _FakeWorkspaceProvider())
+    monkeypatch.setattr(_composition, "_make_provider", lambda: _FakeSourceProvider())
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: _FakeWorkspaceProvider())
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
     )
@@ -238,7 +238,7 @@ def test_lock_resolves_and_threads_credential_into_enterprise_fetch(
     fake_provider = _FakeSourceProvider()
     calls, raw_resolver = _succeeding_resolver_calls()
     memoized_resolver = ec._MemoizingCredentialResolver(raw_resolver)
-    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: memoized_resolver
     )
@@ -267,7 +267,7 @@ def test_lock_skips_credential_resolution_for_non_enterprise_edition(
 ) -> None:
     fake_provider = _FakeSourceProvider()
     calls, resolver = _succeeding_resolver_calls()
-    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_manifest(tmp_path, _COMMUNITY_MANIFEST_TEXT)
 
@@ -283,7 +283,7 @@ def test_onboard_skips_credential_resolution_for_non_enterprise_edition(
 ) -> None:
     fake_provider = _FakeWorkspaceProvider()
     calls, resolver = _succeeding_resolver_calls()
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
     monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_onboard_lock(tmp_path, _COMMUNITY_MANIFEST_TEXT)
 
@@ -411,7 +411,9 @@ def test_secret_never_leaks_into_lock_output_on_checkout_style_failure(
             return f"sha-{ref}"
 
     calls, resolver = _succeeding_resolver_calls()
-    monkeypatch.setattr(main, "_make_provider", lambda: _FailingAfterCredentialSourceProvider())
+    monkeypatch.setattr(
+        _composition, "_make_provider", lambda: _FailingAfterCredentialSourceProvider()
+    )
     monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_manifest(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
 
@@ -482,7 +484,7 @@ def test_lock_refuses_credential_injection_for_non_allow_listed_enterprise_url(
     `manifest.enterprise.url` is not allow-listed."""
     fake_provider = _FakeSourceProvider()
     calls, resolver = _succeeding_resolver_calls()
-    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_manifest(
         tmp_path, _enterprise_manifest_text("https://attacker.example/x.git")
@@ -560,7 +562,7 @@ def test_enterprise_credential_resolved_exactly_once_for_lock(
         calls.append(handle)
         return _SECRET_MARKER
 
-    monkeypatch.setattr(main, "_make_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(
         main,
         "_make_enterprise_credential_resolver",
@@ -584,7 +586,7 @@ def test_enterprise_credential_resolved_exactly_once_for_onboard(
         calls.append(handle)
         return _SECRET_MARKER
 
-    monkeypatch.setattr(main, "_make_workspace_provider", lambda: fake_provider)
+    monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
     monkeypatch.setattr(
         main,
         "_make_enterprise_credential_resolver",
