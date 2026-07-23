@@ -540,25 +540,47 @@ def validate_repository(root: Path, plan: dict) -> list[Violation]:
         add("missing-evidence", f"S62:{s62}")
 
     changes = root / "openspec/changes"
+    archive = changes / "archive"
     active = (
         {path.name for path in changes.iterdir() if path.is_dir() and path.name != "archive"}
         if changes.is_dir()
         else set()
     )
-    expected_active = {"refresh-platform-roadmap-after-stabilization", "sp-data-environments"}
     corrective = "fix-roadmap-refresh-verification-closure"
-    if (changes / corrective).is_dir():
-        expected_active.add(corrective)
-    if active != expected_active:
-        add("active-inventory", f"expected={sorted(expected_active)} actual={sorted(active)}")
+
+    # Archived reality: the two stabilization changes must no longer linger as
+    # active directories, and each must be closed under archive/ with the
+    # documented-closure report proving its intended terminal state.
+    forbidden_active = {"refresh-platform-roadmap-after-stabilization", "sp-data-environments"}
+    still_active = active & forbidden_active
+    if still_active:
+        add("active-inventory", f"stabilization changes still active: {sorted(still_active)}")
+
+    def _require_archived_closure(suffix: str, report: str) -> None:
+        matches = (
+            sorted(path for path in archive.glob(f"*-{suffix}") if path.is_dir())
+            if archive.is_dir()
+            else []
+        )
+        if len(matches) != 1:
+            add(
+                "active-inventory",
+                f"expected exactly one archive/*-{suffix}, found {[p.name for p in matches]}",
+            )
+            return
+        if not (matches[0] / report).is_file():
+            add("active-inventory", f"{matches[0].name} missing {report}")
+
+    _require_archived_closure("refresh-platform-roadmap-after-stabilization", "verify-report.md")
+    _require_archived_closure("sp-data-environments", "archive-report.md")
 
     roadmap = root / "docs/specs/2026-07-14-stabilization-roadmap.md"
     roadmap_text = roadmap.read_text(encoding="utf-8") if roadmap.is_file() else ""
     required = (
         "CHG-FIRST-DATABASE-ADAPTER",
         "archived as superseded",
-        "refresh-platform-roadmap-after-stabilization",
-        "sp-data-environments (blocked)",
+        "archive/2026-07-17-refresh-platform-roadmap-after-stabilization",
+        "archive/2026-07-17-sp-data-environments",
     )
     if (
         any(marker not in roadmap_text for marker in required)

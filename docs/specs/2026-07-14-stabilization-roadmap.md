@@ -25,15 +25,16 @@ The archived closure independently records five passing real-Docker adapter scen
 
 ## Inventario OpenSpec Vigente
 
-Este inventario debe reflejar únicamente directorios no archivados bajo `openspec/changes/`.
+Este inventario debe reflejar únicamente directorios no archivados bajo `openspec/changes/`. El árbol vivo ya no contiene changes de estabilización: ambos quedaron archivados con su cierre documentado.
 
-| Change vivo | Clasificación | Siguiente paso correcto |
+| Change | Clasificación | Estado terminal documentado |
 |---|---|---|
-| [`sp-data-environments`](../../openspec/changes/sp-data-environments/proposal.md) | Activo pero bloqueado | Mantenerlo como único change vivo, sin tomarlo como próximo paso MVP; reanudar solo cuando `WF-DATA-COPY`, `CAP-RESOURCE-OWNERSHIP` y `SP-CONTROL-PLANE-AUTHORITY` tengan evidencia aceptada. |
+| [`refresh-platform-roadmap-after-stabilization`](../../openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization/) | Verificado y archivado | Pasó `sdd-verify` y conserva su `verify-report.md` bajo `archive/2026-07-17-refresh-platform-roadmap-after-stabilization`. |
+| [`sp-data-environments`](../../openspec/changes/archive/2026-07-17-sp-data-environments/) | Archivado como planificación bloqueada | Archivo intencional de planificación bloqueada, con `archive-report.md` bajo `archive/2026-07-17-sp-data-environments`; reanudar solo cuando `WF-DATA-COPY`, `CAP-RESOURCE-OWNERSHIP` y `SP-CONTROL-PLANE-AUTHORITY` tengan evidencia aceptada. |
 
-`sp-data-environments` sigue siendo el único change activo del árbol vivo; esta roadmap no cambia sus prerequisitos, pero sí aclara que no es el siguiente outcome práctico a implementar.
+`sp-data-environments` ya no es un change vivo: fue archivado como planificación bloqueada bajo `archive/2026-07-17-sp-data-environments` y no debe tratarse como el siguiente outcome práctico a implementar. Sus prerequisitos siguen intactos para una futura reanudación bajo un nuevo change acotado.
 
-`refresh-platform-roadmap-after-stabilization` ya no forma parte del inventario activo: quedó archivado en [`archive/2026-07-17-refresh-platform-roadmap-after-stabilization/`](../../openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization/). Lo mismo aplica a `fix-roadmap-refresh-verification-closure`, preservado bajo [`archive/2026-07-16-fix-roadmap-refresh-verification-closure/`](../../openspec/changes/archive/2026-07-16-fix-roadmap-refresh-verification-closure/).
+`refresh-platform-roadmap-after-stabilization` tampoco forma parte del inventario activo: quedó verificado y archivado en [`archive/2026-07-17-refresh-platform-roadmap-after-stabilization/`](../../openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization/). Lo mismo aplica a `fix-roadmap-refresh-verification-closure`, preservado bajo [`archive/2026-07-16-fix-roadmap-refresh-verification-closure/`](../../openspec/changes/archive/2026-07-16-fix-roadmap-refresh-verification-closure/).
 
 `CHG-FIRST-DATABASE-ADAPTER` está archivado como superseded. Su cierre trazable sigue en [`archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/archive-report.md`](../../openspec/changes/archive/2026-07-16-CHG-FIRST-DATABASE-ADAPTER/archive-report.md).
 
@@ -51,8 +52,8 @@ Este inventario debe reflejar únicamente directorios no archivados bajo `opensp
 1. Usá `portfolio.json` para claims actuales de estado, dependencias y evidencia.
 2. Usá [`docs/00-master-index.md`](../00-master-index.md) y la serie `01` a `21` para navegación de mantenimiento.
 3. Tratá esta roadmap como contexto de estabilización e historial de secuencia, no como fuente autoritativa de trabajo OpenSpec vivo.
-4. Tomá `SP-DEVELOPER-ONBOARDING` como próximo SDD y siguiente outcome práctico, y `sp-data-environments` como change vivo posterior, todavía bloqueado.
-5. No inicies implementación de `sp-data-environments` mientras sigan faltando sus handoffs aceptados.
+4. Tomá `SP-DEVELOPER-ONBOARDING` como próximo SDD y siguiente outcome práctico; `sp-data-environments` quedó archivado como planificación bloqueada y solo debe reanudarse bajo un nuevo change acotado posterior.
+5. No reanudes `sp-data-environments` mientras sigan faltando sus handoffs aceptados.
 
 ## No Objetivos Explícitos
 
