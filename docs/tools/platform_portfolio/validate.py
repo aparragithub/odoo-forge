@@ -233,6 +233,15 @@ def validate_plan(d: dict) -> list[Violation]:
             total += fl.get("total", 0)
         if f and f.get("total") != total:
             add("CRITICAL", "forecast-sum", f"{x['id']} {f.get('total')}!={total}")
+        blockers = x.get("blocking_decision_ids", [])
+        for bd in blockers:
+            if bd not in decisions:
+                add("CRITICAL", "decomp-decision-ref", f"{x['id']}:{bd}")
+        # a placeholder that still claims blockers, yet every blocker is already
+        # decided, is a stale contradiction the plan must not carry silently
+        resolved = [bd for bd in blockers if decisions.get(bd, {}).get("status") == "decided"]
+        if blockers and len(resolved) == len(blockers):
+            add("CRITICAL", "decomp-stale-block", f"{x['id']}:{','.join(blockers)} all decided")
 
     # historical alias map: bidirectional consistency
     for k, targets in alias_map.items():
