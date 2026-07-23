@@ -381,9 +381,164 @@ New files (not yet tracked by git, awaiting orchestrator commit):
  src/odoo_forge_cli/commands/maintenance.py  (65 lines)
 ```
 
+## PR4 — `commands/backend.py` (heaviest monkeypatch surface) — COMPLETE
+
+Status: all 7 tasks (4.1-4.7) done. Full suite green (unchanged count vs
+PR3 baseline: 901 passed, 17 deselected), `lint-imports` green, `forge --help`
+shows all 16 commands, CLI surface byte-identical, no circular imports.
+
+### What changed
+
+- Created `src/odoo_forge_cli/commands/backend.py` (250 lines): moved `run`,
+  `status`, `_derive_ref`, `stop`, `logs`, `exec_` verbatim (bodies
+  unchanged, same module-qualified `_composition.*`/`_support.*`/
+  `_presentation.*` calls carried over from PR1); `plan_backend` is imported
+  bare (`from odoo_forge.backend.plan import ContainerRole, plan_backend`,
+  mirroring its pre-move shape) and called bare-name inside this module —
+  its call-site resolves against `commands.backend`'s own globals, making
+  `odoo_forge_cli.commands.backend.plan_backend` the one canonical patch
+  target. Added `register(app: typer.Typer) -> None` binding all five via
+  `app.command(name=...)` with the exact pre-existing names (`run`,
+  `status`, `stop`, `logs`, `exec` — the last via
+  `app.command(name="exec", context_settings={"ignore_unknown_options": True,
+  "allow_extra_args": True})(exec_)`, identical context settings to the
+  pre-move decorator). Imports only `typer`, `pydantic.ValidationError`,
+  `odoo_forge.*` domain types/errors, and `odoo_forge_cli._composition` /
+  `_presentation` / `_support` module-qualified — no import of
+  `odoo_forge_cli.main`, confirmed via `rg`.
+- `main.py`: removed the five `@app.command` bodies + `_derive_ref` helper
+  (229 lines net removed); added `backend` to
+  `from odoo_forge_cli.commands import backend, image, maintenance` and a
+  `backend.register(app)` call (placed first, before `image.register(app)`).
+  Dropped now-unused imports `BackendError`, `ContainerRole`, `plan_backend`
+  (from `odoo_forge.backend.plan`), `InstanceRef`, `derive_instance_ref`
+  (from `odoo_forge.backend.status`), `BackendCredentialBindings`,
+  `CredentialHandle` (from `odoo_forge.credentials.types`), `RegistryError`
+  (from `odoo_forge.image_registry`), `normalize_image_reference` (from
+  `odoo_forge.image_registry.reference`), `build_mount_planning_view` (from
+  `odoo_forge.manifest.projection`) — all only used by the five moved
+  commands. Kept `materialize_state` since `validate`/`onboard` (still in
+  `main.py`) also call it.
+- `main.py` now has 5 `@app.command` decorators (down from 10); the five
+  backend/instance-lifecycle commands live in `commands/backend.py`.
+
+### Test repoint (task 4.4)
+
+`tests/cli/test_backend.py`:
+- `main._make_workspace_provider`/`main._make_backend_provider` and
+  `main._resolve_mount_base` monkeypatches: already `_composition.*`/
+  `_support._resolve_mount_base` from PR1's task 1.8 wide qualification —
+  no edit needed, verified unchanged and still intercepting (green run).
+- `from odoo_forge_cli.main import plan_backend as original_plan_backend`
+  → `from odoo_forge_cli.commands.backend import plan_backend as
+  original_plan_backend`.
+- `from odoo_forge_cli import _composition, _support, main` → dropped
+  `main` (no longer needed once the patch below moved off it), added
+  `from odoo_forge_cli.commands import backend`.
+- `monkeypatch.setattr(main, "plan_backend", _capture_plan_backend)` →
+  `monkeypatch.setattr(backend, "plan_backend", _capture_plan_backend)` —
+  this is the ONE actual behavioral repoint task 4.4 required; every other
+  named target in the design's repoint table for this file was already
+  satisfied ahead of schedule by PR1.
+
+Adversarial verification that the repoint has real effect (not a
+coincidental pass): retargeted the patch to `_composition.plan_backend`
+(a module that never defines `plan_backend`) and reran
+`test_run_binds_opaque_credentials_at_the_composition_root` — it failed
+immediately with `AttributeError: <module 'odoo_forge_cli._composition'
+...> has no attribute 'plan_backend'`, because `monkeypatch.setattr`
+defaults to `raising=True`. This confirms a wrong target does NOT
+silently no-op here; the corrected target (`backend.plan_backend`) is
+the one that binds the object `run()` actually calls, and the file was
+restored to the correct version immediately after this check.
+
+### Verification (real output)
+
+```
+$ uv run pytest tests/cli/test_backend.py -v --no-cov   # RED baseline, pre-move
+39 passed
+```
+
+```
+$ uv run pytest tests/cli/test_backend.py -v --no-cov   # GREEN, post-move+repoint
+39 passed
+```
+
+```
+$ uv run pytest -q   # GREEN, full suite post-move
+901 passed, 17 deselected in 6.99s
+```
+(Identical to PR1/PR2/PR3's post-verification count — zero regressions,
+zero new skips.)
+
+```
+$ uv run lint-imports
+Analyzed 108 files, 349 dependencies.
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Core never imports the docker adapter KEPT
+Core never imports the registry adapter KEPT
+Contracts: 6 kept, 0 broken.
+```
+
+```
+$ uv run python -c "import odoo_forge_cli.commands.backend; import odoo_forge_cli.main; print('no cycle, ok')"
+no cycle, ok
+```
+
+```
+$ rg -c "@app.command" src/odoo_forge_cli/main.py
+5
+```
+
+```
+$ uv run forge --help
+exit=0, all 16 commands listed unchanged, same order, same help text
+$ uv run forge run --help
+$ uv run forge status --help
+$ uv run forge stop --help
+$ uv run forge logs --help
+$ uv run forge exec --help
+all five byte-identical to pre-PR4 output (same options, same defaults,
+same help strings, `exec` keeps ignore_unknown_options/allow_extra_args)
+```
+
+`uv run ruff check` and `uv run ruff format --check` both clean on
+`src/odoo_forge_cli/` and `tests/cli/test_backend.py`.
+
+### Diffstat
+
+```
+ openspec/changes/split-cli-main/tasks.md |  16 +-
+ src/odoo_forge_cli/main.py               | 229 +--------------------
+ tests/cli/test_backend.py                |   7 +-
+ 3 files changed (tracked): 6 insertions(+), 230 deletions(-) (main.py + test_backend.py only)
+
+New files (not yet tracked by git, awaiting orchestrator commit):
+ src/odoo_forge_cli/commands/backend.py   (250 lines)
+```
+
+Authored changed-line total for this PR4 slice (tracked edits + new file,
+additions+deletions): 6 + 230 (tracked) + 250 (new file, all additions) =
+**486 lines**. This EXCEEDS the 400-line review budget, higher than the
+tasks.md forecast's PR4 estimate (~350-420). The forecast already flagged
+PR4 as one of the two `Medium`-risk-near-budget units (alongside PR1,
+which finished similarly over at ~336+237 lines) and `Chain strategy:
+stacked-to-main` was pre-approved by the resolved delivery decision
+(`Decision needed before apply: No`), so this is delivered as its own
+independent, revertable PR per the established chain strategy rather than
+folded into PR5. Flagging explicitly for `sdd-verify`/review: this slice
+alone is oversized relative to the nominal 400-line guard and may warrant
+either accepting `size:exception` for PR4 specifically, or the reviewer
+choosing to split the review itself (e.g. review `commands/backend.py`
+addition separately from the `main.py`/test diff).
+
 ## Not started
 
-PR4 (`commands/backend.py`), PR5a/PR5b (`commands/manifest.py`) — all
-deferred per PR3-only scope instruction. No further `@app.command` body has
-been touched beyond the four image commands + two maintenance commands;
-the remaining 10 commands stay verbatim in `main.py`.
+PR5a/PR5b (`commands/manifest.py`) — deferred per PR4-only scope
+instruction. No further `@app.command` body has been touched beyond the
+four image commands + two maintenance commands + five backend commands;
+the remaining 5 commands (`validate`, `onboard`, `lock`, `project`,
+`unlock`) stay verbatim in `main.py`.
