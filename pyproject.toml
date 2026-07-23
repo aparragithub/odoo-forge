@@ -129,3 +129,9 @@ name = "Core never imports the pipeline github adapter"
 type = "forbidden"
 source_modules = ["odoo_forge"]
 forbidden_modules = ["odoo_forge_pipeline_github"]
+
+[[tool.importlinter.contracts]]
+name = "Core never imports the postgres-docker adapter"
+type = "forbidden"
+source_modules = ["odoo_forge"]
+forbidden_modules = ["odoo_forge_postgres_docker"]
