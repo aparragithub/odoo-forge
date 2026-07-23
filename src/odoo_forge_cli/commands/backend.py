@@ -16,7 +16,8 @@ import typer
 from pydantic import ValidationError
 
 from odoo_forge.backend.errors import BackendError
-from odoo_forge.backend.plan import ContainerRole, plan_backend
+from odoo_forge.backend.plan import ContainerRole
+from odoo_forge.backend.plan import plan_backend as plan_backend
 from odoo_forge.backend.status import InstanceRef, derive_instance_ref
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError

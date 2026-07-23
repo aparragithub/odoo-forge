@@ -23,11 +23,7 @@ class YamlCatalogIndex:
     def find_matches(self, request: ProjectCatalogRequest) -> list[CatalogRecord]:
         records = self._load_records()
         supplied = request.supplied_dimensions()
-        return [
-            record
-            for record in records
-            if self._record_matches(record, request, supplied)
-        ]
+        return [record for record in records if self._record_matches(record, request, supplied)]
 
     def _record_matches(
         self, record: CatalogRecord, request: ProjectCatalogRequest, supplied: tuple[str, ...]
@@ -58,7 +54,9 @@ class YamlCatalogIndex:
         try:
             text = self._catalog_path.read_text()
         except OSError as exc:
-            raise CatalogSourceError(f"cannot read catalog file '{self._catalog_path}': {exc}") from exc
+            raise CatalogSourceError(
+                f"cannot read catalog file '{self._catalog_path}': {exc}"
+            ) from exc
 
         try:
             data = yaml.safe_load(text)
@@ -67,16 +65,14 @@ class YamlCatalogIndex:
                 f"malformed YAML in catalog file '{self._catalog_path}': {exc}"
             ) from exc
 
-        # Fix 3: Validate that top-level document is a dict, not a non-dict scalar or list
         if not isinstance(data, dict):
             raise CatalogSourceError(
-                f"invalid catalog file '{self._catalog_path}': top-level document must be a mapping (dict), "
-                f"not {type(data).__name__}"
+                f"invalid catalog file '{self._catalog_path}': top-level document must be "
+                f"a mapping (dict), not {type(data).__name__}"
             )
 
         raw_records = data.get("records", [])
 
-        # Fix 2: Validate that records value is a list, not a non-iterable scalar
         if not isinstance(raw_records, list):
             raise CatalogSourceError(
                 f"invalid catalog file '{self._catalog_path}': 'records' must be a list, "
