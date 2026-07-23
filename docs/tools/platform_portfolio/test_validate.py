@@ -26,6 +26,11 @@ REPO_ROOT = HERE.parents[2]
 FIXTURE = HERE / "fixtures" / "valid.json"
 LIVE_PLAN = REPO_ROOT / "docs" / "specs" / "platform" / "portfolio.json"
 
+# Archived location of the refresh change modelled by the shared fixture.
+ARCHIVED_REFRESH = (
+    "openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization"
+)
+
 
 def _codes(violations):
     return {v.code for v in violations}
@@ -167,17 +172,33 @@ class TestRepositoryValidation(unittest.TestCase):
         )
         evidence.parent.mkdir(parents=True)
         evidence.write_text("real Docker receipt\n", encoding="utf-8")
-        for change in (
-            "refresh-platform-roadmap-after-stabilization",
-            "sp-data-environments",
-        ):
-            (root / "openspec/changes" / change).mkdir(parents=True)
+        # Archived reality: the two stabilization changes are no longer active
+        # directories; each closed under archive/ with its documented report.
+        refresh_archive = (
+            root
+            / "openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization"
+        )
+        refresh_archive.mkdir(parents=True)
+        (refresh_archive / "verify-report.md").write_text(
+            "# Verify Report\n\nPASS\n", encoding="utf-8"
+        )
+        (refresh_archive / "apply-progress.md").write_text(
+            "# Apply Progress\n\n## Status: Apply Complete — Ready for sdd-verify\n",
+            encoding="utf-8",
+        )
+        sp_data_archive = root / "openspec/changes/archive/2026-07-17-sp-data-environments"
+        sp_data_archive.mkdir(parents=True)
+        (sp_data_archive / "archive-report.md").write_text(
+            "# Archive Report\n\nIntentional blocked-planning archive.\n", encoding="utf-8"
+        )
         (root / "docs/specs/platform").mkdir(parents=True)
         (root / "docs/specs/2026-07-14-stabilization-roadmap.md").write_text(
             "# Current Stabilization Roadmap\n"
             "CHG-FIRST-DATABASE-ADAPTER is archived as superseded.\n"
-            "Active: refresh-platform-roadmap-after-stabilization and "
-            "sp-data-environments (blocked).\n",
+            "refresh-platform-roadmap-after-stabilization is verified and archived under "
+            "archive/2026-07-17-refresh-platform-roadmap-after-stabilization.\n"
+            "sp-data-environments is archived as blocked planning under "
+            "archive/2026-07-17-sp-data-environments.\n",
             encoding="utf-8",
         )
         protected = root / "docs/specs/protected.md"
@@ -203,12 +224,6 @@ class TestRepositoryValidation(unittest.TestCase):
             '<section data-state="target">Objetivo futuro.</section>'
             '<a href="../../diagrams/odoo-forge-current-implementation-guide.md">Guía actual</a>'
             "</body></html>",
-            encoding="utf-8",
-        )
-        (
-            root / "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md"
-        ).write_text(
-            "# Apply Progress\n\n## Status: Apply Complete — Ready for sdd-verify\n",
             encoding="utf-8",
         )
         plan = json.loads(FIXTURE.read_text(encoding="utf-8"))
@@ -271,11 +286,7 @@ class TestRepositoryValidation(unittest.TestCase):
             )
         temporary, root, plan = self._repository()
         with temporary:
-            progress = (
-                root
-                / "openspec/changes"
-                / "refresh-platform-roadmap-after-stabilization/apply-progress.md"
-            )
+            progress = root / ARCHIVED_REFRESH / "apply-progress.md"
             baseline = _codes(validate.validate_repository(root, plan))
             progress.write_text("## Status: Blocked\n", encoding="utf-8")
             self.assertEqual(_codes(validate.validate_repository(root, plan)), baseline)
@@ -396,10 +407,31 @@ class TestRepositoryValidation(unittest.TestCase):
             self.assertIn("fixed-renderer", codes)
             self.assertFalse(called)
 
-    def test_active_inventory_is_exact(self):
+    def test_archived_reality_is_clean_for_active_inventory(self):
         temporary, root, plan = self._repository()
         with temporary:
-            (root / "openspec/changes/unplanned-work").mkdir()
+            self.assertNotIn("active-inventory", _codes(validate.validate_repository(root, plan)))
+
+    def test_active_inventory_rejects_lingering_active_stabilization_change(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            # A stabilization change must be archived, not lingering as active.
+            (root / "openspec/changes/sp-data-environments").mkdir()
+            self.assertIn("active-inventory", _codes(validate.validate_repository(root, plan)))
+
+    def test_active_inventory_requires_refresh_verify_report(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            (root / ARCHIVED_REFRESH / "verify-report.md").unlink()
+            self.assertIn("active-inventory", _codes(validate.validate_repository(root, plan)))
+
+    def test_active_inventory_requires_sp_data_archive_report(self):
+        temporary, root, plan = self._repository()
+        with temporary:
+            (
+                root
+                / "openspec/changes/archive/2026-07-17-sp-data-environments/archive-report.md"
+            ).unlink()
             self.assertIn("active-inventory", _codes(validate.validate_repository(root, plan)))
 
     def test_current_roadmap_rejects_stale_claims(self):
@@ -433,10 +465,7 @@ class TestVerificationClosureRed(unittest.TestCase):
     def test_accepts_canonical_apply_completion_status(self):
         temporary, root, plan = self._repository()
         with temporary:
-            progress = (
-                root
-                / "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md"
-            )
+            progress = root / ARCHIVED_REFRESH / "apply-progress.md"
             progress.write_text(
                 "## Status: Apply Complete — Ready for sdd-verify\n\n## Phase 3 Completion\n",
                 encoding="utf-8",
@@ -633,13 +662,10 @@ class TestVerificationClosureRed(unittest.TestCase):
         self.assertIn("slice-unit4", _codes(result))
         temporary, root, plan = self._repository()
         with temporary:
-            (
-                root / "openspec/changes/refresh-platform-roadmap-after-stabilization/tasks.md"
-            ).write_text(tasks)
-            (
-                root
-                / "openspec/changes/refresh-platform-roadmap-after-stabilization/apply-progress.md"
-            ).write_text("## Status: Apply Complete — Ready for sdd-verify\n" + progress)
+            (root / ARCHIVED_REFRESH / "tasks.md").write_text(tasks)
+            (root / ARCHIVED_REFRESH / "apply-progress.md").write_text(
+                "## Status: Apply Complete — Ready for sdd-verify\n" + progress
+            )
             child = root / "openspec/changes/fix-roadmap-refresh-verification-closure"
             child.mkdir()
             (child / "apply-progress.md").write_text(
@@ -649,9 +675,7 @@ class TestVerificationClosureRed(unittest.TestCase):
 
     def _snapshot_repository(self):
         temporary, root, plan = self._repository()
-        parent = (
-            root / "openspec/changes/refresh-platform-roadmap-after-stabilization/verify-report.md"
-        )
+        parent = root / ARCHIVED_REFRESH / "verify-report.md"
         source = (
             REPO_ROOT
             / "openspec/changes/archive"
@@ -684,9 +708,7 @@ class TestVerificationClosureRed(unittest.TestCase):
                 validate.validate_parent_verify_snapshot(
                     root,
                     expected_hash=validate.file_sha256(
-                        root
-                        / "openspec/changes/refresh-platform-roadmap-after-stabilization"
-                        / "verify-report.md"
+                        root / ARCHIVED_REFRESH / "verify-report.md"
                     ),
                 ),
                 [],
