@@ -6,6 +6,7 @@ re-exported here so every existing importer keeps resolving them through this mo
 """
 
 import re
+from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -32,7 +33,19 @@ class _ProviderValue(BaseModel):
 
 
 class DatabaseSpec(_ProviderValue):
+    """Provider-neutral database provisioning request.
+
+    `network`, `data_volume`, `env`, and `labels` are OPTIONAL additive
+    topology fields (CAP-DATABASE-RUNTIME-CUTOVER). All default to values
+    that preserve the original name-only provisioning behavior; a caller
+    that only sets `name` MUST see no change in provisioned resources.
+    """
+
     name: str
+    network: str | None = None
+    data_volume: str | None = None
+    env: Mapping[str, str] = {}
+    labels: Mapping[str, str] = {}
 
 
 class DatabaseRef(_ProviderValue):
@@ -43,10 +56,22 @@ class DatabaseRef(_ProviderValue):
 
 
 class DatabaseCreation(_ProviderValue):
-    """Opaque handoff joining a provider reference and its creation receipt."""
+    """Opaque handoff joining a provider reference and its creation receipt.
+
+    `data_volume_ownership` is an OPTIONAL additive fresh-pgdata signal
+    (CAP-DATABASE-RUNTIME-CUTOVER, design revision r2). It is DELIBERATELY
+    SEPARATE from `ref.ownership`, which is load-bearing for the CONTAINER
+    lifecycle (`delete()`/`verify_runtime_ownership()` gate on it) and MUST
+    always be `CREATED` for a provision that just ran the container. Volume
+    freshness rides this dedicated field instead: `CREATED` when the adapter
+    genuinely created a fresh data volume (or no named volume is used),
+    `ADOPTED` when a pre-existing named volume was reused. Defaults to
+    `CREATED` so existing construction sites are unaffected.
+    """
 
     ref: DatabaseRef
     receipt: CreationReceipt
+    data_volume_ownership: ResourceOwnership = ResourceOwnership.CREATED
 
 
 class CleanupReport(_ProviderValue):
