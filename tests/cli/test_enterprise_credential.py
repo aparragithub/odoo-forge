@@ -25,7 +25,7 @@ from odoo_forge.manifest.lockfile import (
 )
 from odoo_forge.manifest.projection import ScannedRepo
 from odoo_forge.manifest.schema import EnterpriseLayer, Manifest
-from odoo_forge_cli import _composition, main
+from odoo_forge_cli import _composition
 from odoo_forge_cli import enterprise_credential as ec
 from odoo_forge_cli.commands import manifest
 from odoo_forge_cli.main import app
@@ -159,7 +159,7 @@ def test_lock_fails_fast_when_enterprise_credential_unavailable(
     fake_provider = _FakeSourceProvider()
     monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(
-        main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
+        manifest, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
     )
     manifest_path = _write_manifest(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
 
@@ -199,7 +199,7 @@ def test_lock_and_onboard_fail_identically_on_missing_credential(
     monkeypatch.setattr(_composition, "_make_provider", lambda: _FakeSourceProvider())
     monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: _FakeWorkspaceProvider())
     monkeypatch.setattr(
-        main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
+        manifest, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
     )
     monkeypatch.setattr(
         manifest, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
@@ -244,7 +244,7 @@ def test_lock_resolves_and_threads_credential_into_enterprise_fetch(
     memoized_resolver = ec._MemoizingCredentialResolver(raw_resolver)
     monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(
-        main, "_make_enterprise_credential_resolver", lambda **kwargs: memoized_resolver
+        manifest, "_make_enterprise_credential_resolver", lambda **kwargs: memoized_resolver
     )
     manifest_path = _write_manifest(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
 
@@ -272,7 +272,7 @@ def test_lock_skips_credential_resolution_for_non_enterprise_edition(
     fake_provider = _FakeSourceProvider()
     calls, resolver = _succeeding_resolver_calls()
     monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
-    monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
+    monkeypatch.setattr(manifest, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_manifest(tmp_path, _COMMUNITY_MANIFEST_TEXT)
 
     result = runner.invoke(app, ["lock", "--manifest", str(manifest_path)])
@@ -310,7 +310,7 @@ def test_bind_enterprise_source_provider_threads_overlay_before_fetch() -> None:
     calls, resolver = _succeeding_resolver_calls()
     manifest = Manifest.model_validate(yaml.safe_load(_ENTERPRISE_MANIFEST_TEXT))
 
-    bound = main._bind_enterprise_source_provider(manifest, fake_provider, resolver)
+    bound = ec._bind_enterprise_source_provider(manifest, fake_provider, resolver)
     sha = bound.resolve_ref(_ENTERPRISE_URL, "19.0")
 
     assert sha == "sha-19.0"
@@ -328,7 +328,7 @@ def test_bind_enterprise_source_provider_passes_through_other_urls_untouched() -
     calls, resolver = _succeeding_resolver_calls()
     manifest = Manifest.model_validate(yaml.safe_load(_ENTERPRISE_MANIFEST_TEXT))
 
-    bound = main._bind_enterprise_source_provider(manifest, fake_provider, resolver)
+    bound = ec._bind_enterprise_source_provider(manifest, fake_provider, resolver)
     bound.resolve_ref("https://github.com/odoo/odoo.git", "19.0")
 
     assert calls == []
@@ -341,7 +341,7 @@ def test_bind_enterprise_source_provider_fails_fast_before_any_fetch() -> None:
     fake_provider = _FakeSourceProvider()
     manifest = Manifest.model_validate(yaml.safe_load(_ENTERPRISE_MANIFEST_TEXT))
 
-    bound = main._bind_enterprise_source_provider(manifest, fake_provider, _raising_resolver())
+    bound = ec._bind_enterprise_source_provider(manifest, fake_provider, _raising_resolver())
 
     with pytest.raises(CredentialUnavailableError):
         bound.resolve_ref(_ENTERPRISE_URL, "19.0")
@@ -353,7 +353,7 @@ def test_bind_enterprise_source_provider_is_a_no_op_for_community_edition() -> N
     _calls, resolver = _succeeding_resolver_calls()
     manifest = Manifest.model_validate(yaml.safe_load(_COMMUNITY_MANIFEST_TEXT))
 
-    bound = main._bind_enterprise_source_provider(manifest, fake_provider, resolver)
+    bound = ec._bind_enterprise_source_provider(manifest, fake_provider, resolver)
 
     assert bound is fake_provider
 
@@ -363,7 +363,7 @@ def test_bind_enterprise_workspace_provider_threads_overlay_before_checkout() ->
     calls, resolver = _succeeding_resolver_calls()
     manifest = Manifest.model_validate(yaml.safe_load(_ENTERPRISE_MANIFEST_TEXT))
 
-    bound = main._bind_enterprise_workspace_provider(manifest, fake_provider, resolver)
+    bound = ec._bind_enterprise_workspace_provider(manifest, fake_provider, resolver)
     bound.checkout(_ENTERPRISE_URL, "deadbeef", Path("/mnt/enterprise/core/enterprise"))
 
     assert calls == [ENTERPRISE_SOURCE_CREDENTIAL_HANDLE]
@@ -377,7 +377,7 @@ def test_bind_enterprise_workspace_provider_fails_fast_before_any_checkout() -> 
     fake_provider = _FakeWorkspaceProvider()
     manifest = Manifest.model_validate(yaml.safe_load(_ENTERPRISE_MANIFEST_TEXT))
 
-    bound = main._bind_enterprise_workspace_provider(manifest, fake_provider, _raising_resolver())
+    bound = ec._bind_enterprise_workspace_provider(manifest, fake_provider, _raising_resolver())
 
     with pytest.raises(CredentialUnavailableError):
         bound.checkout(_ENTERPRISE_URL, "deadbeef", Path("/mnt/enterprise/core/enterprise"))
@@ -389,7 +389,7 @@ def test_bind_enterprise_workspace_provider_scan_and_promote_pass_through() -> N
     _calls, resolver = _succeeding_resolver_calls()
     manifest = Manifest.model_validate(yaml.safe_load(_ENTERPRISE_MANIFEST_TEXT))
 
-    bound = main._bind_enterprise_workspace_provider(manifest, fake_provider, resolver)
+    bound = ec._bind_enterprise_workspace_provider(manifest, fake_provider, resolver)
 
     assert bound.scan([]) == []
     with pytest.raises(NotImplementedError):
@@ -418,7 +418,7 @@ def test_secret_never_leaks_into_lock_output_on_checkout_style_failure(
     monkeypatch.setattr(
         _composition, "_make_provider", lambda: _FailingAfterCredentialSourceProvider()
     )
-    monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
+    monkeypatch.setattr(manifest, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_manifest(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
 
     result = runner.invoke(app, ["lock", "--manifest", str(manifest_path)])
@@ -450,7 +450,7 @@ def test_bind_enterprise_source_provider_refuses_non_allow_listed_host(
     manifest = Manifest.model_validate(yaml.safe_load(_enterprise_manifest_text(malicious_url)))
 
     with pytest.raises(ManifestInputError, match="not an allowed enterprise credential host"):
-        main._bind_enterprise_source_provider(manifest, fake_provider, resolver)
+        ec._bind_enterprise_source_provider(manifest, fake_provider, resolver)
 
     # No credential was ever resolved and no fetch was ever attempted.
     assert calls == []
@@ -475,7 +475,7 @@ def test_bind_enterprise_workspace_provider_refuses_non_allow_listed_host(
     manifest = Manifest.model_validate(yaml.safe_load(_enterprise_manifest_text(malicious_url)))
 
     with pytest.raises(ManifestInputError, match="not an allowed enterprise credential host"):
-        main._bind_enterprise_workspace_provider(manifest, fake_provider, resolver)
+        ec._bind_enterprise_workspace_provider(manifest, fake_provider, resolver)
 
     assert calls == []
     assert not fake_provider.checkout_calls
@@ -489,7 +489,7 @@ def test_lock_refuses_credential_injection_for_non_allow_listed_enterprise_url(
     fake_provider = _FakeSourceProvider()
     calls, resolver = _succeeding_resolver_calls()
     monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
-    monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
+    monkeypatch.setattr(manifest, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_manifest(
         tmp_path, _enterprise_manifest_text("https://attacker.example/x.git")
     )
@@ -516,7 +516,7 @@ def test_bind_enterprise_source_provider_allows_github_com_hosts(allowed_url: st
     calls, resolver = _succeeding_resolver_calls()
     manifest = Manifest.model_validate(yaml.safe_load(_enterprise_manifest_text(allowed_url)))
 
-    bound = main._bind_enterprise_source_provider(manifest, fake_provider, resolver)
+    bound = ec._bind_enterprise_source_provider(manifest, fake_provider, resolver)
     sha = bound.resolve_ref(allowed_url, "19.0")
 
     assert sha == "sha-19.0"
@@ -568,7 +568,7 @@ def test_enterprise_credential_resolved_exactly_once_for_lock(
 
     monkeypatch.setattr(_composition, "_make_provider", lambda: fake_provider)
     monkeypatch.setattr(
-        main,
+        manifest,
         "_make_enterprise_credential_resolver",
         lambda **kwargs: ec._MemoizingCredentialResolver(counting_resolver),
     )
