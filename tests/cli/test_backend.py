@@ -24,9 +24,10 @@ from odoo_forge.manifest.lockfile import (
 )
 from odoo_forge.manifest.projection import ScannedRepo, build_mount_roots
 from odoo_forge.manifest.schema import Manifest
-from odoo_forge_cli import _composition, _support, main
+from odoo_forge_cli import _composition, _support
+from odoo_forge_cli.commands import backend
+from odoo_forge_cli.commands.backend import plan_backend as original_plan_backend
 from odoo_forge_cli.main import app
-from odoo_forge_cli.main import plan_backend as original_plan_backend  # type: ignore[attr-defined]
 from odoo_forge_docker.credential_injection import SopsCommandResolver
 from odoo_forge_docker.provider import DockerBackendProvider
 
@@ -319,7 +320,7 @@ def test_run_binds_opaque_credentials_at_the_composition_root(
         captured.update(kwargs)
         return original_plan_backend(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(main, "plan_backend", _capture_plan_backend)
+    monkeypatch.setattr(backend, "plan_backend", _capture_plan_backend)
 
     result = runner.invoke(app, ["run", "--manifest", str(_write_manifest(tmp_path))])
 

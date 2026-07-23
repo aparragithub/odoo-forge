@@ -67,13 +67,13 @@ Each PR merges to `main` before the next starts (stacked-to-main). Full suite
 
 ## PR4: `commands/backend.py` (heaviest monkeypatch surface)
 
-- [ ] 4.1 RED: run `uv run pytest tests/test_backend.py -v` pre-move (baseline); enumerate all current `main.*` patch targets in this file.
-- [ ] 4.2 Create `src/odoo_forge_cli/commands/backend.py`; move `run`, `status`, `_derive_ref`, `stop`, `logs`, `exec_`; add `register(app)`.
-- [ ] 4.3 In `main.py`, import `commands.backend` and call `register(app)`; remove the five command bodies + `_derive_ref`.
-- [ ] 4.4 Repoint `tests/test_backend.py`: `main._make_workspace_provider`/`main._make_backend_provider` → `_composition.*`; `main._resolve_mount_base` → `_support.resolve_mount_base`; `main.plan_backend` (l.320) and `from main import plan_backend` (l.29) → `commands.backend.plan_backend`; direct `main._make_backend_provider()` call (l.337) → `_composition.make_backend_provider()`.
-- [ ] 4.5 GREEN: `uv run pytest` full suite green; explicitly re-run `tests/test_backend.py -v` to confirm every repointed patch actually intercepts (not silently no-op).
-- [ ] 4.6 REFACTOR: confirm `commands/backend.py` size stays ≤~250 lines per design constraint.
-- [ ] 4.7 Verify: `forge run/status/stop/logs/exec --help` byte-identical; `uv run lint-imports` passes; no cycle.
+- [x] 4.1 RED: run `uv run pytest tests/test_backend.py -v` pre-move (baseline); enumerate all current `main.*` patch targets in this file. Result: 39 passed pre-move. `main.*` patch targets already narrowed by PR1's wide qualification (task 1.8) to `_composition._make_workspace_provider`/`_composition._make_backend_provider`/`_support._resolve_mount_base` (all already correct); the two remaining live `main.*` references were `from odoo_forge_cli.main import plan_backend as original_plan_backend` (import) and `monkeypatch.setattr(main, "plan_backend", ...)` (patch) — both due to move in this PR.
+- [x] 4.2 Create `src/odoo_forge_cli/commands/backend.py`; move `run`, `status`, `_derive_ref`, `stop`, `logs`, `exec_`; add `register(app)`.
+- [x] 4.3 In `main.py`, import `commands.backend` and call `register(app)`; remove the five command bodies + `_derive_ref`.
+- [x] 4.4 Repoint `tests/test_backend.py`: `main._make_workspace_provider`/`main._make_backend_provider` already `_composition.*` (satisfied by PR1's task 1.8, verified unchanged); `main._resolve_mount_base` already `_support._resolve_mount_base` (satisfied by PR1, verified unchanged); `main.plan_backend`/`from main import plan_backend` → repointed to `commands.backend.plan_backend` (bare-imported inside `backend.py`, so the call-site lookup and canonical patch target is `odoo_forge_cli.commands.backend.plan_backend`); no separate direct `main._make_backend_provider()` call existed at the time of this PR (already qualified to `_composition` in PR1).
+- [x] 4.5 GREEN: `uv run pytest` full suite green; explicitly re-run `tests/test_backend.py -v` — 39 passed, confirming every repointed patch actually intercepts. Adversarial check: retargeting the `plan_backend` patch to a wrong module (`_composition`) raised `AttributeError: <module ... _composition> has no attribute 'plan_backend'` — proving `monkeypatch.setattr`'s default `raising=True` makes a wrong target fail loud rather than silently no-op, confirming the correct target genuinely binds the real call-site object.
+- [x] 4.6 REFACTOR: confirm `commands/backend.py` size stays ≤~250 lines per design constraint. Result: exactly 250 lines (`wc -l`).
+- [x] 4.7 Verify: `forge run/status/stop/logs/exec --help` byte-identical (same options, same help text, same defaults); `uv run lint-imports` passes (108 files, 349 dependencies, 6/6 contracts kept); no cycle (`import odoo_forge_cli.commands.backend; import odoo_forge_cli.main` succeeds).
 
 ## PR5a: `commands/manifest.py` — validate + onboard
 
