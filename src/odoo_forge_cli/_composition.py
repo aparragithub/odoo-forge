@@ -7,10 +7,15 @@ directly into command bodies.
 """
 
 import os
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
+from odoo_forge.credentials.errors import CredentialUnavailableError
+from odoo_forge.credentials.types import CredentialHandle, CredentialInjectionDescriptor
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
+from odoo_forge.ports.database_provider import DatabaseProvider
 from odoo_forge.ports.published_artifact_resolver import PublishedArtifactResolver
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
@@ -19,6 +24,7 @@ from odoo_forge_catalog import YamlCatalogIndex
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
+from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
 from odoo_forge_registry import GhcrImageRegistryProvider, PublishedArtifactRegistryResolver
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
@@ -57,12 +63,39 @@ def _make_manifest_workspace_provider(manifest: Manifest) -> WorkspaceProvider:
         _WORKSPACE_PROVIDER_TIMEOUT_SECONDS = previous_timeout
 
 
+def _sops_credential_target(
+    credentials_file: Path,
+) -> Callable[[CredentialInjectionDescriptor], AbstractContextManager[str]]:
+    """Bridge the postgres adapter's opaque `sops://<handle>` descriptor to
+    the SAME `SopsCommandResolver` the Odoo credential leg already uses."""
+    resolver = SopsCommandResolver(credentials_file)
+
+    @contextmanager
+    def _target(descriptor: CredentialInjectionDescriptor) -> Iterator[str]:
+        if descriptor.target_kind != "database" or not descriptor.store_ref.startswith("sops://"):
+            raise CredentialUnavailableError()
+        handle = descriptor.store_ref.removeprefix("sops://")
+        yield resolver(CredentialHandle(handle))
+
+    return _target
+
+
+def _make_database_provider(
+    *, credentials_file: Path = Path("credentials.sops.yaml")
+) -> DatabaseProvider:
+    """Composition root: the ONE place the concrete postgres adapter is built."""
+    return DockerPostgresqlDatabaseProvider(
+        credential_target=_sops_credential_target(credentials_file)
+    )
+
+
 def _make_backend_provider(
     *, credentials_file: Path = Path("credentials.sops.yaml")
 ) -> BackendProvider:
     """Composition root: the ONE place the concrete docker adapter is built."""
     return DockerBackendProvider(
-        credential_injector=SopsEnvFileInjector(SopsCommandResolver(credentials_file))
+        credential_injector=SopsEnvFileInjector(SopsCommandResolver(credentials_file)),
+        database_provider=_make_database_provider(credentials_file=credentials_file),
     )
 
 

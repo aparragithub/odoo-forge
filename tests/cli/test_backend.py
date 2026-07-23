@@ -30,6 +30,10 @@ from odoo_forge_cli.commands.backend import plan_backend as original_plan_backen
 from odoo_forge_cli.main import app
 from odoo_forge_docker.credential_injection import SopsCommandResolver
 from odoo_forge_docker.provider import DockerBackendProvider
+from odoo_forge_postgres_docker.provider import (
+    DockerPostgresqlDatabaseProvider,
+    _unavailable_credential_target,
+)
 
 runner = CliRunner()
 
@@ -342,6 +346,35 @@ def test_default_backend_composition_configures_a_sops_resolver_for_the_manifest
     assert isinstance(provider, DockerBackendProvider)
     assert isinstance(provider._credential_injector._resolver, SopsCommandResolver)
     assert provider._credential_injector._resolver._credentials_file == credentials_file
+
+
+def test_make_database_provider_returns_a_docker_postgresql_provider(
+    tmp_path: Path,
+) -> None:
+    credentials_file = tmp_path / "project" / "credentials.sops.yaml"
+
+    provider = _composition._make_database_provider(credentials_file=credentials_file)
+
+    assert isinstance(provider, DockerPostgresqlDatabaseProvider)
+
+
+def test_make_database_provider_wires_a_sops_backed_credential_target(
+    tmp_path: Path,
+) -> None:
+    credentials_file = tmp_path / "project" / "credentials.sops.yaml"
+
+    provider = _composition._make_database_provider(credentials_file=credentials_file)
+
+    assert provider._credential_target is not _unavailable_credential_target
+
+
+def test_make_backend_provider_injects_the_database_provider(tmp_path: Path) -> None:
+    credentials_file = tmp_path / "project" / "credentials.sops.yaml"
+
+    provider = _composition._make_backend_provider(credentials_file=credentials_file)
+
+    assert isinstance(provider, DockerBackendProvider)
+    assert isinstance(provider._database_provider, DockerPostgresqlDatabaseProvider)
 
 
 def test_run_scopes_sops_resolution_to_the_selected_manifest(
