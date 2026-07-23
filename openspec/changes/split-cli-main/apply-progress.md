@@ -249,9 +249,141 @@ New files (not yet tracked by git, awaiting orchestrator commit):
  src/odoo_forge_cli/commands/image.py     (62 lines)
 ```
 
+## PR3 — `commands/maintenance.py` — COMPLETE
+
+Status: all 7 tasks (3.1-3.7) done. Full suite green (unchanged count vs
+PR2 baseline), `lint-imports` green, `forge --help` shows all 16 commands,
+CLI surface byte-identical, no circular imports.
+
+### What changed
+
+- Created `src/odoo_forge_cli/commands/maintenance.py`: moved `doctor` and
+  `rotate_enterprise_credential` verbatim (bodies unchanged); added
+  `register(app: typer.Typer) -> None` binding both via
+  `app.command(name=...)` with the exact pre-existing names (`doctor`,
+  `rotate-enterprise-credential`). Imports `_composition` and
+  `enterprise_credential` (module-qualified: `enterprise_credential.
+  _make_enterprise_credential_resolver(...)`, `_composition.
+  _doctor_age_key_file()`) and `rotate_enterprise_credential` from
+  `odoo_forge_docker.credential_injection` (aliased `_rotate_enterprise_
+  credential`, unchanged). No import of `odoo_forge_cli.main` — confirmed
+  via `rg`.
+- `main.py`: removed the two `@app.command` bodies; added `maintenance` to
+  the existing `from odoo_forge_cli.commands import image, maintenance`
+  import and a `maintenance.register(app)` call after `image.register(app)`.
+  Dropped now-unused imports `run_doctor` (from
+  `odoo_forge.credentials.doctor`) and the `rotate_enterprise_credential`
+  import from `odoo_forge_docker.credential_injection` (both only used by
+  the two moved commands). The `enterprise_credential` bare-name imports
+  (`_bind_enterprise_source_provider`, `_bind_enterprise_workspace_provider`,
+  `_make_enterprise_credential_resolver`, `_preflight_enterprise_source_
+  credential`) and the `__all__` re-export block are UNTOUCHED — both
+  `_make_enterprise_credential_resolver` and `_preflight_enterprise_source_
+  credential` are still used directly by `lock`/`onboard`, which remain in
+  `main.py` until PR5b.
+- `main.py` now has 10 `@app.command` decorators (down from 12); the two
+  maintenance commands live in `commands/maintenance.py`.
+
+### Test repoint (task 3.4)
+
+`tests/cli/test_doctor.py`: repointed the `main._make_enterprise_
+credential_resolver` monkeypatch (3 occurrences) to `enterprise_credential.
+_make_enterprise_credential_resolver` — the symbol's owning/definition
+module, imported as `from odoo_forge_cli import _composition,
+enterprise_credential` (dropped the `main` import, since `main` is no
+longer where the patched symbol resolves). The `_composition.
+_doctor_age_key_file` patch target was already correct from PR1 and needed
+no change. This is a *definition-module* patch target rather than a
+*command-module* one — deliberate, since `enterprise_credential.py` is
+where `_make_enterprise_credential_resolver` is actually defined, and
+`commands/maintenance.py` accesses it module-qualified
+(`enterprise_credential._make_enterprise_credential_resolver`), so patching
+the definition module is the single canonical target regardless of which
+command module calls it (same invariant PR1 established for `_composition`/
+`_support`/`_presentation`).
+
+`tests/cli/test_rotate_enterprise_credential.py`: confirmed unchanged (only
+patches `odoo_forge_docker.credential_injection.subprocess.run`; only
+imports `app` from `main`) — both tests pass unmodified.
+
+### Verification (real output)
+
+```
+$ uv run pytest tests/cli/test_doctor.py tests/cli/test_rotate_enterprise_credential.py -v   # RED, post-move pre-repoint
+tests/cli/test_doctor.py::test_doctor_fails_and_reports_missing_age_key FAILED
+tests/cli/test_doctor.py::test_doctor_fails_and_reports_missing_enterprise_credential PASSED
+tests/cli/test_doctor.py::test_doctor_reports_success_on_both_checks FAILED
+tests/cli/test_rotate_enterprise_credential.py (both) PASSED
+2 failed, 3 passed
+```
+(The one `test_doctor` case that still passed pre-repoint,
+`test_doctor_fails_and_reports_missing_enterprise_credential`, only
+asserts on the `_composition._doctor_age_key_file` patch's effect and
+`_raising_resolver`'s exception surfacing through `run_doctor` regardless
+of which module built the resolver — it did not exercise the stale
+`main._make_enterprise_credential_resolver` patch's silent no-op the way
+the other two tests' assertions on the SUCCEEDING resolver's marker did.)
+
+```
+$ uv run pytest tests/cli/test_doctor.py tests/cli/test_rotate_enterprise_credential.py -v   # GREEN, post-repoint
+5 passed
+```
+
+```
+$ uv run pytest -q   # full suite
+901 passed, 17 deselected in 7.69s
+```
+(Identical to PR1/PR2's post-verification count — zero regressions, zero
+new skips.)
+
+```
+$ uv run lint-imports
+Analyzed 107 files, 339 dependencies.
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Core never imports the docker adapter KEPT
+Core never imports the registry adapter KEPT
+Contracts: 6 kept, 0 broken.
+```
+
+```
+$ uv run python -c "import odoo_forge_cli.commands.maintenance; import odoo_forge_cli.main"
+no cycle, ok
+```
+
+```
+$ rg -c "@app.command" src/odoo_forge_cli/main.py
+10
+```
+
+```
+$ uv run forge --help
+exit=0, all 16 commands listed unchanged, same order, same help text
+$ uv run forge doctor --help
+$ uv run forge rotate-enterprise-credential --help
+both byte-identical to pre-PR3 output (same options, same help strings)
+```
+
+`uv run ruff check` and `uv run ruff format --check` both clean on
+`src/odoo_forge_cli/` and `tests/cli/`.
+
+### Diffstat
+
+```
+ openspec/changes/split-cli-main/tasks.md |  16 +-
+ src/odoo_forge_cli/main.py               |  49 +------
+ tests/cli/test_doctor.py                 |  18 +--
+ 3 files changed (tracked)
+
+New files (not yet tracked by git, awaiting orchestrator commit):
+ src/odoo_forge_cli/commands/maintenance.py  (65 lines)
+```
+
 ## Not started
 
-PR3 (`commands/maintenance.py`), PR4 (`commands/backend.py`), PR5a/PR5b
-(`commands/manifest.py`) — all deferred per PR2-only scope instruction. No
-further `@app.command` body has been touched beyond the four image
-commands; the remaining 12 commands stay verbatim in `main.py`.
+PR4 (`commands/backend.py`), PR5a/PR5b (`commands/manifest.py`) — all
+deferred per PR3-only scope instruction. No further `@app.command` body has
+been touched beyond the four image commands + two maintenance commands;
+the remaining 10 commands stay verbatim in `main.py`.

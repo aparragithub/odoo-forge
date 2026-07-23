@@ -14,7 +14,6 @@ from pydantic import ValidationError
 from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole, plan_backend
 from odoo_forge.backend.status import InstanceRef, derive_instance_ref
-from odoo_forge.credentials.doctor import run_doctor
 from odoo_forge.credentials.errors import CredentialError
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError
@@ -38,15 +37,12 @@ from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge_cli import _composition, _presentation, _support
-from odoo_forge_cli.commands import image
+from odoo_forge_cli.commands import image, maintenance
 from odoo_forge_cli.enterprise_credential import (
     _bind_enterprise_source_provider,
     _bind_enterprise_workspace_provider,
     _make_enterprise_credential_resolver,
     _preflight_enterprise_source_credential,
-)
-from odoo_forge_docker.credential_injection import (
-    rotate_enterprise_credential as _rotate_enterprise_credential,
 )
 
 app = typer.Typer()
@@ -58,6 +54,7 @@ def _forge_callback() -> None:
 
 
 image.register(app)
+maintenance.register(app)
 
 
 @app.command()
@@ -554,51 +551,6 @@ def exec_(
     if result.stderr:
         typer.echo(result.stderr, err=True)
     raise typer.Exit(code=result.exit_code)
-
-
-@app.command(name="doctor")
-def doctor(
-    manifest: Path = typer.Option(
-        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
-    ),
-) -> None:
-    """Check local Enterprise credential prerequisites: age key + conventional SOPS entry.
-
-    Thin CLI wiring only — both checks' logic lives in
-    `odoo_forge.credentials.doctor.run_doctor`. Reports both checks
-    independently and never prints secret material.
-    """
-    resolver = _make_enterprise_credential_resolver(
-        credentials_file=manifest.resolve().parent / "credentials.sops.yaml"
-    )
-    report = run_doctor(resolver=resolver, age_key_file=_composition._doctor_age_key_file())
-    for check in (report.age_key, report.enterprise_credential):
-        status = "ok" if check.ok else "FAIL"
-        typer.echo(f"{status}: {check.name}: {check.message}")
-    if not report.ok:
-        raise typer.Exit(code=1)
-
-
-@app.command(name="rotate-enterprise-credential")
-def rotate_enterprise_credential(
-    manifest: Path = typer.Option(
-        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
-    ),
-) -> None:
-    """Rotate the conventional Enterprise source credential's SOPS keys.
-
-    Thin CLI wiring only — the `sops updatekeys` wrapper itself lives in
-    `odoo_forge_docker.credential_injection.rotate_enterprise_credential`
-    (the docker adapter, since core is forbidden from importing
-    `subprocess`). Touches no schema/state file; only
-    `credentials.sops.yaml` is rewritten by `sops`.
-    """
-    credentials_file = manifest.resolve().parent / "credentials.sops.yaml"
-    result = _rotate_enterprise_credential(credentials_file=credentials_file)
-    if not result.ok:
-        typer.echo(f"error: {result.message}", err=True)
-        raise typer.Exit(code=1)
-    typer.echo(result.message)
 
 
 __all__ = [

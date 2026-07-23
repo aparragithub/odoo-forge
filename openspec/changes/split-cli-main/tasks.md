@@ -57,13 +57,13 @@ Each PR merges to `main` before the next starts (stacked-to-main). Full suite
 
 ## PR3: `commands/maintenance.py`
 
-- [ ] 3.1 RED: run `uv run pytest tests/test_doctor.py tests/test_rotate_enterprise_credential.py -v` pre-move (baseline).
-- [ ] 3.2 Create `src/odoo_forge_cli/commands/maintenance.py`; move `doctor`, `rotate_enterprise_credential`; add `register(app)`.
-- [ ] 3.3 In `main.py`, import `commands.maintenance` and call `register(app)`; remove the two command bodies.
-- [ ] 3.4 Repoint `tests/test_doctor.py`: `main._doctor_age_key_file` → `_composition.doctor_age_key_file`; `main._make_enterprise_credential_resolver` → `commands.maintenance.make_enterprise_credential_resolver` (or `ec` module per its owning location).
-- [ ] 3.5 Confirm `tests/test_rotate_enterprise_credential.py` needs no change (patches `subprocess.run`; only imports `app`).
-- [ ] 3.6 GREEN: `uv run pytest` full suite green.
-- [ ] 3.7 Verify: `forge doctor/rotate-enterprise-credential --help` unchanged; `uv run lint-imports` passes; no cycle.
+- [x] 3.1 RED: run `uv run pytest tests/test_doctor.py tests/test_rotate_enterprise_credential.py -v` pre-move (baseline). Post-move but pre-repoint run confirmed the expected failure mode: 2 of 5 `test_doctor.py` tests failed (`test_doctor_fails_and_reports_missing_age_key`, `test_doctor_reports_success_on_both_checks`) because `doctor`'s call site now resolves `_make_enterprise_credential_resolver` against `commands.maintenance`'s globals, not `main`'s — confirming the `main._make_enterprise_credential_resolver` patch had silently gone stale, exactly as the module-qualified-access decision predicts.
+- [x] 3.2 Create `src/odoo_forge_cli/commands/maintenance.py`; move `doctor`, `rotate_enterprise_credential`; add `register(app)`.
+- [x] 3.3 In `main.py`, import `commands.maintenance` and call `register(app)`; remove the two command bodies.
+- [x] 3.4 Repoint `tests/test_doctor.py`: `_composition._doctor_age_key_file` patch target unchanged (already `_composition`-qualified since PR1); `main._make_enterprise_credential_resolver` → `enterprise_credential._make_enterprise_credential_resolver` (the symbol's owning/definition module — `commands/maintenance.py` imports `enterprise_credential` module-qualified, so this is the one canonical patch target, per the design's rule that a helper's definition module is always correct regardless of which command module calls it).
+- [x] 3.5 Confirm `tests/test_rotate_enterprise_credential.py` needs no change (patches `subprocess.run`; only imports `app`). Confirmed unchanged — all 2 tests passed unmodified.
+- [x] 3.6 GREEN: `uv run pytest` full suite green. Result: 901 passed, 17 deselected (unchanged from PR2 baseline).
+- [x] 3.7 Verify: `forge doctor/rotate-enterprise-credential --help` unchanged; `uv run lint-imports` passes; no cycle.
 
 ## PR4: `commands/backend.py` (heaviest monkeypatch surface)
 
