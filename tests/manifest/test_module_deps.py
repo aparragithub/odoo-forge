@@ -251,6 +251,109 @@ def test_find_missing_dependencies_community_chain_reaches_enterprise_only(
     assert missing == {"l10n_ar_reports": frozenset({"account_reports"})}
 
 
+def test_build_module_index_wraps_root_is_dir_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An addons root whose `is_dir()` check raises `OSError` (e.g. a symlink
+    loop at the root itself) must become a clean error naming that root,
+    never a raw traceback."""
+    root = tmp_path / "addons"
+    root.mkdir()
+
+    def _raise_os_error(self: Path) -> bool:
+        raise OSError("symlink loop")
+
+    monkeypatch.setattr(Path, "is_dir", _raise_os_error)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_module_index([root])
+
+    assert str(root) in str(exc_info.value)
+
+
+def test_build_module_index_wraps_manifest_is_file_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A module's `__manifest__.py` path whose `is_file()` check raises
+    `OSError` mid-scan must become a clean error naming that manifest path,
+    never a raw traceback."""
+    root = tmp_path / "addons"
+    manifest_path = _write_manifest(root, "mod_a", "{'depends': []}")
+
+    original_is_file = Path.is_file
+
+    def _raise_for_manifest(self: Path) -> bool:
+        if self == manifest_path:
+            raise OSError("permission denied")
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", _raise_for_manifest)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_module_index([root])
+
+    assert str(manifest_path) in str(exc_info.value)
+
+
+def test_build_module_index_wraps_read_text_os_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest file that raises `OSError` when read (e.g. removed mid-scan)
+    must become a clean error naming that manifest path, never a raw
+    traceback."""
+    root = tmp_path / "addons"
+    manifest_path = _write_manifest(root, "mod_a", "{'depends': []}")
+
+    def _raise_os_error(self: Path, encoding: str | None = None) -> str:
+        raise OSError("removed mid-scan")
+
+    monkeypatch.setattr(Path, "read_text", _raise_os_error)
+
+    with pytest.raises(ValueError) as exc_info:
+        build_module_index([root])
+
+    assert str(manifest_path) in str(exc_info.value)
+
+
+def test_build_module_index_multi_root_first_match_wins(tmp_path: Path) -> None:
+    """When the same module name exists under two roots, the earlier root's
+    manifest wins and the later root's manifest is never used."""
+    root_a = tmp_path / "root_a"
+    root_b = tmp_path / "root_b"
+    _write_manifest(root_a, "shared_mod", "{'depends': ['from_root_a']}")
+    _write_manifest(root_b, "shared_mod", "{'depends': ['from_root_b']}")
+
+    index = build_module_index([root_a, root_b])
+
+    assert index["shared_mod"].depends == ("from_root_a",)
+
+
+def test_build_module_index_skips_nonexistent_root(tmp_path: Path) -> None:
+    """A `roots` entry that does not exist on disk is skipped silently, not
+    raised as an error, and later roots are still scanned."""
+    nonexistent_root = tmp_path / "does_not_exist"
+    valid_root = tmp_path / "addons"
+    _write_manifest(valid_root, "mod_a", "{'depends': []}")
+
+    index = build_module_index([nonexistent_root, valid_root])
+
+    assert set(index) == {"mod_a"}
+
+
+def test_find_missing_dependencies_uninstallable_module_own_depends_not_evaluated(
+    tmp_path: Path,
+) -> None:
+    """An uninstallable module's own `depends` is never evaluated, even when
+    it declares a dependency on a module that does not exist."""
+    root = tmp_path / "addons"
+    _write_manifest(root, "z", "{'installable': False, 'depends': ['nonexistent']}")
+    index = build_module_index([root])
+
+    missing = find_missing_dependencies(index)
+
+    assert "z" not in missing
+
+
 def test_module_dependency_error_is_a_manifest_error_with_sorted_multi_entry_message() -> None:
     missing: dict[str, frozenset[str]] = {
         "my_module": frozenset({"bar", "foo"}),
