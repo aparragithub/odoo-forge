@@ -23,11 +23,7 @@ class YamlCatalogIndex:
     def find_matches(self, request: ProjectCatalogRequest) -> list[CatalogRecord]:
         records = self._load_records()
         supplied = request.supplied_dimensions()
-        return [
-            record
-            for record in records
-            if self._record_matches(record, request, supplied)
-        ]
+        return [record for record in records if self._record_matches(record, request, supplied)]
 
     def _record_matches(
         self, record: CatalogRecord, request: ProjectCatalogRequest, supplied: tuple[str, ...]
