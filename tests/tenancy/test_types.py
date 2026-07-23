@@ -62,4 +62,4 @@ def test_tenant_scoped_ownership_accepts_none_or_project_scope() -> None:
 def test_quota_authority_exposes_only_tenant_field() -> None:
     authority = QuotaAuthority(tenant=_tenant())
 
-    assert set(authority.model_fields) == {"tenant"}
+    assert set(type(authority).model_fields) == {"tenant"}
