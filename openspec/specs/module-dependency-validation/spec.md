@@ -160,7 +160,7 @@ only when `lock is not None`, mirroring the existing drift-check gate) AND
 within `forge onboard` (executed right after `project_workspace` completes
 and the post-projection drift check confirms a clean, fully materialized
 tree). Both call sites share one implementation
-(`_check_module_dependencies` in `odoo_forge_cli.main`) so the check and its
+(`_check_module_dependencies` in `odoo_forge_cli._support`) so the check and its
 error-shaping logic are never duplicated. This closes the gap where a user
 running `forge lock && forge onboard && forge run` — without ever calling
 `forge validate` — would otherwise get zero dependency/Enterprise-reachability
