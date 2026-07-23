@@ -27,9 +27,9 @@ from odoo_forge.project_catalog.models import (
     ManifestRef,
     ProjectCatalogRequest,
 )
+from odoo_forge_catalog.errors import CatalogSourceError
 from odoo_forge_cli import _composition, _support
 from odoo_forge_cli.main import app
-from odoo_forge_catalog.errors import CatalogSourceError
 
 runner = CliRunner()
 
@@ -441,9 +441,7 @@ def test_onboard_rejects_neither_manifest_nor_client_supplied(
     assert not backend.run_calls
 
 
-def test_onboard_catalog_driven_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_onboard_catalog_driven_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     manifest = _write_manifest_and_lock(tmp_path)
     catalog = _FakeCatalogIndex(records=[_make_catalog_record(manifest)])
     monkeypatch.setattr(_composition, "_make_catalog_index", lambda: catalog)
@@ -644,6 +642,7 @@ def test_onboard_catalog_rejects_missing_enterprise_credential(
     def failing_resolver(**_kwargs):  # type: ignore[no-untyped-def]
         def resolver(handle: CredentialHandle) -> str:
             raise CredentialError("SOPS key not found or not usable")
+
         return resolver
 
     monkeypatch.setattr(
