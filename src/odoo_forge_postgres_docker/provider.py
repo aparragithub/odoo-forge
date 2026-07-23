@@ -405,9 +405,9 @@ class DockerPostgresqlDatabaseProvider:
                     ["docker", "exec", resource_id, "pg_isready", "-U", "postgres"]
                 )
                 return
-            except (DockerCommandFailedError, DockerCommandTimeoutError):
+            except (DockerCommandFailedError, DockerCommandTimeoutError) as exc:
                 if self._monotonic() >= deadline:
-                    raise DatabaseReadinessError()
+                    raise DatabaseReadinessError() from exc
                 self._sleep(self._poll_interval)
 
     def _remove_owned(self, receipt: CreationReceipt, resource_id: str) -> None:
