@@ -45,6 +45,7 @@ from odoo_forge.backend.status import (
     parse_status,
 )
 from odoo_forge.credentials.errors import CredentialError
+from odoo_forge.ports.database_provider import DatabaseProvider
 from odoo_forge_docker.credential_injection import SopsEnvFileInjector
 
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
@@ -187,6 +188,7 @@ class DockerBackendProvider:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         credential_injector: SopsEnvFileInjector | None = None,
+        database_provider: DatabaseProvider | None = None,
     ) -> None:
         self._docker_timeout = docker_timeout
         self._pg_readiness_timeout = pg_readiness_timeout
@@ -196,6 +198,11 @@ class DockerBackendProvider:
         self._monotonic = monotonic
         self._sleep = sleep
         self._credential_injector = credential_injector or SopsEnvFileInjector()
+        # Constructor-injected only in this slice; `run()` does not read
+        # `self._database_provider` yet — the delegation seam that replaces
+        # the inline Postgres `docker run` legs below lands in a follow-up
+        # slice alongside the two-ledger rollback coordination it requires.
+        self._database_provider = database_provider
 
     def run(self, plan: BackendPlan) -> InstanceRef:
         # `docker inspect <name>` exits 0 for a container in ANY state
