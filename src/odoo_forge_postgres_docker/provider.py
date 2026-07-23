@@ -235,8 +235,27 @@ class DockerPostgresqlDatabaseProvider:
         self, spec: DatabaseSpec, injection: PostgreSQLSecretInjection
     ) -> DatabaseCreation:
         self._validate_identifier(spec.name)
+        if spec.network is not None:
+            self._validate_identifier(spec.network)
+        if spec.data_volume is not None:
+            self._validate_identifier(spec.data_volume)
+        self._reject_reserved_label_collisions(spec.labels)
         receipt = self.creation_receipt(spec.name)
+        data_volume_ownership = ResourceOwnership.CREATED
+        created_volume: str | None = None
+        if spec.data_volume is not None:
+            data_volume_ownership = self._ensure_data_volume(spec.data_volume, receipt.operation)
+            if data_volume_ownership is ResourceOwnership.CREATED:
+                created_volume = spec.data_volume
+                receipt = CreationReceipt(
+                    operation=receipt.operation,
+                    owned_resource_ids=(*receipt.owned_resource_ids, spec.data_volume),
+                )
         labels = self.labels_for(receipt.operation, resource_kind="container")
+        # `spec.labels` collisions with the reserved `io.odoo-forge.*`
+        # namespace are already rejected above, so this merge can never
+        # override the ownership proof labels.
+        merged_labels = {**labels, **spec.labels}
         created: list[str] = []
         try:
             self._ownership_authority.reserve(receipt.operation.value, spec.name)
@@ -247,8 +266,21 @@ class DockerPostgresqlDatabaseProvider:
                 "--name",
                 spec.name,
             ]
+            if spec.network is not None:
+                argv.extend(("--network", spec.network))
+            if spec.data_volume is not None:
+                argv.extend(("-v", f"{spec.data_volume}:/var/lib/postgresql/data"))
             argv.extend(injection.docker_args())
-            argv.extend(item for pair in labels.items() for item in ("--label", "=".join(pair)))
+            # `spec.env`/`spec.labels` flow directly into `docker run` argv and
+            # are visible via `docker inspect`; they MUST NOT carry secret
+            # material (documented non-goal). Postgres credentials are
+            # delivered exclusively through `PostgreSQLSecretInjection`
+            # (bind-mounted `POSTGRES_PASSWORD_FILE`), never via env/labels.
+            for key, value in spec.env.items():
+                argv.extend(("-e", f"{key}={value}"))
+            argv.extend(
+                item for pair in merged_labels.items() for item in ("--label", "=".join(pair))
+            )
             argv.extend(("postgres:16",))
             try:
                 self._run(argv)
@@ -266,17 +298,55 @@ class DockerPostgresqlDatabaseProvider:
             self.assert_live_ownership(receipt, spec.name, live_labels, resource_kind="container")
             self._ownership_authority.bind(receipt.operation.value, spec.name, docker_id)
             self._ownership_authority.activate(receipt.operation.value, spec.name, docker_id)
-            self._wait_ready(spec.name)
+            self._wait_ready(spec.name, spec.env)
         except DatabaseProviderError as exc:
-            self._raise_after_rollback(exc, receipt, created)
+            self._raise_after_rollback(exc, receipt, created, created_volume=created_volume)
             raise
         except Exception as exc:
-            self._raise_after_rollback(exc, receipt, created)
+            self._raise_after_rollback(exc, receipt, created, created_volume=created_volume)
             raise DatabaseOperationError() from exc
         return DatabaseCreation(
+            # The container is always freshly `docker run` by this call, so
+            # `ref.ownership` MUST always report CREATED — it is load-bearing
+            # for the container lifecycle (`delete()`/`verify_runtime_ownership()`
+            # gate on it). Data-volume freshness rides the dedicated
+            # `data_volume_ownership` field instead (R2-001 fix).
             ref=DatabaseRef(identifier=spec.name, ownership=ResourceOwnership.CREATED),
             receipt=receipt,
+            data_volume_ownership=data_volume_ownership,
         )
+
+    def _reject_reserved_label_collisions(self, labels: Mapping[str, str]) -> None:
+        """Fail closed when caller labels collide with the reserved namespace.
+
+        Caller-supplied `spec.labels` MUST NOT be able to spoof or erase the
+        `io.odoo-forge.*` ownership/proof labels. Checked before any docker
+        call and before `merged_labels` is built.
+        """
+        if any(key.startswith("io.odoo-forge.") for key in labels):
+            raise DatabaseOperationError()
+
+    def _ensure_data_volume(
+        self, volume_name: str, operation: OperationIdentity
+    ) -> ResourceOwnership:
+        """Inspect a named data volume; create and label it only when absent.
+
+        A pre-existing volume is never owned (never labelled, never added to
+        the receipt) so it is never removed by cleanup or rollback. This is
+        the fresh-pgdata signal: only a genuinely fresh volume reports
+        ``CREATED``.
+        """
+        try:
+            self._run(["docker", "volume", "inspect", volume_name])
+            return ResourceOwnership.ADOPTED
+        except DockerCommandFailedError:
+            pass
+        labels = self.labels_for(operation, resource_kind="volume")
+        argv = ["docker", "volume", "create"]
+        argv.extend(item for pair in labels.items() for item in ("--label", "=".join(pair)))
+        argv.append(volume_name)
+        self._run(argv)
+        return ResourceOwnership.CREATED
 
     def restore(
         self, spec: DatabaseSpec, artifact: DataArtifactRef, credentials: CredentialHandle
@@ -285,14 +355,28 @@ class DockerPostgresqlDatabaseProvider:
             raise RestoreArtifactUnavailableError()
         component = validated_database_restore(artifact, self._artifact_capability)
         creation = self.provision(spec, credentials)
+        # Thread the freshly-created data volume (if any) through this
+        # call's own rollback, symmetrically with `_provision`, so a failed
+        # restore never leaks a provider-created volume that a subsequent
+        # run would misclassify as ADOPTED (WARNING fix).
+        created_volume = (
+            spec.data_volume
+            if spec.data_volume is not None
+            and creation.data_volume_ownership is ResourceOwnership.CREATED
+            else None
+        )
         try:
             if not self._restore_injector(component, creation.ref.identifier):
                 raise DatabaseOperationError()
         except DatabaseProviderError as exc:
-            self._raise_after_rollback(exc, creation.receipt, (creation.ref.identifier,))
+            self._raise_after_rollback(
+                exc, creation.receipt, (creation.ref.identifier,), created_volume=created_volume
+            )
             raise
         except Exception as exc:
-            self._raise_after_rollback(exc, creation.receipt, (creation.ref.identifier,))
+            self._raise_after_rollback(
+                exc, creation.receipt, (creation.ref.identifier,), created_volume=created_volume
+            )
             raise DatabaseOperationError() from exc
         return creation
 
@@ -397,11 +481,16 @@ class DockerPostgresqlDatabaseProvider:
             raise OwnershipRefusedError()
         return labels, docker_id
 
-    def _wait_ready(self, resource_id: str) -> None:
+    def _wait_ready(self, resource_id: str, env: Mapping[str, str] | None = None) -> None:
+        user = (env or {}).get("POSTGRES_USER", "postgres")
+        argv = ["docker", "exec", resource_id, "pg_isready", "-U", user]
+        database = (env or {}).get("POSTGRES_DB")
+        if database is not None:
+            argv.extend(("-d", database))
         deadline = self._monotonic() + self._readiness_timeout
         while True:
             try:
-                self._run(["docker", "exec", resource_id, "pg_isready", "-U", "postgres"])
+                self._run(argv)
                 return
             except (DockerCommandFailedError, DockerCommandTimeoutError) as exc:
                 if self._monotonic() >= deadline:
@@ -409,16 +498,40 @@ class DockerPostgresqlDatabaseProvider:
                 self._sleep(self._poll_interval)
 
     def _remove_owned(self, receipt: CreationReceipt, resource_id: str) -> None:
+        """Remove an owned resource, dispatching by its `resource-kind` label.
+
+        Container-kind resources are removed via `docker rm -f` with a
+        `resource_kind="container"` ownership assertion (unchanged
+        behavior). Volume-kind resources are removed via `docker volume rm`
+        with a `resource_kind="volume"` ownership assertion instead — a
+        receipt legitimately owning both kinds (fresh data volume + always-
+        created container) must not have its volume entries mistakenly torn
+        down via the container subcommand (R4-001 fix).
+        """
         self._validate_identifier(resource_id)
         if resource_id not in receipt.owned_resource_ids:
             raise OwnershipRefusedError()
         try:
-            labels, docker_id = self._inspect_identity(resource_id)
+            kind, labels, identity = self._inspect_owned_resource(resource_id)
         except DockerCommandFailedError:
             if self._resource_absent(resource_id):
                 self._ownership_authority.retire_absent(receipt.operation.value, resource_id)
                 return
             raise
+        if kind == "volume":
+            self._remove_owned_volume(receipt, resource_id, labels)
+            return
+        self._remove_owned_container(receipt, resource_id, labels, identity)
+
+    def _remove_owned_volume(
+        self, receipt: CreationReceipt, resource_id: str, labels: Mapping[str, str]
+    ) -> None:
+        self.assert_live_ownership(receipt, resource_id, labels, resource_kind="volume")
+        self._run(["docker", "volume", "rm", resource_id])
+
+    def _remove_owned_container(
+        self, receipt: CreationReceipt, resource_id: str, labels: Mapping[str, str], docker_id: str
+    ) -> None:
         if not self._owns(receipt.operation.value, resource_id, docker_id):
             raise OwnershipRefusedError()
         self.assert_live_ownership(receipt, resource_id, labels, resource_kind="container")
@@ -431,6 +544,44 @@ class DockerPostgresqlDatabaseProvider:
             self._ownership_authority.retire_absent(
                 receipt.operation.value, resource_id, docker_id=docker_id
             )
+
+    def _inspect_owned_resource(self, resource_id: str) -> tuple[str, Mapping[str, str], str]:
+        """Return `(resource_kind, labels, identity)` via generic docker inspect.
+
+        A container's JSON entry nests labels under `Config.Labels` and
+        carries an immutable `Id`; a volume's entry carries `Labels`
+        directly and uses its `Name` as identity (volumes have no separate
+        immutable id). This single generic `docker inspect` call is reused
+        unchanged for containers, so no existing call pattern regresses.
+        """
+        inspected = self._run(["docker", "inspect", resource_id])
+        try:
+            inspection = json.loads(inspected.stdout)
+        except (TypeError, ValueError) as exc:
+            raise OwnershipRefusedError() from exc
+        if (
+            not isinstance(inspection, list)
+            or not inspection
+            or not isinstance(inspection[0], dict)
+        ):
+            raise OwnershipRefusedError()
+        entry = inspection[0]
+        config = entry.get("Config")
+        if isinstance(config, dict):
+            kind = "container"
+            labels = config.get("Labels")
+            identity = entry.get("Id")
+        else:
+            kind = "volume"
+            labels = entry.get("Labels")
+            identity = entry.get("Name")
+        if not isinstance(labels, dict) or not all(
+            isinstance(key, str) and isinstance(value, str) for key, value in labels.items()
+        ):
+            raise OwnershipRefusedError()
+        if not isinstance(identity, str) or not identity:
+            raise OwnershipRefusedError()
+        return kind, labels, identity
 
     def _resource_absent(self, resource_id: str) -> bool:
         try:
@@ -460,10 +611,26 @@ class DockerPostgresqlDatabaseProvider:
         receipt: CreationReceipt,
         created: Sequence[str],
         cleanup_failures: tuple[str, ...] = (),
+        created_volume: str | None = None,
     ) -> None:
         residuals = self._rollback(receipt, created)
+        if created_volume is not None:
+            residuals = (*residuals, *self._rollback_data_volume(created_volume))
         if residuals or cleanup_failures:
             raise RollbackIncompleteError(receipt, residuals, cleanup_failures) from original
+
+    def _rollback_data_volume(self, volume_name: str) -> tuple[str, ...]:
+        """Remove a freshly-created data volume this same call provisioned.
+
+        Only ever invoked for a volume this `_provision` call itself created
+        (``created_volume``); a pre-existing (adopted) volume is never passed
+        here, so it is never removed on rollback.
+        """
+        try:
+            self._run(["docker", "volume", "rm", "-f", volume_name])
+        except DatabaseProviderError:
+            return (volume_name,)
+        return ()
 
     @staticmethod
     def _rollback_incomplete(error: Exception) -> RollbackIncompleteError | None:
