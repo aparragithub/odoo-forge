@@ -401,9 +401,7 @@ class DockerPostgresqlDatabaseProvider:
         deadline = self._monotonic() + self._readiness_timeout
         while True:
             try:
-                self._run(
-                    ["docker", "exec", resource_id, "pg_isready", "-U", "postgres"]
-                )
+                self._run(["docker", "exec", resource_id, "pg_isready", "-U", "postgres"])
                 return
             except (DockerCommandFailedError, DockerCommandTimeoutError) as exc:
                 if self._monotonic() >= deadline:
