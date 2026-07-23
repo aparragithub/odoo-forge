@@ -1133,3 +1133,58 @@ def test_adopt_preserves_an_external_reference_without_mutation() -> None:
     adopted = DockerPostgresqlDatabaseProvider().adopt(external)
 
     assert adopted == external
+
+
+# -- characterization: baseline name-only spec + `-U postgres` probe --
+#
+# Pins the CURRENT `_provision`/`_wait_ready` argv (name-only `DatabaseSpec`,
+# no network/volume/env/labels tokens; readiness probe always uses
+# `-U postgres` with no `-d`) before Phase 1/2 widen `DatabaseSpec` with
+# additive topology fields and Phase 2.3 derives the probe from `spec.env`.
+
+
+def test_current_database_spec_accepts_only_name_with_no_topology_fields() -> None:
+    """Pins the pre-Phase-1 `DatabaseSpec` shape: `name` only."""
+    spec = DatabaseSpec(name="database-42")
+
+    assert spec.model_dump() == {"name": "database-42"}
+
+
+def test_current_provision_argv_carries_no_network_volume_or_label_topology_tokens() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    run_call = calls[0]
+    assert run_call[:5] == ("docker", "run", "--detach", "--name", "database-42")
+    assert "--network" not in run_call
+    assert "-v" not in run_call
+    assert "-e" not in run_call
+
+
+def test_current_wait_ready_probe_always_uses_dash_u_postgres_with_no_dash_d() -> None:
+    """Pins the pre-Phase-2.3 readiness probe: always `-U postgres`, never a
+    `-d <database>` token, regardless of any caller-side database name."""
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    exec_call = next(call for call in calls if call[:2] == ("docker", "exec"))
+    assert exec_call == ("docker", "exec", "database-42", "pg_isready", "-U", "postgres")
+    assert "-d" not in exec_call
