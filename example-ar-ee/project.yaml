@@ -18,6 +18,14 @@ layers:
         ref: "19.0"
 
   # --- AdHoc (ingadhoc) -----------------------------------------------------
+  # odoo-argentina-ee (l10n_ar_account_reports) va junto con el resto: ya no
+  # hace falta separarlo en su propia capa. `requires_enterprise` era un flag
+  # por CAPA COMPLETA — fusionarlo antes hubiera bloqueado toda esta capa
+  # (community) detrás de edition: enterprise. Ese campo se removió de
+  # GitLayer (solo sigue existiendo en PublishedLayer, que nunca tiene
+  # checkout real). La dependencia real de account_reports la valida
+  # `forge validate`/`forge onboard` contra los manifests de los módulos
+  # instalados, no un flag manual — no importa en qué capa esté declarado.
   - type: git
     name: adhoc
     category: adhoc
@@ -25,6 +33,8 @@ layers:
       - url: https://github.com/ingadhoc/odoo-argentina.git        # l10n_ar_tax, l10n_ar_tax_python, l10n_ar_ux
         ref: "19.0"
       - url: https://github.com/ingadhoc/odoo-argentina-ce.git     # l10n_ar_reports (dep de l10n_ar_account_reports)
+        ref: "19.0"
+      - url: https://github.com/ingadhoc/odoo-argentina-ee.git     # l10n_ar_account_reports (requiere Enterprise)
         ref: "19.0"
       - url: https://github.com/ingadhoc/argentina-sale.git        # targets: l10n_ar_sale_order_type, l10n_ar_stock_delivery
         ref: "19.0"
@@ -35,17 +45,6 @@ layers:
       - url: https://github.com/ingadhoc/sale.git                  # sale_ux
         ref: "19.0"
       - url: https://github.com/ingadhoc/stock.git                 # stock_ux, delivery_ux, stock_declared_value
-        ref: "19.0"
-
-  # --- AdHoc enterprise-only ------------------------------------------------
-  # Modulo enterprise a instalar: l10n_ar_account_reports (motor de reportes AR:
-  # percepciones, retenciones, IVA). Requiere Enterprise (accountant +
-  # account_reports) desde el fork enterprise de arriba.
-  - type: git
-    name: adhoc-ee
-    category: adhoc
-    repos:
-      - url: https://github.com/ingadhoc/odoo-argentina-ee.git     # l10n_ar_account_reports
         ref: "19.0"
 
 client:
