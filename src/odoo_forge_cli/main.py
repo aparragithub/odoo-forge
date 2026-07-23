@@ -8,7 +8,7 @@ the top-level callback, and registers each command family's commands via
 
 import typer
 
-from odoo_forge_cli.commands import backend, copy, image, maintenance, manifest
+from odoo_forge_cli.commands import backend, copy, image, maintenance, manifest, pipeline
 
 app = typer.Typer()
 
@@ -23,3 +23,4 @@ copy.register(app)
 image.register(app)
 maintenance.register(app)
 manifest.register(app)
+pipeline.register(app)

@@ -19,6 +19,7 @@ from odoo_forge.data_artifacts.staging import StagedArtifactStore
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.database_provider import DatabaseProvider
+from odoo_forge.ports.pipeline_provider import PipelineProvider
 from odoo_forge.ports.published_artifact_resolver import PublishedArtifactResolver
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
@@ -39,10 +40,33 @@ from odoo_forge_postgres_docker.staged_store import (
     FilesystemStagedArtifactStore,
     default_staged_artifact_store_root,
 )
+from odoo_forge_pipeline_github.provider import GitHubActionsPipelineProvider
+from odoo_forge_pipeline_github.transport import GitHubActionsRestTransport
 from odoo_forge_registry import GhcrImageRegistryProvider, PublishedArtifactRegistryResolver
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
 _WORKSPACE_PROVIDER_TIMEOUT_SECONDS: float | None = None
+
+
+class PipelineConfigurationError(RuntimeError):
+    """Raised when a required pipeline env var is unset."""
+
+
+def _require_pipeline_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise PipelineConfigurationError(f"missing required environment variable: {name}")
+    return value
+
+
+def _make_pipeline_provider() -> PipelineProvider:
+    """Composition root: the ONE place the concrete pipeline adapter is built."""
+    token = _require_pipeline_env("FORGE_PIPELINE_GITHUB_TOKEN")
+    owner = _require_pipeline_env("FORGE_PIPELINE_GITHUB_OWNER")
+    repo = _require_pipeline_env("FORGE_PIPELINE_GITHUB_REPO")
+    ref = _require_pipeline_env("FORGE_PIPELINE_GITHUB_REF")
+    transport = GitHubActionsRestTransport(token=token, owner=owner, repo=repo)
+    return GitHubActionsPipelineProvider(transport=transport, owner=owner, repo=repo, ref=ref)
 
 
 def _make_provider() -> SourceProvider:
