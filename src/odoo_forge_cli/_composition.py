@@ -14,6 +14,8 @@ from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.published_artifact_resolver import PublishedArtifactResolver
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
+from odoo_forge.project_catalog.interfaces import CatalogIndex
+from odoo_forge_catalog import YamlCatalogIndex
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
@@ -62,6 +64,11 @@ def _make_backend_provider(
     return DockerBackendProvider(
         credential_injector=SopsEnvFileInjector(SopsCommandResolver(credentials_file))
     )
+
+
+def _make_catalog_index(*, catalog_path: Path = Path("catalog.yaml")) -> CatalogIndex:
+    """Composition root: the ONE place the concrete catalog adapter is built."""
+    return YamlCatalogIndex(catalog_path)
 
 
 def _make_image_registry_provider() -> GhcrImageRegistryProvider:
