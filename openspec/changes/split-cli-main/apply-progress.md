@@ -702,10 +702,108 @@ additions+deletions): 10 + 153 (tracked) + 178 (new file, all additions) =
 ~200-250; the enterprise-credential regression fix added ~13 lines beyond
 the original scope's minimum, still comfortably under budget).
 
-## Not started
+## PR5b — `commands/manifest.py` (lock/project/unlock) + thin `main.py` — COMPLETE
 
-PR5b (`commands/manifest.py` — lock/unlock/project + thin `main.py`) —
-deferred per PR5a-only scope instruction. `lock`, `project`, `unlock` stay
-verbatim in `main.py` (3 `@app.command` decorators remaining); the `__all__`
-re-export block and the `ec` bare imports in `main.py` are untouched —
-explicitly PR5b scope per the design's migration table.
+Status: all 10 tasks (5b.1-5b.10) done. Full suite green, `lint-imports`
+green, `forge --help` resolves all 16 commands, no circular imports. This
+is the FINAL slice of `split-cli-main` — the whole change is now
+implementation-complete.
+
+### What changed
+
+- Moved `lock`, `project`, `unlock` (and their local imports: `build_lock`,
+  `ResolutionError`, `plan_unlock`, `SourceProvider`,
+  `_bind_enterprise_source_provider`) from `main.py` into
+  `src/odoo_forge_cli/commands/manifest.py`, byte-identical bodies. Extended
+  `register(app)` to bind all 5 manifest commands (`validate`, `onboard`,
+  `lock`, `project`, `unlock`).
+- Rewrote `main.py` down to 24 lines: module docstring, `import typer`, the
+  4-module `commands` import, `app = typer.Typer()`, the `_forge_callback`
+  callback, and 4 `register(app)` calls. Zero `@app.command` decorators
+  remain in `main.py` — all 16 commands now live in `commands/*.py`. Dropped
+  the `__all__` re-export block entirely (no facade) along with the now-dead
+  `_composition`/`_presentation`/`_support`/`enterprise_credential` imports
+  main.py no longer needs.
+- Repointed `tests/cli/test_lock.py`: the autouse
+  `_make_enterprise_credential_resolver` monkeypatch → `main` →
+  `odoo_forge_cli.commands.manifest` (bare-imported call site inside
+  `lock()`, now defined in `commands/manifest.py`). `_make_provider`/
+  `_make_published_artifact_resolver` were already `_composition`-qualified
+  since PR1; direct `_support._load_lock` calls unchanged.
+- `tests/cli/test_project.py` and `tests/cli/test_unlock.py` needed NO
+  edits — both were already fully `_composition`/`_support`-qualified since
+  PR1's wide qualification pass (task 1.8), confirmed via `rg` (zero
+  `main.*` references in either file).
+- Repointed `tests/cli/test_enterprise_credential.py`: 7 monkeypatches of
+  `main._make_enterprise_credential_resolver` (all guarding `lock`-path
+  scenarios) → `commands.manifest._make_enterprise_credential_resolver`,
+  mirroring the identical rule PR5a already applied to `onboard`. The 10
+  direct (non-monkeypatch) calls to `main._bind_enterprise_source_provider`/
+  `main._bind_enterprise_workspace_provider` → repointed to
+  `ec._bind_enterprise_source_provider`/`ec._bind_enterprise_workspace_provider`
+  (the file already imported `enterprise_credential as ec`) since `main` no
+  longer re-exports these symbols once the `__all__` facade was dropped.
+  Removed the now-unused `main` import from the file (only `app` is still
+  imported from `main`, via `from odoo_forge_cli.main import app`).
+
+### Adversarial wrong-target check
+
+Retargeted `test_lock.py`'s repointed `commands.manifest` patch to
+`_composition` instead: `uv run pytest tests/cli/test_lock.py` failed with
+`AttributeError: <module 'odoo_forge_cli._composition' ...> has no attribute
+'_make_enterprise_credential_resolver'` (10 errors) — proving the real
+target (`commands.manifest`) genuinely binds the call-site object `lock()`
+actually reads, not a silent no-op. Reverted via `git checkout` and
+reapplied the correct edit (verified 57/57 passed again afterward).
+
+### Verification
+
+```
+$ uv run pytest
+901 passed, 17 deselected
+$ uv run lint-imports
+Analyzed 109 files, 351 dependencies. Contracts: 6 kept, 0 broken.
+$ uv run forge --help
+all 16 commands listed (run, status, stop, logs, exec, image-resolve,
+image-publish, image-pull, image-exists, doctor,
+rotate-enterprise-credential, validate, onboard, lock, project, unlock)
+$ diff <(forge lock --help) <(baseline lock --help)       # empty
+$ diff <(forge project --help) <(baseline project --help) # empty
+$ diff <(forge unlock --help) <(baseline unlock --help)   # empty
+$ uv run ruff check / ruff format --check   # clean
+```
+
+`main.py`: 24 lines, 0 `@app.command` decorators (target ≤~80 — well
+under). `commands/manifest.py`: 316 lines — **over the ~250-line design
+target** since it now holds all 5 manifest commands plus module docstring;
+flagged explicitly (design's Open Question anticipated this: "if not,
+split validate/onboard from lock/unlock/project into two slices" — PR5a/5b
+already IS that split at the PR level; a further intra-file split of
+`commands/manifest.py` itself was judged unnecessary since the module
+stays single-responsibility — one command family — and the full suite,
+`lint-imports`, and byte-identical CLI checks all pass).
+
+### Diffstat (PR5b only)
+
+```
+ src/odoo_forge_cli/commands/manifest.py | 154 ++++++++++++++++++++++++++--
+ src/odoo_forge_cli/main.py              | 172 +-------------------------------
+ tests/cli/test_enterprise_credential.py |  36 +++----
+ tests/cli/test_lock.py                  |   5 +-
+ 4 files changed, 170 insertions(+), 197 deletions(-)
+```
+
+Authored changed-line total for PR5b: 170 + 197 = **367 lines**. Within the
+400-line review budget (forecast estimated ~250-320).
+
+## Final Status — `split-cli-main` implementation-complete
+
+All 6 chained PRs (PR1, PR2, PR3, PR4, PR5a, PR5b) are done. `main.py` is
+24 lines with 0 `@app.command` decorators; all 16 commands live in
+`commands/{image,manifest,backend,maintenance}.py`; `_composition.py`/
+`_presentation.py`/`_support.py` hold the shared helpers, each accessed
+module-qualified per the design's patch-target-determinism decision. Full
+suite (901 passed, 17 deselected) and `lint-imports` (6/6 contracts kept)
+are green on the final tree. `commands/manifest.py` at 316 lines is the one
+module over the ~250-line design target — noted above, not blocking, no
+further action planned. Ready for `sdd-verify`.

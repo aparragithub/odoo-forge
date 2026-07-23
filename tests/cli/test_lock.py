@@ -10,7 +10,8 @@ from odoo_forge.manifest.artifacts import PublishedArtifactResolution
 from odoo_forge.manifest.errors import RefNotFoundError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.projection import ScannedRepo
-from odoo_forge_cli import _composition, _support, main
+from odoo_forge_cli import _composition, _support
+from odoo_forge_cli.commands import manifest
 from odoo_forge_cli.main import app
 
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
@@ -30,7 +31,7 @@ def _fake_enterprise_credential_resolver(handle: CredentialHandle) -> str:
 @pytest.fixture(autouse=True)
 def enterprise_credential_resolver(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        main,
+        manifest,
         "_make_enterprise_credential_resolver",
         lambda **kwargs: _fake_enterprise_credential_resolver,
     )
