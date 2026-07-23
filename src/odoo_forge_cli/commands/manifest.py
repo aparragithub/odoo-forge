@@ -12,12 +12,17 @@ from pathlib import Path
 import typer
 from pydantic import ValidationError
 
+from odoo_forge.backend.errors import BackendError
+from odoo_forge.backend.plan import plan_backend
 from odoo_forge.credentials.errors import CredentialError
+from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
+from odoo_forge.image_registry import RegistryError
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import detect_drift
 from odoo_forge.manifest.errors import LockfileError, ManifestError, ResolutionError
 from odoo_forge.manifest.locking import build_lock
 from odoo_forge.manifest.projection import (
+    build_mount_planning_view,
     materialize_state,
     plan_projection,
     plan_unlock,
@@ -26,6 +31,9 @@ from odoo_forge.manifest.projection import (
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
+from odoo_forge.project_catalog.models import ProjectCatalogRequest, ProjectCatalogResolutionFailure
+from odoo_forge.project_catalog.resolver import ProjectCatalogResolver
+from odoo_forge_catalog.errors import CatalogSourceError
 from odoo_forge_cli import _composition, _presentation, _support
 from odoo_forge_cli.enterprise_credential import (
     _bind_enterprise_source_provider,
@@ -101,11 +109,37 @@ def validate(
 
 
 def onboard(
-    manifest: Path = typer.Option(
-        Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
+    client: str | None = typer.Argument(
+        None, help="Client identifier to resolve via the project catalog"
+    ),
+    manifest: Path | None = typer.Option(
+        None, "--manifest", help="Path to the project.yaml manifest file"
     ),
 ) -> None:
-    """Validate local inputs, materialize the workspace, and print the next step."""
+    """Validate/materialize local inputs (`--manifest`), or resolve, materialize, and
+    start an instance for a catalog-known client (positional `<cliente>`)."""
+    try:
+        if client is not None and manifest is not None:
+            raise ManifestError("onboard accepts either a client name or --manifest, not both")
+        if client is None and manifest is None:
+            raise ManifestError("onboard requires either a client name or --manifest <path>")
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if manifest is not None:
+        _onboard_manifest_mode(manifest)
+        return
+    assert client is not None
+    _onboard_catalog_mode(client)
+
+
+def _onboard_manifest_mode(manifest: Path) -> None:
+    """Legacy local-input path: validate, materialize, print the next step.
+
+    Byte-identical to `onboard`'s pre-dual-mode behavior — no catalog lookup,
+    no backend/instance creation.
+    """
     try:
         data = _support._read_manifest_data(manifest)
     except ManifestError as exc:
@@ -175,6 +209,121 @@ def onboard(
 
     typer.echo(f"onboarded workspace with {len(plan.steps)} repo(s) from {lock_path}")
     typer.echo(f"next: run `forge validate --manifest {manifest}`")
+
+
+def _onboard_catalog_mode(client: str) -> None:
+    """Catalog-driven path: resolve `client`, materialize repos, start an instance.
+
+    Reuses the existing manifest/lock/projection pipeline
+    (`plan_projection`/`project_workspace`) and the existing backend pipeline
+    (`plan_backend`/`DockerBackendProvider.run`) verbatim — only the manifest
+    path's source (a resolved catalog record instead of `--manifest`)
+    differs. `data_policy_default`/`target_default` are transported on the
+    resolved result but deliberately never read here (ADR-0001: no seeding,
+    no remote-target actioning this slice).
+    """
+    catalog_index = _composition._make_catalog_index()
+    resolver = ProjectCatalogResolver(catalog_index)
+    request = ProjectCatalogRequest(client_key=client)
+    try:
+        resolution = resolver.resolve(request)
+    except CatalogSourceError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    if isinstance(resolution, ProjectCatalogResolutionFailure):
+        typer.echo(f"error: {resolution.type}: {resolution.details}", err=True)
+        raise typer.Exit(code=1)
+
+    manifest_path = Path(resolution.manifest_ref.manifest_path)
+
+    try:
+        data = _support._read_manifest_data(manifest_path)
+    except ManifestError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    try:
+        parsed = Manifest.model_validate(data)
+    except ValidationError as exc:
+        _presentation._render_validation_errors(exc)
+        raise typer.Exit(code=1) from exc
+
+    lock_path = manifest_path.parent / "project.lock"
+    try:
+        enterprise_resolver = _make_enterprise_credential_resolver(
+            credentials_file=manifest_path.resolve().parent / "credentials.sops.yaml"
+        )
+        # Fail fast BEFORE any fetch (community or Enterprise): identical
+        # contract to `lock`'s preflight check and `_onboard_manifest_mode` —
+        # see that comment.
+        _preflight_enterprise_source_credential(parsed, enterprise_resolver)
+
+        compose(parsed)
+        loaded_lock = _support._load_lock(lock_path)
+        if loaded_lock is None:
+            raise LockfileError(f"no lockfile found at '{lock_path}' — run `forge lock` first")
+
+        host_roots = _support._host_roots(parsed)
+        plan = plan_projection(parsed, loaded_lock, host_roots)
+        provider: WorkspaceProvider = _composition._make_manifest_workspace_provider(parsed)
+        provider = _bind_enterprise_workspace_provider(parsed, provider, enterprise_resolver)
+        scanned = provider.scan(list(host_roots.values()))
+        materialized = materialize_state(scanned, host_roots)
+        preflight = detect_drift(parsed, loaded_lock, materialized)
+        blocking_drift = [
+            entry
+            for entry in preflight.manifest_lock_drift + preflight.lock_state_drift
+            if entry.kind != "not_materialized"
+        ]
+        if blocking_drift:
+            raise ManifestError(f"drift: {_presentation._format_drift(blocking_drift[0])}")
+
+        project_workspace(plan, provider)
+
+        scanned = provider.scan(list(host_roots.values()))
+        materialized = materialize_state(scanned, host_roots)
+        final_report = detect_drift(parsed, loaded_lock, materialized)
+        if not final_report.is_clean:
+            drift_entry = (
+                final_report.manifest_lock_drift[0]
+                if final_report.manifest_lock_drift
+                else final_report.lock_state_drift[0]
+            )
+            raise ManifestError(f"drift: {_presentation._format_drift(drift_entry)}")
+
+        # Same module-dependency safety net `_onboard_manifest_mode` runs
+        # once the workspace is confirmed materialized and drift-free.
+        _support._check_module_dependencies(parsed, _support._resolve_mount_base())
+
+        mount_view = build_mount_planning_view(
+            parsed, loaded_lock, scanned, materialized, host_roots
+        )
+        backend_plan = plan_backend(
+            parsed,
+            mount_view,
+            instance="default",
+            odoo_image=None,
+            credentials=BackendCredentialBindings(
+                postgres_password=CredentialHandle("local-backend/postgres-password"),
+                odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
+            ),
+        )
+        backend_provider = _composition._make_backend_provider(
+            credentials_file=manifest_path.resolve().parent / "credentials.sops.yaml"
+        )
+        ref = backend_provider.run(backend_plan)
+    except (ManifestError, BackendError, RegistryError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except CredentialError as exc:
+        typer.echo(f"error: Enterprise credential required but unavailable: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo(
+        f"running: project '{ref.project}' instance '{ref.instance}' "
+        f"(odoo '{ref.odoo_container}', postgres '{ref.postgres_container}')"
+    )
 
 
 def lock(
