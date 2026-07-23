@@ -27,6 +27,7 @@ from odoo_forge.manifest.projection import ScannedRepo
 from odoo_forge.manifest.schema import EnterpriseLayer, Manifest
 from odoo_forge_cli import _composition, main
 from odoo_forge_cli import enterprise_credential as ec
+from odoo_forge_cli.commands import manifest
 from odoo_forge_cli.main import app
 from odoo_forge_git.git_credential_injector import CredentialResolver
 
@@ -177,7 +178,7 @@ def test_onboard_fails_fast_when_enterprise_credential_unavailable(
     fake_provider = _FakeWorkspaceProvider()
     monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
     monkeypatch.setattr(
-        main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
+        manifest, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
     )
     manifest_path = _write_onboard_lock(tmp_path, _ENTERPRISE_MANIFEST_TEXT)
 
@@ -199,6 +200,9 @@ def test_lock_and_onboard_fail_identically_on_missing_credential(
     monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: _FakeWorkspaceProvider())
     monkeypatch.setattr(
         main, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
+    )
+    monkeypatch.setattr(
+        manifest, "_make_enterprise_credential_resolver", lambda **kwargs: _raising_resolver()
     )
 
     (tmp_path / "lock-case").mkdir()
@@ -284,7 +288,7 @@ def test_onboard_skips_credential_resolution_for_non_enterprise_edition(
     fake_provider = _FakeWorkspaceProvider()
     calls, resolver = _succeeding_resolver_calls()
     monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
-    monkeypatch.setattr(main, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
+    monkeypatch.setattr(manifest, "_make_enterprise_credential_resolver", lambda **kwargs: resolver)
     manifest_path = _write_onboard_lock(tmp_path, _COMMUNITY_MANIFEST_TEXT)
 
     result = runner.invoke(app, ["onboard", "--manifest", str(manifest_path)])
@@ -588,7 +592,7 @@ def test_enterprise_credential_resolved_exactly_once_for_onboard(
 
     monkeypatch.setattr(_composition, "_make_workspace_provider", lambda: fake_provider)
     monkeypatch.setattr(
-        main,
+        manifest,
         "_make_enterprise_credential_resolver",
         lambda **kwargs: ec._MemoizingCredentialResolver(counting_resolver),
     )

@@ -535,10 +535,177 @@ either accepting `size:exception` for PR4 specifically, or the reviewer
 choosing to split the review itself (e.g. review `commands/backend.py`
 addition separately from the `main.py`/test diff).
 
+## PR5a — `commands/manifest.py` (validate + onboard) — COMPLETE
+
+Status: all 7 tasks (5a.1-5a.7) done. Full suite green (unchanged count vs
+PR4 baseline: 901 passed, 17 deselected), `lint-imports` green, `forge --help`
+shows all 16 commands, `validate`/`onboard` byte-identical, no circular
+imports.
+
+### Starting-state correction
+
+The orchestrator's launch prompt stated the working tree was clean at the
+PR4-committed state (5e2fd6b). This was inaccurate: `git status` at the
+start of this batch showed `src/odoo_forge_cli/main.py` already modified
+and `src/odoo_forge_cli/commands/manifest.py` already present (untracked),
+both already implementing the PR5a move (tasks 5a.1-5a.3) correctly and
+matching the design. A prior attempt had written these files before dying,
+contrary to the "died before writing any files" premise. I verified the
+existing code against design/tasks (module-qualified helper access, no
+import of `main`, `register(app)` seam, exact command names), ran the two
+target test files as a baseline (27 passed), then proceeded with the
+remaining verification/repoint/full-suite work (5a.4-5a.7) rather than
+re-doing already-correct work. Flagging explicitly for `sdd-verify`.
+
+### What changed
+
+- `src/odoo_forge_cli/commands/manifest.py` (178 lines, already present):
+  moved `validate` and `onboard` verbatim (bodies unchanged, same
+  module-qualified `_composition.*`/`_support.*`/`_presentation.*` calls
+  carried over from PR1); `_make_enterprise_credential_resolver`,
+  `_bind_enterprise_workspace_provider`, `_preflight_enterprise_source_credential`
+  are bare-imported from `odoo_forge_cli.enterprise_credential` (mirrors the
+  pre-move shape in `main.py`, so the call site resolves against THIS
+  module's own globals — same pattern PR4 established for `plan_backend`).
+  Added `def register(app: typer.Typer) -> None` binding `validate` and
+  `onboard` via `app.command(name=...)` with the exact pre-existing names;
+  docstring explicitly notes `lock`/`project`/`unlock` join `register()` in
+  PR5b. No import of `odoo_forge_cli.main` — confirmed via `rg`.
+- `main.py`: removed the `validate`/`onboard` bodies (153 lines net removed);
+  added `manifest` to `from odoo_forge_cli.commands import backend, image,
+  maintenance, manifest` and a `manifest.register(app)` call (placed last,
+  after `maintenance.register(app)`). Dropped now-unused imports
+  `odoo_forge.manifest.composition.compose`, `odoo_forge.manifest.drift.
+  detect_drift`, `materialize_state` (from `odoo_forge.manifest.projection`),
+  `odoo_forge.ports.workspace_provider.WorkspaceProvider` — all only used by
+  the two moved commands. `main.py` now 190 lines with 3 `@app.command`
+  decorators (`lock`, `project`, `unlock` — PR5b scope).
+
+### Test repoint (tasks 5a.4-5a.5)
+
+`tests/cli/test_validate.py` and `tests/cli/test_onboard.py`: no edit
+needed — already satisfied ahead of schedule by PR1's task 1.8 wide
+qualification. Both already patch `_support._resolve_mount_base` /
+`_composition._make_workspace_provider` (underscored spelling, per PR1's
+documented naming decision), never `main.*`.
+
+Adversarial verification that this ahead-of-schedule repoint is load-bearing
+(not a coincidental pass): retargeted `test_onboard.py`'s
+`monkeypatch.setattr(_composition, "_make_workspace_provider", ...)` to
+`_support` instead — 11 of 11 tests in the file failed immediately with
+`AttributeError: <module 'odoo_forge_cli._support' ...> has no attribute
+'_make_workspace_provider'` (monkeypatch's default `raising=True` makes a
+wrong target fail loud, never silently no-op). File restored to the correct
+version immediately after, confirmed 11/11 green again.
+
+**Discovered regression NOT in the original task list**: verifying the full
+suite (task 5a.6) surfaced one real failure —
+`tests/cli/test_enterprise_credential.py::test_enterprise_credential_resolved_exactly_once_for_onboard`
+— caused by this PR's move, exactly the failure mode the design predicts.
+That file patched `main._make_enterprise_credential_resolver` for 4 tests
+that invoke `onboard`; once `onboard` moved to `commands/manifest.py` (which
+bare-imports the same symbol), the call site resolves against
+`commands.manifest`'s own globals, not `main`'s — the `main.*` patch
+silently stopped intercepting for the onboard path (surfaced as a loud
+`AssertionError`, not a silent pass, because the real unpatched resolver
+raised `CredentialUnavailableError` against the fake age-key setup). Fixed
+by adding `from odoo_forge_cli.commands import manifest` and repointing:
+- `test_onboard_fails_fast_when_enterprise_credential_unavailable` → `manifest`
+- `test_onboard_skips_credential_resolution_for_non_enterprise_edition` → `manifest`
+- `test_enterprise_credential_resolved_exactly_once_for_onboard` → `manifest`
+- `test_lock_and_onboard_fail_identically_on_missing_credential` → patches
+  BOTH `main` (still governs `lock`) AND `manifest` (now governs `onboard`),
+  since this single test invokes both commands and asserts identical failure
+  shape from each.
+Lock-only tests (`test_lock_fails_fast_when_enterprise_credential_unavailable`,
+`test_lock_resolves_and_threads_credential_into_enterprise_fetch`,
+`test_lock_skips_credential_resolution_for_non_enterprise_edition`,
+`test_secret_never_leaks_into_lock_output_on_checkout_style_failure`,
+`test_lock_refuses_credential_injection_for_non_allow_listed_enterprise_url`,
+`test_enterprise_credential_resolved_exactly_once_for_lock`) were left
+unchanged — `lock` stays on `main`'s bare import until PR5b. Direct
+`main._bind_enterprise_source_provider`/`main._bind_enterprise_workspace_provider`
+unit-level calls (not through the CLI) also left unchanged — those symbols
+remain in `main`'s namespace via the existing `__all__`/import block,
+explicitly PR5b scope per the design's migration table.
+
+### Verification (real output)
+
+```
+$ uv run pytest tests/cli/test_validate.py tests/cli/test_onboard.py -v --no-cov
+27 passed
+```
+
+```
+$ uv run pytest tests/cli/test_enterprise_credential.py -v --no-cov   # after the 4-test repoint
+35 passed
+```
+
+```
+$ uv run pytest -q   # full suite
+901 passed, 17 deselected in 9.04s
+```
+(Identical to PR4's post-verification count — zero regressions, zero new
+skips, once the enterprise-credential repoint above was applied.)
+
+```
+$ uv run lint-imports
+Analyzed 109 files, 361 dependencies.
+Core never imports infrastructure or framework KEPT
+Core never imports the CLI KEPT
+Core never imports the git adapter KEPT
+Core never imports the workspace adapter KEPT
+Core never imports the docker adapter KEPT
+Core never imports the registry adapter KEPT
+Contracts: 6 kept, 0 broken.
+```
+
+```
+$ uv run python -c "import odoo_forge_cli.commands.manifest; import odoo_forge_cli.main; print('no cycle, ok')"
+no cycle, ok
+```
+
+```
+$ rg -c "@app.command" src/odoo_forge_cli/main.py
+3
+```
+
+```
+$ uv run forge --help
+exit=0, all 16 commands listed unchanged, same order, same help text
+$ uv run forge validate --help
+$ uv run forge onboard --help
+```
+Byte-identical confirmed by diffing against `git stash`-restored PR4
+baseline output (`git stash` / re-run / `git stash pop`): zero diff for
+both `validate --help` and `onboard --help`.
+
+`uv run ruff check` and `uv run ruff format --check` both clean on
+`src/odoo_forge_cli/` and `tests/cli/`.
+
+### Diffstat
+
+```
+ openspec/changes/split-cli-main/tasks.md |  16 +-
+ src/odoo_forge_cli/main.py               | 153 +--------------------------
+ tests/cli/test_enterprise_credential.py  |  10 +-
+ 3 files changed (tracked): 10 insertions(+), 153 deletions(-) (main.py + test file only)
+
+New files (not yet tracked by git, awaiting orchestrator commit):
+ src/odoo_forge_cli/commands/manifest.py  (178 lines, validate+onboard only;
+                                            lock/project/unlock join in PR5b)
+```
+
+Authored changed-line total for this PR5a slice (tracked edits + new file,
+additions+deletions): 10 + 153 (tracked) + 178 (new file, all additions) =
+**341 lines**. Within the 400-line review budget (forecast estimated
+~200-250; the enterprise-credential regression fix added ~13 lines beyond
+the original scope's minimum, still comfortably under budget).
+
 ## Not started
 
-PR5a/PR5b (`commands/manifest.py`) — deferred per PR4-only scope
-instruction. No further `@app.command` body has been touched beyond the
-four image commands + two maintenance commands + five backend commands;
-the remaining 5 commands (`validate`, `onboard`, `lock`, `project`,
-`unlock`) stay verbatim in `main.py`.
+PR5b (`commands/manifest.py` — lock/unlock/project + thin `main.py`) —
+deferred per PR5a-only scope instruction. `lock`, `project`, `unlock` stay
+verbatim in `main.py` (3 `@app.command` decorators remaining); the `__all__`
+re-export block and the `ec` bare imports in `main.py` are untouched —
+explicitly PR5b scope per the design's migration table.
