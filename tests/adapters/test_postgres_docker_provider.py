@@ -1144,10 +1144,25 @@ def test_adopt_preserves_an_external_reference_without_mutation() -> None:
 
 
 def test_current_database_spec_accepts_only_name_with_no_topology_fields() -> None:
-    """Pins the pre-Phase-1 `DatabaseSpec` shape: `name` only."""
+    """SUPERSEDED by Phase 1 (design decision "Additive DatabaseSpec topology"):
+    `DatabaseSpec` now carries optional `network`/`data_volume`/`env`/`labels`
+    fields, so `model_dump()` on a name-only spec necessarily reports their
+    defaults too. The pinned BEHAVIOR this test protects — a name-only spec
+    provisions with no topology argv tokens — still lives in
+    `test_current_provision_argv_carries_no_network_volume_or_label_topology_tokens`
+    below (argv-level, unaffected by the schema widening) and in
+    `test_name_only_spec_still_provisions_with_no_topology_argv_tokens` in the
+    Phase 1 section further down. Only the `model_dump()` shape assertion is
+    updated here to reflect the intentionally-widened schema."""
     spec = DatabaseSpec(name="database-42")
 
-    assert spec.model_dump() == {"name": "database-42"}
+    assert spec.model_dump() == {
+        "name": "database-42",
+        "network": None,
+        "data_volume": None,
+        "env": {},
+        "labels": {},
+    }
 
 
 def test_current_provision_argv_carries_no_network_volume_or_label_topology_tokens() -> None:
@@ -1188,3 +1203,488 @@ def test_current_wait_ready_probe_always_uses_dash_u_postgres_with_no_dash_d() -
     exec_call = next(call for call in calls if call[:2] == ("docker", "exec"))
     assert exec_call == ("docker", "exec", "database-42", "pg_isready", "-U", "postgres")
     assert "-d" not in exec_call
+
+
+# -- Phase 1: DatabaseSpec additive topology fields --
+
+
+def test_name_only_spec_still_provisions_with_no_topology_argv_tokens() -> None:
+    """Regression guard: a name-only `DatabaseSpec` (post-widening, same as
+    before) must still provision with no network/volume/env tokens."""
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    run_call = next(call for call in calls if call[:2] == ("docker", "run"))
+    assert "--network" not in run_call
+    assert "-v" not in run_call
+    assert "-e" not in run_call
+    assert creation.ref.ownership == ResourceOwnership.CREATED
+
+
+def test_topology_fields_apply_network_volume_env_and_label_argv_tokens() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(argv, 1, "", "no such volume")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    spec = DatabaseSpec(
+        name="database-42",
+        network="forge-net",
+        data_volume="pgdata-42",
+        env={"POSTGRES_USER": "odoo", "POSTGRES_DB": "odoo"},
+        labels={"com.odoo-forge.role": "backend"},
+    )
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(spec, CredentialHandle("opaque"))
+
+    run_call = next(call for call in calls if call[:2] == ("docker", "run"))
+    assert run_call[run_call.index("--network") + 1] == "forge-net"
+    assert "pgdata-42:/var/lib/postgresql/data" in run_call
+    assert "POSTGRES_USER=odoo" in run_call
+    assert "POSTGRES_DB=odoo" in run_call
+    assert "com.odoo-forge.role=backend" in run_call
+
+
+@pytest.mark.parametrize(
+    ("field", "unsafe_value"),
+    [
+        ("network", "net; rm -rf /"),
+        ("data_volume", "vol $(whoami)"),
+    ],
+)
+def test_unsafe_topology_values_are_rejected_before_docker(field: str, unsafe_value: str) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    spec = DatabaseSpec(name="database-42", **{field: unsafe_value})
+    provider = DockerPostgresqlDatabaseProvider(runner=runner, credential_target=_credential_target)
+
+    with pytest.raises(DatabaseOperationError):
+        provider.provision(spec, CredentialHandle("opaque"))
+
+    assert calls == []
+
+
+# -- Phase 2: fresh-pgdata ownership signal --
+
+
+def test_absent_data_volume_is_created_labelled_and_reported_as_created_ownership() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(argv, 1, "", "no such volume")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(
+        DatabaseSpec(name="database-42", data_volume="pgdata-42"), CredentialHandle("opaque")
+    )
+
+    volume_create_call = next(call for call in calls if call[:3] == ("docker", "volume", "create"))
+    assert "pgdata-42" in volume_create_call
+    assert any(item == "io.odoo-forge.resource-kind=volume" for item in volume_create_call)
+    assert creation.ref.ownership == ResourceOwnership.CREATED
+    assert "pgdata-42" in creation.receipt.owned_resource_ids
+
+
+def test_preexisting_data_volume_is_adopted_and_never_owned() -> None:
+    """REVISED (design r2, R2-001 fix): the container `ref.ownership` MUST
+    always be CREATED — it is always freshly `docker run` by this call and
+    MUST NOT be overloaded to carry the volume's freshness. The
+    ADOPTED-when-reused signal moves to the dedicated
+    `data_volume_ownership` field instead."""
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, "[{}]", "")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(
+        DatabaseSpec(name="database-42", data_volume="pgdata-42"), CredentialHandle("opaque")
+    )
+
+    assert not any(call[:3] == ("docker", "volume", "create") for call in calls)
+    assert creation.ref.ownership == ResourceOwnership.CREATED
+    assert creation.data_volume_ownership == ResourceOwnership.ADOPTED
+    assert "pgdata-42" not in creation.receipt.owned_resource_ids
+
+
+@pytest.mark.parametrize("volume_present", [False, True])
+def test_provision_failure_rolls_back_freshly_created_volume_but_preserves_adopted_volume(
+    volume_present: bool,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(
+                argv, 0 if volume_present else 1, "[{}]" if volume_present else "", ""
+            )
+        if argv[:3] == ["docker", "exec", "database-42"]:
+            return subprocess.CompletedProcess(argv, 1, "", "not ready")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    ticks = iter([0.0, 2.0])
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        readiness_timeout=1.0,
+        monotonic=lambda: next(ticks),
+        sleep=lambda _seconds: None,
+        credential_target=_credential_target,
+    )
+
+    with pytest.raises(DatabaseReadinessError):
+        provider.provision(
+            DatabaseSpec(name="database-42", data_volume="pgdata-42"),
+            CredentialHandle("opaque"),
+        )
+
+    volume_removed = ("docker", "volume", "rm", "-f", "pgdata-42") in calls
+    assert volume_removed is not volume_present
+
+
+# -- Phase 2.3: spec-driven readiness probe --
+
+
+def test_wait_ready_derives_probe_user_and_database_from_spec_env() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(
+        DatabaseSpec(name="database-42", env={"POSTGRES_USER": "odoo", "POSTGRES_DB": "odoo-db"}),
+        CredentialHandle("opaque"),
+    )
+
+    exec_call = next(call for call in calls if call[:2] == ("docker", "exec"))
+    assert exec_call == (
+        "docker",
+        "exec",
+        "database-42",
+        "pg_isready",
+        "-U",
+        "odoo",
+        "-d",
+        "odoo-db",
+    )
+
+
+def test_wait_ready_defaults_to_postgres_user_with_no_dash_d_when_env_is_empty() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    exec_call = next(call for call in calls if call[:2] == ("docker", "exec"))
+    assert exec_call == ("docker", "exec", "database-42", "pg_isready", "-U", "postgres")
+    assert "-d" not in exec_call
+
+
+# -- Phase 3: adopt() no-op regression guard, widened to cover every ownership state --
+
+
+@pytest.mark.parametrize(
+    "ownership",
+    [ResourceOwnership.EXTERNAL, ResourceOwnership.ADOPTED, ResourceOwnership.CREATED],
+)
+def test_adopt_preserves_any_ownership_state_without_mutation_or_live_verification(
+    ownership: ResourceOwnership,
+) -> None:
+    """Extends `test_adopt_preserves_an_external_reference_without_mutation`
+    (which already pinned the EXTERNAL case) to explicitly cover ADOPTED and
+    CREATED refs too, closing the spec requirement across the widened
+    `DatabaseSpec`/ownership surface introduced by Phase 1/2. No production
+    change is expected: `adopt()` must remain a pure passthrough regardless
+    of which ownership state the caller-supplied ref carries, and must never
+    call the runner (no live-state verification)."""
+
+    def runner(_argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("adopt() must never invoke Docker")
+
+    ref = DatabaseRef(identifier="database-42", ownership=ownership)
+
+    adopted = DockerPostgresqlDatabaseProvider(runner=runner).adopt(ref)
+
+    assert adopted == ref
+
+
+# -- PR2 bounded-review escalation regressions (design revision r2) --
+#
+# R2-001 (CRITICAL, reliability): `ref.ownership` was overloaded to carry the
+# data volume's freshness, making a legitimately-created container report
+# ADOPTED (and become permanently undeletable/unverifiable) whenever
+# `data_volume` was pre-existing. Fixed by always reporting `ref.ownership ==
+# CREATED` for the container and carrying volume freshness on the dedicated
+# additive `DatabaseCreation.data_volume_ownership` field instead.
+
+
+def test_reused_data_volume_does_not_disown_the_freshly_created_container() -> None:
+    """R2-001 regression: a provision that reuses a pre-existing data volume
+    must still report a CREATED container ref, and `delete()` /
+    `verify_runtime_ownership()` must accept it. Volume freshness is reported
+    separately on `data_volume_ownership`."""
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, "[{}]", "")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    )
+    creation = provider.provision(
+        DatabaseSpec(name="database-42", data_volume="pgdata-42"), CredentialHandle("opaque")
+    )
+
+    assert creation.ref.ownership == ResourceOwnership.CREATED
+    assert creation.data_volume_ownership == ResourceOwnership.ADOPTED
+
+    # Must not raise on the container ownership guard.
+    provider.verify_runtime_ownership(creation)
+    provider.delete(creation)
+
+    assert ("docker", "rm", "-f", "database-42") in calls
+
+
+def test_fresh_data_volume_reports_created_on_the_dedicated_field() -> None:
+    """Companion regression: a freshly-created data volume must set
+    `data_volume_ownership == CREATED`, while the container ref is also
+    `CREATED` (as always)."""
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(argv, 1, "", "no such volume")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    creation = DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(
+        DatabaseSpec(name="database-42", data_volume="pgdata-42"), CredentialHandle("opaque")
+    )
+
+    assert creation.ref.ownership == ResourceOwnership.CREATED
+    assert creation.data_volume_ownership == ResourceOwnership.CREATED
+
+
+# R4-001 (CRITICAL, resilience): `_remove_owned`/`cleanup()` treated every
+# owned id as a container (`docker rm -f`), so a receipt owning a volume id
+# failed on a resource-kind/subcommand mismatch. Fixed by dispatching on the
+# `io.odoo-forge.resource-kind` label: `docker volume rm` for volume-kind ids.
+
+_OWNED_VOLUME_LABELS = (
+    '{"io.odoo-forge.provider":"postgres-docker",'
+    '"io.odoo-forge.operation":"postgres-docker:token-42",'
+    '"io.odoo-forge.resource-kind":"volume",'
+    '"io.odoo-forge.creator-token":"token-42"}'
+)
+_OWNED_VOLUME_INSPECT = '[{"Name":"pgdata-42","Labels":' + _OWNED_VOLUME_LABELS + "}]"
+
+
+def test_cleanup_removes_a_volume_bearing_receipt_via_docker_volume_rm(tmp_path: Path) -> None:
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=("database-42", "pgdata-42"),
+    )
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["docker", "inspect"] and argv[-1] == "pgdata-42":
+            return subprocess.CompletedProcess(argv, 0, _OWNED_VOLUME_INSPECT, "")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.write(
+        {
+            "operation": receipt.operation.value,
+            "kind": "container",
+            "name": "database-42",
+            "docker_id": "immutable-database-42",
+            "state": "active",
+        }
+    )
+    provider = DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority)
+
+    report = provider.cleanup(receipt)
+
+    assert report.residual_failures == ()
+
+
+def test_remove_owned_volume_issues_docker_volume_rm_not_docker_rm(tmp_path: Path) -> None:
+    calls: list[tuple[str, ...]] = []
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=("pgdata-42",),
+    )
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_VOLUME_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner, ownership_authority=LocalOwnershipAuthority(tmp_path / "authority")
+    )
+
+    report = provider.cleanup(receipt)
+
+    assert report.residual_failures == ()
+    assert ("docker", "volume", "rm", "pgdata-42") in calls
+    assert ("docker", "rm", "-f", "pgdata-42") not in calls
+
+
+# WARNING fix: restore() must roll back its own freshly-created volume.
+
+
+def test_restore_failure_rolls_back_its_freshly_created_data_volume() -> None:
+    calls: list[tuple[str, ...]] = []
+    artifacts = _Artifacts(
+        RestoreReadiness(
+            ready=True, manifest=_restore_manifest(), failure_code=None, redacted_detail=None
+        )
+    )
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(argv, 1, "", "no such volume")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def failing_restore_injector(_component: RestoreSetComponent, _target: str) -> bool:
+        return False
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        artifact_capability=artifacts,
+        credential_target=_credential_target,
+        restore_injector=failing_restore_injector,
+    )
+
+    with pytest.raises(DatabaseOperationError):
+        provider.restore(
+            DatabaseSpec(name="database-42", data_volume="pgdata-42"),
+            DataArtifactRef("restore-set-42"),
+            CredentialHandle("opaque"),
+        )
+
+    assert ("docker", "volume", "rm", "-f", "pgdata-42") in calls
+
+
+def test_restore_failure_preserves_an_adopted_data_volume() -> None:
+    calls: list[tuple[str, ...]] = []
+    artifacts = _Artifacts(
+        RestoreReadiness(
+            ready=True, manifest=_restore_manifest(), failure_code=None, redacted_detail=None
+        )
+    )
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:3] == ["docker", "volume", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, "[{}]", "")
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def failing_restore_injector(_component: RestoreSetComponent, _target: str) -> bool:
+        return False
+
+    provider = DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        artifact_capability=artifacts,
+        credential_target=_credential_target,
+        restore_injector=failing_restore_injector,
+    )
+
+    with pytest.raises(DatabaseOperationError):
+        provider.restore(
+            DatabaseSpec(name="database-42", data_volume="pgdata-42"),
+            DataArtifactRef("restore-set-42"),
+            CredentialHandle("opaque"),
+        )
+
+    assert ("docker", "volume", "rm", "-f", "pgdata-42") not in calls
+
+
+# WARNING fix: caller labels colliding with the reserved io.odoo-forge.*
+# namespace must be rejected up-front, before docker run.
+
+
+def test_reserved_namespace_label_collision_is_rejected_before_docker_run() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    spec = DatabaseSpec(name="database-42", labels={"io.odoo-forge.creator-token": "spoofed-token"})
+    provider = DockerPostgresqlDatabaseProvider(runner=runner, credential_target=_credential_target)
+
+    with pytest.raises(DatabaseOperationError):
+        provider.provision(spec, CredentialHandle("opaque"))
+
+    assert calls == []
