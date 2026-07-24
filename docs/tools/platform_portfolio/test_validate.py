@@ -429,8 +429,7 @@ class TestRepositoryValidation(unittest.TestCase):
         temporary, root, plan = self._repository()
         with temporary:
             (
-                root
-                / "openspec/changes/archive/2026-07-17-sp-data-environments/archive-report.md"
+                root / "openspec/changes/archive/2026-07-17-sp-data-environments/archive-report.md"
             ).unlink()
             self.assertIn("active-inventory", _codes(validate.validate_repository(root, plan)))
 
