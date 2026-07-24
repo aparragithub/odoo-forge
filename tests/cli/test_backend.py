@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from pathlib import Path
+from typing import cast
 
 import pytest
 import yaml
@@ -365,7 +366,10 @@ def test_make_database_provider_wires_a_sops_backed_credential_target(
 
     provider = _composition._make_database_provider(credentials_file=credentials_file)
 
-    assert provider._credential_target is not _unavailable_credential_target
+    assert (
+        cast("DockerPostgresqlDatabaseProvider", provider)._credential_target
+        is not _unavailable_credential_target
+    )
 
 
 def test_make_backend_provider_injects_the_database_provider(tmp_path: Path) -> None:
