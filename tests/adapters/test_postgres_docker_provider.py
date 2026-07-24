@@ -7,7 +7,7 @@ from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from inspect import getsource
 from pathlib import Path
-from typing import get_type_hints
+from typing import Any, cast, get_type_hints
 
 import pytest
 
@@ -1275,7 +1275,7 @@ def test_unsafe_topology_values_are_rejected_before_docker(field: str, unsafe_va
         calls.append(tuple(argv))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    spec = DatabaseSpec(name="database-42", **{field: unsafe_value})
+    spec = DatabaseSpec(name="database-42", **cast("dict[str, Any]", {field: unsafe_value}))
     provider = DockerPostgresqlDatabaseProvider(runner=runner, credential_target=_credential_target)
 
     with pytest.raises(DatabaseOperationError):
@@ -1445,7 +1445,7 @@ def test_adopt_preserves_any_ownership_state_without_mutation_or_live_verificati
     of which ownership state the caller-supplied ref carries, and must never
     call the runner (no live-state verification)."""
 
-    def runner(_argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
         raise AssertionError("adopt() must never invoke Docker")
 
     ref = DatabaseRef(identifier="database-42", ownership=ownership)

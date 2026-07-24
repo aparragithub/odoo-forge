@@ -10,13 +10,14 @@ from __future__ import annotations
 import subprocess
 import tomllib
 from pathlib import Path
+from typing import cast
 
 _PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
 
 def _contracts() -> list[dict[str, object]]:
     data = tomllib.loads(_PYPROJECT.read_text())
-    return data["tool"]["importlinter"]["contracts"]
+    return cast("list[dict[str, object]]", data["tool"]["importlinter"]["contracts"])
 
 
 def test_forbidden_import_contract_for_postgres_docker_adapter_is_declared() -> None:
