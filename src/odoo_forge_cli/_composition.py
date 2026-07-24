@@ -11,8 +11,11 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
+from odoo_forge.anonymization.policy import AnonymizationRule
 from odoo_forge.credentials.errors import CredentialUnavailableError
 from odoo_forge.credentials.types import CredentialHandle, CredentialInjectionDescriptor
+from odoo_forge.data_artifacts.contracts import RestoreSetComponent
+from odoo_forge.data_artifacts.coordinator import DataArtifactCopyCoordinator
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.database_provider import DatabaseProvider
@@ -24,7 +27,17 @@ from odoo_forge_catalog import YamlCatalogIndex
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
+from odoo_forge_postgres_docker.capture import DockerPostgresqlCaptureAdapter
 from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
+from odoo_forge_postgres_docker.restore_target import make_docker_restore_target
+from odoo_forge_postgres_docker.staged_capability import (
+    StagedArtifactCapability,
+    make_staged_byte_source,
+)
+from odoo_forge_postgres_docker.staged_store import (
+    FilesystemStagedArtifactStore,
+    default_staged_artifact_store_root,
+)
 from odoo_forge_registry import GhcrImageRegistryProvider, PublishedArtifactRegistryResolver
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
@@ -96,6 +109,61 @@ def _make_backend_provider(
     return DockerBackendProvider(
         credential_injector=SopsEnvFileInjector(SopsCommandResolver(credentials_file)),
         database_provider=_make_database_provider(credentials_file=credentials_file),
+    )
+
+
+def _pass_through_mask_transform(
+    component: RestoreSetComponent, rules: tuple[AnonymizationRule, ...]
+) -> RestoreSetComponent:
+    """Identity `MaskTransform`: v1 CLI wiring only ever runs an EMPTY policy.
+
+    Real byte-level masking of a custom-format `pg_dump` archive per
+    `AnonymizationRule`/`MaskStrategy` is explicitly deferred (design
+    WF-DATA-COPY Durable Byte Store, open question: "MaskTransform byte-masking
+    depth for custom-format dumps"). This composition root wires the
+    coordinator's REQUIRED `mask_transform` port with a pass-through so an
+    empty `AnonymizationPolicy` (the only policy the `copy` command currently
+    constructs) is a correct no-op re-stamp (design D11). A non-empty policy
+    fails closed rather than silently skipping masking.
+    """
+    if rules:
+        raise NotImplementedError(
+            "byte-level anonymization masking is not yet implemented for the 'copy' command"
+        )
+    return component
+
+
+def _make_staged_artifact_store(*, root: Path | None = None) -> FilesystemStagedArtifactStore:
+    """Composition root: the ONE place the concrete staged artifact store is built."""
+    return FilesystemStagedArtifactStore(root or default_staged_artifact_store_root())
+
+
+def _make_data_artifact_copy_coordinator(
+    *, credentials_file: Path = Path("credentials.sops.yaml")
+) -> DataArtifactCopyCoordinator:
+    """Composition root: the ONE place the `copy` command's durable capture ->
+    anonymize -> deliver coordinator is built (bridge slice B5).
+
+    Wires the store-backed `StagedArtifactCapability` and byte source
+    (bridge slice B2) into BOTH the capture adapter (bridge slice B3) and the
+    real `RestoreTarget` (bridge slice B4/D1), and passes `store.put` as
+    `manifest_persistence` (design D11) so the coordinator's re-persisted
+    masked manifest is byte-consistent with the store by construction.
+    """
+    store = _make_staged_artifact_store()
+    artifact_capability = StagedArtifactCapability(store)
+    capture_capability = DockerPostgresqlCaptureAdapter(store=store)
+    database_provider = DockerPostgresqlDatabaseProvider(
+        credential_target=_sops_credential_target(credentials_file),
+        artifact_capability=artifact_capability,
+        restore_injector=make_docker_restore_target(byte_source=make_staged_byte_source(store)),
+    )
+    return DataArtifactCopyCoordinator(
+        capture_capability=capture_capability,
+        artifact_capability=artifact_capability,
+        database_provider=database_provider,
+        mask_transform=_pass_through_mask_transform,
+        manifest_persistence=store.put,
     )
 
 
