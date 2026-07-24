@@ -14,7 +14,6 @@ from odoo_forge.backend.errors import (
     ImageNotFoundError,
     InstanceExistsError,
     InstanceNotFoundError,
-    PostgresReadinessError,
 )
 from odoo_forge.backend.plan import (
     BackendPlan,
@@ -26,6 +25,15 @@ from odoo_forge.backend.plan import (
 )
 from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus
 from odoo_forge.credentials.types import CredentialHandle
+from odoo_forge.database.types import (
+    CleanupReport,
+    CreationReceipt,
+    DatabaseCreation,
+    DatabaseRef,
+    DatabaseSpec,
+    OperationIdentity,
+    ResourceOwnership,
+)
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.provider import (
@@ -130,7 +138,11 @@ def _make_plan() -> BackendPlan:
         ports={"8069": None, "8072": None},
     )
     return BackendPlan(
-        network=network, volumes=[pg_volume, fs_volume], postgres=postgres, odoo=odoo
+        network=network,
+        volumes=[pg_volume, fs_volume],
+        postgres=postgres,
+        odoo=odoo,
+        postgres_credentials=CredentialHandle("local-backend/postgres-password"),
     )
 
 
@@ -262,6 +274,100 @@ def _make_router(**kwargs: object) -> _Router:
     for key, value in kwargs.items():
         setattr(router, key, value)
     return router
+
+
+class _FakeDatabaseProvider:
+    """Minimal `DatabaseProvider` test double for the backend's delegation seam.
+
+    Never shells out to `docker` itself — the real adapter's own Docker
+    argv, topology, and ownership-authority behavior is already covered by
+    `tests/adapters/test_postgres_docker_provider.py`. This double only
+    needs to prove `DockerBackendProvider`'s delegation seam and two-ledger
+    rollback: what spec/credentials it receives, what `DatabaseCreation` it
+    returns, and what happens when provisioning or teardown fails.
+    """
+
+    def __init__(
+        self,
+        *,
+        data_volume_ownership: ResourceOwnership = ResourceOwnership.CREATED,
+        provision_error: Exception | None = None,
+        delete_error: Exception | None = None,
+        cleanup_residual: bool = False,
+    ) -> None:
+        self.data_volume_ownership = data_volume_ownership
+        self.provision_error = provision_error
+        self.delete_error = delete_error
+        self.cleanup_residual = cleanup_residual
+        self.provision_calls: list[tuple[DatabaseSpec, CredentialHandle]] = []
+        self.delete_calls: list[DatabaseCreation] = []
+        self.cleanup_calls: list[CreationReceipt] = []
+        # Mirrors the real `DockerPostgresqlDatabaseProvider`'s Docker state:
+        # `delete()` removes ONLY the container id (`ref.identifier`); a
+        # freshly-created data volume also present in `owned_resource_ids`
+        # is NEVER touched by `delete()` — only `cleanup()` iterates every
+        # owned id. This is the exact shape of the R4 volume-leak the
+        # rollback tests below pin against.
+        self.removed_resource_ids: set[str] = set()
+
+    def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
+        self.provision_calls.append((spec, credentials))
+        if self.provision_error is not None:
+            raise self.provision_error
+        owned_resource_ids = (spec.name,)
+        if spec.data_volume is not None and self.data_volume_ownership is ResourceOwnership.CREATED:
+            # Matches the real adapter's `_provision`: a freshly-created data
+            # volume is added to the receipt's `owned_resource_ids`; an
+            # ADOPTED (pre-existing) volume never is.
+            owned_resource_ids = (*owned_resource_ids, spec.data_volume)
+        return DatabaseCreation(
+            ref=DatabaseRef(identifier=spec.name, ownership=ResourceOwnership.CREATED),
+            receipt=CreationReceipt(
+                operation=OperationIdentity(value=f"fake-db-{spec.name}"),
+                owned_resource_ids=owned_resource_ids,
+            ),
+            data_volume_ownership=self.data_volume_ownership,
+        )
+
+    def restore(self, spec: object, artifact: object, credentials: object) -> DatabaseCreation:
+        raise NotImplementedError
+
+    def adopt(self, ref: DatabaseRef) -> DatabaseRef:
+        return ref
+
+    def reconcile(self, operation: object) -> DatabaseCreation:
+        raise NotImplementedError
+
+    def delete(self, creation: DatabaseCreation) -> None:
+        self.delete_calls.append(creation)
+        if self.delete_error is not None:
+            raise self.delete_error
+        self.removed_resource_ids.add(creation.ref.identifier)
+
+    def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
+        self.cleanup_calls.append(receipt)
+        if self.cleanup_residual:
+            return CleanupReport(residual_failures=("db-residual",))
+        self.removed_resource_ids.update(receipt.owned_resource_ids)
+        return CleanupReport(residual_failures=())
+
+
+def _run(
+    provider: DockerBackendProvider,
+    plan: BackendPlan,
+    database_provider: _FakeDatabaseProvider | None = None,
+) -> InstanceRef:
+    """Inject a fake `DatabaseProvider` post-construction, then run.
+
+    Avoids threading `database_provider=` through every one of the many
+    `DockerBackendProvider(...)` construction call sites in this file —
+    `run()` requires it (design "The delegation seam"), but most tests here
+    are not exercising the delegated Postgres leg itself (already covered by
+    `tests/adapters/test_postgres_docker_provider.py`), just the backend's
+    OWN network/volume/bootstrap/Odoo orchestration around it.
+    """
+    provider._database_provider = database_provider or _FakeDatabaseProvider()
+    return provider.run(plan)
 
 
 # -- pure argv builders / env -------------------------------------------------
@@ -438,17 +544,13 @@ def test_run_container_argv_uses_env_file_without_secret_values() -> None:
 def test_provider_uses_secret_files_and_removes_secrets_from_subprocess_observables(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Postgres no longer carries `secret_env` here — that leg is delegated
+    # (design "Postgres Secret Injection Owned by Adapter"); only the
+    # bootstrap (odoo image) and normal Odoo runs still flow through this
+    # backend's own `SopsEnvFileInjector.secret_files`.
     secret = "credential-value-not-for-argv"
     plan = _make_plan().model_copy(
         update={
-            "postgres": _make_plan().postgres.model_copy(
-                update={
-                    "env": {"POSTGRES_USER": "odoo", "POSTGRES_DB": "proj"},
-                    "secret_env": {
-                        "POSTGRES_PASSWORD": CredentialHandle("sops://postgres-password")
-                    },
-                }
-            ),
             "odoo": _make_plan().odoo.model_copy(
                 update={
                     "env": {
@@ -462,13 +564,16 @@ def test_provider_uses_secret_files_and_removes_secrets_from_subprocess_observab
             ),
         }
     )
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
 
-    DockerBackendProvider(
-        sleep=lambda _seconds: None,
-        credential_injector=SopsEnvFileInjector(resolver=lambda _handle: secret),
-    ).run(plan)
+    _run(
+        DockerBackendProvider(
+            sleep=lambda _seconds: None,
+            credential_injector=SopsEnvFileInjector(resolver=lambda _handle: secret),
+        ),
+        plan,
+    )
 
     secret_file_paths = [
         Path(token.split(",")[1].removeprefix("source="))
@@ -476,7 +581,7 @@ def test_provider_uses_secret_files_and_removes_secrets_from_subprocess_observab
         for token in call
         if token.startswith("type=bind,source=") and ",target=/run/secrets/" in token
     ]
-    assert len(secret_file_paths) == 3
+    assert len(secret_file_paths) == 2
     assert all(not path.exists() for path in secret_file_paths)
     assert all("--env-file" not in call for call in router.calls)
     assert all(secret not in " ".join(call) for call in router.calls)
@@ -490,6 +595,9 @@ def test_provider_uses_secret_files_and_removes_secrets_from_subprocess_observab
 def test_provider_fails_closed_before_docker_when_sops_resolution_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # `secret_env` remains a valid mechanism on `ContainerSpec` for this
+    # unit test of `run()`'s fail-closed credential validation, even though
+    # production `plan_backend` no longer populates it for postgres.
     plan = _make_plan().model_copy(
         update={
             "postgres": _make_plan().postgres.model_copy(
@@ -501,7 +609,7 @@ def test_provider_fails_closed_before_docker_when_sops_resolution_is_unavailable
     monkeypatch.setattr(subprocess, "run", router)
 
     with pytest.raises(ContainerRunError) as excinfo:
-        DockerBackendProvider(sleep=lambda _seconds: None).run(plan)
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), plan)
 
     assert "sops://missing" not in str(excinfo.value)
     assert router.calls == []
@@ -525,10 +633,13 @@ def test_provider_redacts_sops_resolver_diagnostics_before_docker_launch(
         raise RuntimeError(secret)
 
     with pytest.raises(ContainerRunError) as excinfo:
-        DockerBackendProvider(
-            sleep=lambda _seconds: None,
-            credential_injector=SopsEnvFileInjector(resolver=broken_resolver),
-        ).run(plan)
+        _run(
+            DockerBackendProvider(
+                sleep=lambda _seconds: None,
+                credential_injector=SopsEnvFileInjector(resolver=broken_resolver),
+            ),
+            plan,
+        )
 
     assert str(excinfo.value) == "credential injection failed"
     assert secret not in str(excinfo.value)
@@ -763,33 +874,47 @@ def test_exec_raises_generic_container_run_error_on_other_failure(
 
 
 def test_run_argv_network_volume_container_order(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    # Postgres provisioning is delegated (design "The delegation seam"), so
+    # only network/filestore-volume/Odoo docker calls remain in the
+    # backend's own argv sequence — the pgdata volume and the postgres
+    # container/readiness argv this test USED to assert on are covered by
+    # `tests/adapters/test_postgres_docker_provider.py` instead.
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider()
 
     provider = DockerBackendProvider(sleep=lambda _seconds: None)
-    ref = provider.run(_make_plan())
+    ref = _run(provider, _make_plan(), fake_db)
 
     assert ref.postgres_container == DB_NAME
     assert ref.odoo_container == ODOO_NAME
+    assert len(fake_db.provision_calls) == 1
+    spec, credentials = fake_db.provision_calls[0]
+    assert spec.name == DB_NAME
+    assert spec.network == NETWORK
+    assert spec.data_volume == PGDATA_VOL
+    assert credentials == CredentialHandle("local-backend/postgres-password")
 
     kinds = [tuple(call[:3]) for call in router.calls]
     assert ("docker", "pull", _make_plan().odoo.image) in kinds
-    assert ("docker", "inspect", DB_NAME) in kinds
     assert ("docker", "inspect", ODOO_NAME) in kinds
-    pull_idx = next(i for i, c in enumerate(router.calls) if c[1] == "pull")
+    assert not any(call[1] == "run" and DB_NAME in call for call in router.calls)
     assert router.calls[kinds.index(("docker", "network", "create"))][:3] == [
         "docker",
         "network",
         "create",
     ]
 
+    pull_idx = next(i for i, c in enumerate(router.calls) if c[1] == "pull")
     network_idx = next(i for i, c in enumerate(router.calls) if c[1:3] == ["network", "create"])
-    volume_idxs = [i for i, c in enumerate(router.calls) if c[1:3] == ["volume", "create"]]
-    pg_run_idx = next(i for i, c in enumerate(router.calls) if c[1] == "run" and DB_NAME in c)
-    pg_ready_idx = next(i for i, c in enumerate(router.calls) if c[1] == "exec")
+    filestore_idx = next(
+        i
+        for i, c in enumerate(router.calls)
+        if c[1:3] == ["volume", "create"] and c[-1] == FILESTORE_VOL
+    )
     odoo_run_idx = next(i for i, c in enumerate(router.calls) if c[1] == "run" and ODOO_NAME in c)
 
-    assert pull_idx < network_idx < min(volume_idxs) < pg_run_idx < pg_ready_idx < odoo_run_idx
+    assert pull_idx < network_idx < filestore_idx < odoo_run_idx
 
     for kwargs in router.kwargs:
         env = kwargs.get("env")
@@ -808,7 +933,7 @@ def test_run_uses_exact_local_odoo_image_without_pulling(
     )
     monkeypatch.setattr(subprocess, "run", router)
 
-    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+    _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     assert ["docker", "image", "inspect", _make_plan().odoo.image] in router.calls
     assert not any(call[1] == "pull" for call in router.calls)
@@ -820,7 +945,7 @@ def test_run_pulls_exact_odoo_image_only_when_local_inspection_reports_absent(
     router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
 
-    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+    _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     inspect_idx = router.calls.index(["docker", "image", "inspect", _make_plan().odoo.image])
     pull_idx = next(i for i, call in enumerate(router.calls) if call[1] == "pull")
@@ -838,7 +963,7 @@ def test_run_fails_closed_on_unexpected_local_image_inspection_error(
     monkeypatch.setattr(subprocess, "run", router)
 
     with pytest.raises(ContainerRunError, match="permission denied"):
-        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     assert not any(call[1] == "pull" for call in router.calls)
     assert not any(call[1:3] == ["network", "create"] for call in router.calls)
@@ -854,7 +979,7 @@ def test_run_classifies_local_image_daemon_failure_without_pulling(
     monkeypatch.setattr(subprocess, "run", router)
 
     with pytest.raises(DockerUnavailableError):
-        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     assert not any(call[1] == "pull" for call in router.calls)
 
@@ -907,29 +1032,38 @@ def test_created_volume_is_owned_only_when_unique_label_matches(
 def test_malformed_post_create_inspect_reports_owned_volume_cleanup_incomplete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    # Retargeted from the pgdata volume to the filestore volume: pgdata's
+    # `_ensure_volume` call moved to the delegated `DatabaseProvider`
+    # (design "The delegation seam"), but the backend still owns and
+    # `_ensure_volume`s the filestore volume directly, so this
+    # malformed-post-create-inspect regression guard stays meaningful there.
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
 
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
-        if argv[1:3] == ["volume", "inspect"] and PGDATA_VOL in router._volume_labels:
+        if argv[1:3] == ["volume", "inspect"] and FILESTORE_VOL in router._volume_labels:
             return _FakeCompletedProcess(0, stdout="not-json")
         return router(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(ContainerRunError) as excinfo:
-        DockerBackendProvider().run(_make_plan())
+        _run(DockerBackendProvider(), _make_plan())
 
-    assert f"cleanup incomplete: volume={PGDATA_VOL}" in str(excinfo.value)
-    assert ["docker", "volume", "rm", PGDATA_VOL] not in router.calls
+    assert f"cleanup incomplete: volume={FILESTORE_VOL}" in str(excinfo.value)
+    assert ["docker", "volume", "rm", FILESTORE_VOL] not in router.calls
 
 
-def test_run_bootstraps_only_new_postgres_data_before_normal_odoo(
+def test_run_bootstraps_only_when_delegated_provision_reports_created_volume(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
 
-    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+    _run(
+        DockerBackendProvider(sleep=lambda _seconds: None),
+        _make_plan(),
+        _FakeDatabaseProvider(data_volume_ownership=ResourceOwnership.CREATED),
+    )
 
     bootstrap_run = next(
         call
@@ -949,11 +1083,17 @@ def test_run_bootstraps_only_new_postgres_data_before_normal_odoo(
     assert router.calls.index(bootstrap_rm) < router.calls.index(normal_run)
 
 
-def test_run_skips_bootstrap_for_reused_postgres_data(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = _make_router(not_found={NETWORK, DB_NAME, ODOO_NAME})
+def test_run_skips_bootstrap_when_delegated_provision_reports_adopted_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
 
-    DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+    _run(
+        DockerBackendProvider(sleep=lambda _seconds: None),
+        _make_plan(),
+        _FakeDatabaseProvider(data_volume_ownership=ResourceOwnership.ADOPTED),
+    )
 
     assert not any(call[1] == "run" and BOOTSTRAP_NAME in call for call in router.calls)
 
@@ -961,12 +1101,12 @@ def test_run_skips_bootstrap_for_reused_postgres_data(monkeypatch: pytest.Monkey
 def test_run_refuses_bootstrap_name_collision_before_provisioning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     router.bootstrap_exists = True
     monkeypatch.setattr(subprocess, "run", router)
 
     with pytest.raises(InstanceExistsError, match=BOOTSTRAP_NAME):
-        DockerBackendProvider().run(_make_plan())
+        _run(DockerBackendProvider(), _make_plan())
 
     assert not any(call[1:3] == ["network", "create"] for call in router.calls)
 
@@ -974,25 +1114,29 @@ def test_run_refuses_bootstrap_name_collision_before_provisioning(
 def test_foreign_volume_has_no_deletion_or_bootstrap_authority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    router = _make_router(
-        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
-        pg_ready_after=9_999,
-    )
+    # Retargeted from the pgdata volume to the filestore volume: this
+    # `_ensure_volume` race-detection defense is a property of the
+    # BACKEND's own ownership-token scheme, which pgdata no longer goes
+    # through (design "The delegation seam"; the adapter's own
+    # `_ensure_data_volume` has a different, documented TOCTOU posture —
+    # design Non-Goals). The filestore volume still exercises the same
+    # backend-owned code path this test protects.
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     original = router.__call__
 
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         result = original(argv, **kwargs)
-        if argv[1:3] == ["volume", "create"] and argv[-1] == PGDATA_VOL:
-            router._volume_labels[PGDATA_VOL] = {"foreign": "owner"}
+        if argv[1:3] == ["volume", "create"] and argv[-1] == FILESTORE_VOL:
+            router._volume_labels[FILESTORE_VOL] = {"foreign": "owner"}
         return result
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     clock = _FakeClock()
 
     with pytest.raises(ContainerRunError, match="volume ownership verification failed"):
-        DockerBackendProvider(monotonic=clock, sleep=clock.advance).run(_make_plan())
+        _run(DockerBackendProvider(monotonic=clock, sleep=clock.advance), _make_plan())
 
-    assert ["docker", "volume", "rm", PGDATA_VOL] not in router.calls
+    assert ["docker", "volume", "rm", FILESTORE_VOL] not in router.calls
     assert ["docker", "network", "rm", NETWORK] in router.calls
     assert not any(call[1] in {"run", "exec"} for call in router.calls)
 
@@ -1001,7 +1145,7 @@ def test_foreign_volume_has_no_deletion_or_bootstrap_authority(
 def test_bootstrap_exception_removes_only_cidfile_container(
     monkeypatch: pytest.MonkeyPatch, failure: Exception
 ) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
 
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         if argv[1] == "run" and argv[argv.index("--name") + 1] == BOOTSTRAP_NAME:
@@ -1013,7 +1157,7 @@ def test_bootstrap_exception_removes_only_cidfile_container(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(ContainerRunError, match="bootstrap failed"):
-        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     assert ["docker", "rm", "-f", "-v", "owned-bootstrap-id"] in router.calls
     assert ["docker", "rm", "-f", "-v", BOOTSTRAP_NAME] not in router.calls
@@ -1024,7 +1168,7 @@ def test_bootstrap_failure_redacts_bounded_output_and_prevents_normal_odoo(
 ) -> None:
     secret = "bootstrap-secret"
     output = "x" * 10 + secret + "z" * 7_995
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
 
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         if argv[1] == "run" and argv[argv.index("--name") + 1] == BOOTSTRAP_NAME:
@@ -1048,9 +1192,10 @@ def test_bootstrap_failure_redacts_bounded_output_and_prevents_normal_odoo(
             )
         }
     )
+    fake_db = _FakeDatabaseProvider()
 
     with pytest.raises(ContainerRunError) as excinfo:
-        provider.run(plan)
+        _run(provider, plan, fake_db)
 
     message = str(excinfo.value)
     assert output[-8_000:].startswith(secret[-5:]) and secret[-5:] not in message
@@ -1058,11 +1203,16 @@ def test_bootstrap_failure_redacts_bounded_output_and_prevents_normal_odoo(
     assert len(message) < 9_000
     assert ["docker", "rm", "-f", "-v", BOOTSTRAP_NAME] in router.calls
     assert not any(call[1] == "run" and ODOO_NAME in call for call in router.calls)
-    assert ["docker", "volume", "rm", PGDATA_VOL] in router.calls
+    # The postgres leg's teardown is delegated (two-ledger rollback, design
+    # "Rollback Coordination") — the backend never issues `docker volume rm`
+    # for pgdata itself, it calls `db_provider.cleanup(receipt)` (R4 fix:
+    # `delete()` alone would leak a freshly-created data volume).
+    assert len(fake_db.cleanup_calls) == 1
+    assert fake_db.delete_calls == []
 
 
 def test_bootstrap_name_race_skips_foreign_diagnostics(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
 
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         if argv[1] == "run" and argv[argv.index("--name") + 1] == BOOTSTRAP_NAME:
@@ -1072,7 +1222,7 @@ def test_bootstrap_name_race_skips_foreign_diagnostics(monkeypatch: pytest.Monke
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(ContainerRunError, match="safe process failure"):
-        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     assert router.calls.count(["docker", "inspect", BOOTSTRAP_NAME]) == 1
     assert ["docker", "logs", "--tail", "200", BOOTSTRAP_NAME] not in router.calls
@@ -1081,7 +1231,7 @@ def test_bootstrap_name_race_skips_foreign_diagnostics(monkeypatch: pytest.Monke
 def test_bootstrap_removal_failure_prevents_normal_odoo_and_rolls_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
 
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         if argv == ["docker", "rm", "-f", "-v", BOOTSTRAP_NAME]:
@@ -1092,43 +1242,28 @@ def test_bootstrap_removal_failure_prevents_normal_odoo_and_rolls_back(
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     with pytest.raises(ContainerRunError, match="bootstrap removal failed"):
-        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     assert not any(call[1] == "run" and ODOO_NAME in call for call in router.calls)
     assert router.calls.count(["docker", "rm", "-f", "-v", BOOTSTRAP_NAME]) == 2
 
 
-def test_pg_readiness_gate_tcp_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = _make_router(
-        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME}, pg_ready_after=2
-    )
+# -- Postgres readiness gating moved to the delegated `DatabaseProvider` --
+#
+# `_wait_pg_ready` was removed from `DockerBackendProvider` (design "The
+# delegation seam"); the equivalent readiness-probe coverage now lives in
+# `tests/adapters/test_postgres_docker_provider.py`'s `_wait_ready` tests.
+# This REPLACES the retired `test_pg_readiness_gate_tcp_scoped` and
+# `test_pg_readiness_gate_times_out`.
+
+
+def test_run_never_calls_pg_isready_itself(monkeypatch: pytest.MonkeyPatch) -> None:
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
 
-    sleeps: list[float] = []
-    provider = DockerBackendProvider(sleep=sleeps.append)
-    provider.run(_make_plan())
+    _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
-    exec_call = next(c for c in router.calls if c[1] == "exec")
-    assert exec_call[2:] == [DB_NAME, "pg_isready", "-h", "127.0.0.1", "-U", "odoo", "-d", "proj"]
-    assert len(sleeps) >= 2
-
-
-def test_pg_readiness_gate_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = _make_router(
-        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME}, pg_ready_after=9_999
-    )
-    monkeypatch.setattr(subprocess, "run", router)
-
-    clock = _FakeClock()
-    provider = DockerBackendProvider(
-        monotonic=clock,
-        sleep=clock.advance,
-        pg_readiness_timeout=3.0,
-        pg_poll_interval=1.0,
-    )
-
-    with pytest.raises(PostgresReadinessError):
-        provider.run(_make_plan())
+    assert not any(call[1] == "exec" and "pg_isready" in call for call in router.calls)
 
 
 def test_odoo_health_wait_default_is_300_seconds_and_override_is_retained() -> None:
@@ -1191,23 +1326,28 @@ def test_odoo_health_wait_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     with pytest.raises(ContainerRunError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
+
+
+# -- Odoo-only readiness gating (postgres gate retired) --
+#
+# These were previously parametrized over `("postgres", "odoo")` gates,
+# exercising `_wait_pg_ready` (now removed — design "The delegation seam")
+# alongside `_wait_odoo_healthy`. The postgres-gate coverage moved to
+# `tests/adapters/test_postgres_docker_provider.py`'s `_wait_ready` tests;
+# these REPLACE the retired parametrizations with Odoo-only variants.
 
 
 @pytest.mark.parametrize(
-    ("gate", "budget", "poll_interval", "expected_timeouts", "expected_sleeps"),
+    ("budget", "poll_interval", "expected_timeouts", "expected_sleeps"),
     [
-        ("postgres", 2.5, 1.0, [2.5, 0.6], [1.0]),
-        ("odoo", 2.5, 1.0, [2.5, 0.6], [1.0]),
-        ("postgres", 1.2, 1.0, [1.2], [0.3]),
-        ("odoo", 1.2, 1.0, [1.2], [0.3]),
-        ("postgres", 0.0, 1.0, [], []),
-        ("odoo", 0.1, 1.0, [0.1], []),
+        (2.5, 1.0, [2.5, 0.6], [1.0]),
+        (1.2, 1.0, [1.2], [0.3]),
+        (0.1, 1.0, [0.1], []),
     ],
 )
 def test_readiness_deadline_caps_probes_and_charges_invocations_and_sleeps(
     monkeypatch: pytest.MonkeyPatch,
-    gate: str,
     budget: float,
     poll_interval: float,
     expected_timeouts: list[float],
@@ -1222,11 +1362,9 @@ def test_readiness_deadline_caps_probes_and_charges_invocations_and_sleeps(
         assert isinstance(timeout, float)
         timeouts.append(timeout)
         clock.advance(min(0.9, timeout))
-        if gate == "odoo":
-            return _FakeCompletedProcess(
-                0, stdout=json.dumps([{"State": {"Health": {"Status": "starting"}}}])
-            )
-        return _FakeCompletedProcess(2)
+        return _FakeCompletedProcess(
+            0, stdout=json.dumps([{"State": {"Health": {"Status": "starting"}}}])
+        )
 
     def fake_sleep(seconds: float) -> None:
         sleeps.append(seconds)
@@ -1235,34 +1373,22 @@ def test_readiness_deadline_caps_probes_and_charges_invocations_and_sleeps(
     monkeypatch.setattr(subprocess, "run", fake_run)
     provider = DockerBackendProvider(
         docker_timeout=30.0,
-        pg_readiness_timeout=budget,
-        pg_poll_interval=poll_interval,
         health_wait_timeout=budget,
         health_poll_interval=poll_interval,
         monotonic=clock,
         sleep=fake_sleep,
     )
 
-    error = PostgresReadinessError if gate == "postgres" else ContainerRunError
-    with pytest.raises(error):
-        if gate == "postgres":
-            provider._wait_pg_ready(_make_plan().postgres)
-        else:
-            provider._wait_odoo_healthy(_make_plan().odoo)
+    with pytest.raises(ContainerRunError):
+        provider._wait_odoo_healthy(_make_plan().odoo)
 
     assert timeouts == pytest.approx(expected_timeouts)
     assert sleeps == pytest.approx(expected_sleeps)
     assert clock.now <= budget + 0.9
 
 
-@pytest.mark.parametrize(
-    ("gate", "error"),
-    [("postgres", PostgresReadinessError), ("odoo", ContainerRunError)],
-)
 def test_exhausted_readiness_deadline_does_not_start_zero_timeout_probe(
     monkeypatch: pytest.MonkeyPatch,
-    gate: str,
-    error: type[Exception],
 ) -> None:
     calls = 0
 
@@ -1274,24 +1400,16 @@ def test_exhausted_readiness_deadline_does_not_start_zero_timeout_probe(
         raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    provider = DockerBackendProvider(
-        pg_readiness_timeout=0.0,
-        health_wait_timeout=0.0,
-        monotonic=lambda: 10.0,
-    )
+    provider = DockerBackendProvider(health_wait_timeout=0.0, monotonic=lambda: 10.0)
 
-    with pytest.raises(error):
-        if gate == "postgres":
-            provider._wait_pg_ready(_make_plan().postgres)
-        else:
-            provider._wait_odoo_healthy(_make_plan().odoo)
+    with pytest.raises(ContainerRunError):
+        provider._wait_odoo_healthy(_make_plan().odoo)
 
     assert calls == 0
 
 
-@pytest.mark.parametrize("gate", ["postgres", "odoo"])
 def test_readiness_probe_timeout_before_deadline_remains_docker_unavailable(
-    monkeypatch: pytest.MonkeyPatch, gate: str
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         timeout = kwargs["timeout"]
@@ -1299,22 +1417,14 @@ def test_readiness_probe_timeout_before_deadline_remains_docker_unavailable(
         raise subprocess.TimeoutExpired(cmd=argv, timeout=timeout)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    provider = DockerBackendProvider(
-        pg_readiness_timeout=1.0,
-        health_wait_timeout=1.0,
-        monotonic=lambda: 10.0,
-    )
+    provider = DockerBackendProvider(health_wait_timeout=1.0, monotonic=lambda: 10.0)
 
     with pytest.raises(DockerUnavailableError):
-        if gate == "postgres":
-            provider._wait_pg_ready(_make_plan().postgres)
-        else:
-            provider._wait_odoo_healthy(_make_plan().odoo)
+        provider._wait_odoo_healthy(_make_plan().odoo)
 
 
-@pytest.mark.parametrize("gate", ["postgres", "odoo"])
 def test_readiness_accepts_success_from_final_budgeted_probe(
-    monkeypatch: pytest.MonkeyPatch, gate: str
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     clock = _FakeClock()
     timeouts: list[float] = []
@@ -1325,24 +1435,18 @@ def test_readiness_accepts_success_from_final_budgeted_probe(
         timeouts.append(timeout)
         clock.advance(min(0.5, timeout))
         if len(timeouts) == 2:
-            stdout = _healthy_inspect(ODOO_NAME) if gate == "odoo" else ""
-            return _FakeCompletedProcess(0, stdout=stdout)
+            return _FakeCompletedProcess(0, stdout=_healthy_inspect(ODOO_NAME))
         return _FakeCompletedProcess(2)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     provider = DockerBackendProvider(
-        pg_readiness_timeout=1.25,
-        pg_poll_interval=0.5,
         health_wait_timeout=1.25,
         health_poll_interval=0.5,
         monotonic=clock,
         sleep=clock.advance,
     )
 
-    if gate == "postgres":
-        provider._wait_pg_ready(_make_plan().postgres)
-    else:
-        provider._wait_odoo_healthy(_make_plan().odoo)
+    provider._wait_odoo_healthy(_make_plan().odoo)
 
     assert timeouts == pytest.approx([1.25, 0.25])
 
@@ -1354,7 +1458,7 @@ def test_run_pulls_exact_digest_image_ref_before_odoo_start(
     monkeypatch.setattr(subprocess, "run", router)
 
     provider = DockerBackendProvider(sleep=lambda _seconds: None)
-    provider.run(_make_digest_plan())
+    _run(provider, _make_digest_plan())
 
     pull_call = next(c for c in router.calls if c[1] == "pull")
     odoo_run_idx = next(i for i, c in enumerate(router.calls) if c[1] == "run" and ODOO_NAME in c)
@@ -1431,7 +1535,7 @@ def test_run_pull_failures_map_to_typed_backend_errors(
     provider = DockerBackendProvider(sleep=lambda _seconds: None)
 
     with pytest.raises(expected_error):
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
     assert any(call[1] == "pull" for call in router.calls)
     assert not any(call[1] == "run" for call in router.calls)
@@ -1447,7 +1551,7 @@ def test_run_maps_generic_pull_failure_after_local_image_miss(
     monkeypatch.setattr(subprocess, "run", router)
 
     with pytest.raises(ContainerRunError, match="unexpected pull failure: checksum mismatch"):
-        DockerBackendProvider(sleep=lambda _seconds: None).run(_make_plan())
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan())
 
     inspect_idx = router.calls.index(["docker", "image", "inspect", _make_plan().odoo.image])
     pull_idx = next(i for i, call in enumerate(router.calls) if call[1] == "pull")
@@ -1461,11 +1565,16 @@ def test_run_maps_generic_pull_failure_after_local_image_miss(
 def test_partial_failure_rollback_removes_only_created_resources(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Two-ledger rollback (design "Rollback Coordination"): the postgres leg
+    # is torn down via `db_provider.cleanup(receipt)` (R4 fix), never via
+    # `docker rm -f`/`docker volume rm` issued by the backend itself — only
+    # the Odoo container and the filestore volume go through the router.
     router = _make_router(
-        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME},
         odoo_healthy_after=9_999,
     )
     monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider()
 
     clock = _FakeClock()
     provider = DockerBackendProvider(
@@ -1476,30 +1585,41 @@ def test_partial_failure_rollback_removes_only_created_resources(
     )
 
     with pytest.raises(ContainerRunError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan(), fake_db)
 
     rm_calls = [c for c in router.calls if c[1] == "rm" and "-f" in c]
     vol_rm_calls = [c for c in router.calls if c[1:3] == ["volume", "rm"]]
     net_rm_calls = [c for c in router.calls if c[1:3] == ["network", "rm"]]
 
-    assert [c[-1] for c in rm_calls] == [BOOTSTRAP_NAME, ODOO_NAME, DB_NAME]
-    assert {c[-1] for c in vol_rm_calls} == {PGDATA_VOL, FILESTORE_VOL}
+    assert [c[-1] for c in rm_calls] == [BOOTSTRAP_NAME, ODOO_NAME]
+    assert {c[-1] for c in vol_rm_calls} == {FILESTORE_VOL}
     assert net_rm_calls[0][-1] == NETWORK
+    assert len(fake_db.cleanup_calls) == 1
+    assert fake_db.delete_calls == []
+    # R4 fix: the freshly-created pgdata volume (data_volume_ownership ==
+    # CREATED by default) must be fully reclaimed via `cleanup()`, not just
+    # the container — this is the exact resource the pre-fix `delete()`-only
+    # rollback path silently leaked.
+    assert PGDATA_VOL in fake_db.removed_resource_ids
+    assert DB_NAME in fake_db.removed_resource_ids
 
-    rm_idx = router.calls.index(rm_calls[0])
+    odoo_rm_idx = next(
+        i for i, c in enumerate(router.calls) if c == ["docker", "rm", "-f", "-v", ODOO_NAME]
+    )
     vol_idx = min(router.calls.index(c) for c in vol_rm_calls)
     net_idx = router.calls.index(net_rm_calls[0])
-    assert rm_idx < vol_idx < net_idx
+    assert odoo_rm_idx < vol_idx < net_idx
 
 
 def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """One failing teardown step (odoo `docker rm -f -v` times out) must not
 
-    abort the remaining teardowns (pg container, both volumes, network) AND
-    must not mask the original `run()` failure that triggered rollback.
+    abort the remaining teardowns (the delegated postgres leg, the filestore
+    volume, the network) AND must not mask the original `run()` failure
+    that triggered rollback.
     """
     router = _make_router(
-        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME},
         odoo_healthy_after=9_999,
     )
 
@@ -1509,6 +1629,7 @@ def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.M
         return router(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
+    fake_db = _FakeDatabaseProvider()
 
     clock = _FakeClock()
     provider = DockerBackendProvider(
@@ -1519,18 +1640,21 @@ def test_rollback_continues_after_one_teardown_step_raises(monkeypatch: pytest.M
     )
 
     with pytest.raises(ContainerRunError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan(), fake_db)
 
     rm_calls = [c for c in router.calls if c[1] == "rm" and "-f" in c]
     vol_rm_calls = [c for c in router.calls if c[1:3] == ["volume", "rm"]]
     net_rm_calls = [c for c in router.calls if c[1:3] == ["network", "rm"]]
 
     # The odoo `rm` call itself raised (recorded only via router when it
-    # doesn't raise) — but the pg container's `rm` still ran, and so did
-    # both volume removals and the network removal.
-    assert [c[-1] for c in rm_calls] == [BOOTSTRAP_NAME, DB_NAME]
-    assert {c[-1] for c in vol_rm_calls} == {PGDATA_VOL, FILESTORE_VOL}
+    # doesn't raise) — but the delegated postgres leg's `cleanup()` still
+    # ran (R4 fix), and so did the filestore volume removal and the network
+    # removal.
+    assert [c[-1] for c in rm_calls] == [BOOTSTRAP_NAME]
+    assert {c[-1] for c in vol_rm_calls} == {FILESTORE_VOL}
     assert net_rm_calls[0][-1] == NETWORK
+    assert len(fake_db.cleanup_calls) == 1
+    assert fake_db.delete_calls == []
 
 
 def test_readiness_timeout_reports_selected_inspect_and_bounded_combined_logs_before_rollback(
@@ -1579,7 +1703,7 @@ def test_readiness_timeout_reports_selected_inspect_and_bounded_combined_logs_be
     )
 
     with pytest.raises(ContainerRunError) as excinfo:
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
     message = str(excinfo.value)
     assert "odoo readiness timed out after 1s" in message
@@ -1630,7 +1754,7 @@ def test_readiness_timeout_uses_unavailable_markers_when_capture_fails(
     )
 
     with pytest.raises(ContainerRunError) as excinfo:
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
     message = str(excinfo.value)
     assert "final_health=unknown" in message
@@ -1699,7 +1823,7 @@ def test_readiness_timeout_redacts_resolved_and_planned_environment_values_longe
     )
 
     with pytest.raises(ContainerRunError) as excinfo:
-        provider.run(plan)
+        _run(provider, plan)
 
     message = str(excinfo.value)
     assert "[REDACTED]-suffix" not in message
@@ -1733,7 +1857,7 @@ def test_rollback_failure_is_reported_with_its_residual_resource(
     )
 
     with pytest.raises(ContainerRunError) as excinfo:
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
     message = str(excinfo.value)
     assert "odoo readiness timed out after 1s" in message
@@ -1757,7 +1881,7 @@ def test_reattach_then_fail_preserves_existing_volume(monkeypatch: pytest.Monkey
     )
 
     with pytest.raises(ContainerRunError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
     vol_rm_calls = [c for c in router.calls if c[1:3] == ["volume", "rm"]]
     assert vol_rm_calls == []
@@ -1775,7 +1899,7 @@ def test_run_docker_unavailable_missing_binary(monkeypatch: pytest.MonkeyPatch) 
     provider = DockerBackendProvider()
 
     with pytest.raises(DockerUnavailableError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
 
 def test_run_docker_unavailable_daemon_down_stderr_marker(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1789,15 +1913,20 @@ def test_run_docker_unavailable_daemon_down_stderr_marker(monkeypatch: pytest.Mo
     provider = DockerBackendProvider()
 
     with pytest.raises(DockerUnavailableError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
 
 def test_run_image_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    # Only the Odoo image-not-found path remains reachable through the
+    # backend's own `_run_container`/`_exec` (which classifies this stderr
+    # marker); the postgres leg is delegated (design "The delegation
+    # seam"), so `data_volume_ownership=ADOPTED` skips the bootstrap run
+    # and isolates the failure to the normal Odoo `docker run`.
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
 
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
-        if argv[1] == "run":
-            return _FakeCompletedProcess(1, stderr="Unable to find image 'postgres:16' locally")
+        if argv[1] == "run" and ODOO_NAME in argv:
+            return _FakeCompletedProcess(1, stderr="Unable to find image 'odoo-forge-odoo' locally")
         return router(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
@@ -1805,7 +1934,11 @@ def test_run_image_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = DockerBackendProvider()
 
     with pytest.raises(ImageNotFoundError):
-        provider.run(_make_plan())
+        _run(
+            provider,
+            _make_plan(),
+            _FakeDatabaseProvider(data_volume_ownership=ResourceOwnership.ADOPTED),
+        )
 
 
 def test_run_refuses_existing_instance(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1815,7 +1948,7 @@ def test_run_refuses_existing_instance(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = DockerBackendProvider()
 
     with pytest.raises(InstanceExistsError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan())
 
     assert not any(c[1:3] == ["network", "create"] for c in router.calls)
 
@@ -2083,117 +2216,224 @@ def test_signature_conformance_per_method() -> None:
         )
 
 
-# -- characterization: baseline inline Postgres leg (Phase 0, pre-cutover) --
+# -- Phase 6/7: backend delegation seam + two-ledger rollback --
 #
-# These tests pin the CURRENT `run()` behavior before the Postgres leg is
-# delegated to an injected `DatabaseProvider` (design "The delegation seam").
-# They must stay GREEN against unmodified production code; a failure here
-# means the characterization itself is wrong, not that production code is
-# broken.
+# REPLACES the retired Phase 0 characterization tests
+# (`test_run_postgres_leg_calls_ensure_volume_then_run_container_then_wait_pg_ready`,
+# `test_run_bootstrap_gate_is_the_raw_ensure_volume_return_value`,
+# `test_run_rollback_order_on_odoo_start_failure_is_containers_then_volumes_then_network`)
+# that pinned the pre-cutover inline Postgres leg and single-ledger
+# rollback order — those tests explicitly documented that Phase 6/7 would
+# replace them, so this replacement is the deliberate, visible change they
+# were designed to require, not a silent regression.
 
 
-def test_run_postgres_leg_calls_ensure_volume_then_run_container_then_wait_pg_ready(
+def test_run_requires_an_injected_database_provider() -> None:
+    with pytest.raises(ContainerRunError, match="DatabaseProvider"):
+        DockerBackendProvider().run(_make_plan())
+
+
+def test_run_requires_postgres_credentials_on_the_plan() -> None:
+    plan = _make_plan().model_copy(update={"postgres_credentials": None})
+    provider = DockerBackendProvider()
+    provider._database_provider = _FakeDatabaseProvider()
+
+    with pytest.raises(ContainerRunError, match="postgres_credentials"):
+        provider.run(plan)
+
+
+def test_run_delegates_postgres_exclusively_to_the_injected_database_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins the current inline sequence for the Postgres leg of `run()`.
-
-    Phase 6 of this change replaces this exact sequence with a single
-    `self._database_provider.provision(db_spec, postgres_credentials)` call
-    — this test exists so that replacement is a deliberate, visible change
-    rather than a silent regression.
-    """
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
-    provider = DockerBackendProvider(sleep=lambda _seconds: None)
-    calls: list[str] = []
-    original_ensure_volume = provider._ensure_volume
-    original_run_container = provider._run_container
-    original_wait_pg_ready = provider._wait_pg_ready
+    fake_db = _FakeDatabaseProvider()
 
-    def tracking_ensure_volume(spec: VolumeSpec, created: list[object]) -> bool:
-        calls.append(f"_ensure_volume:{spec.name}")
-        return original_ensure_volume(spec, created)
+    _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan(), fake_db)
 
-    def tracking_run_container(spec: ContainerSpec, created: list[object]) -> None:
-        calls.append(f"_run_container:{spec.name}")
-        original_run_container(spec, created)
-
-    def tracking_wait_pg_ready(spec: ContainerSpec) -> None:
-        calls.append(f"_wait_pg_ready:{spec.name}")
-        original_wait_pg_ready(spec)
-
-    monkeypatch.setattr(provider, "_ensure_volume", tracking_ensure_volume)
-    monkeypatch.setattr(provider, "_run_container", tracking_run_container)
-    monkeypatch.setattr(provider, "_wait_pg_ready", tracking_wait_pg_ready)
-
-    provider.run(_make_plan())
-
-    postgres_calls = [
-        call for call in calls if call.endswith(f":{PGDATA_VOL}") or call.endswith(f":{DB_NAME}")
-    ]
-    assert postgres_calls == [
-        f"_ensure_volume:{PGDATA_VOL}",
-        f"_run_container:{DB_NAME}",
-        f"_wait_pg_ready:{DB_NAME}",
-    ]
+    assert len(fake_db.provision_calls) == 1
+    spec, credentials = fake_db.provision_calls[0]
+    assert spec.name == DB_NAME
+    assert spec.network == NETWORK
+    assert spec.data_volume == PGDATA_VOL
+    assert spec.env["POSTGRES_USER"] == "odoo"
+    assert spec.env["POSTGRES_DB"] == "proj"
+    assert credentials == CredentialHandle("local-backend/postgres-password")
+    assert not any(call[1] == "run" and DB_NAME in call for call in router.calls)
+    assert not any(call[1] == "exec" and "pg_isready" in call for call in router.calls)
 
 
-@pytest.mark.parametrize("created_flag", [True, False])
-def test_run_bootstrap_gate_is_the_raw_ensure_volume_return_value(
-    monkeypatch: pytest.MonkeyPatch, created_flag: bool
+@pytest.mark.parametrize(
+    ("ownership", "expect_bootstrap"),
+    [(ResourceOwnership.CREATED, True), (ResourceOwnership.ADOPTED, False)],
+)
+def test_run_bootstrap_gate_is_data_volume_ownership_not_container_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+    ownership: ResourceOwnership,
+    expect_bootstrap: bool,
 ) -> None:
-    """Pins the current `pgdata_created` gate as the literal `_ensure_volume`
-    return value, replaced in Phase 6 by `creation.ref.ownership == CREATED`
-    (design "Fresh-pgdata signal via ownership")."""
-    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    """Gates the bootstrap-seed on `creation.data_volume_ownership`, never on
+
+    `creation.ref.ownership` (which is always `CREATED` for the container —
+    design "Fresh-pgdata Signal Gates Odoo Bootstrap-Seed", spec r2).
+    """
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
     monkeypatch.setattr(subprocess, "run", router)
-    provider = DockerBackendProvider(sleep=lambda _seconds: None)
 
-    def stub_ensure_volume(spec: VolumeSpec, created: list[object]) -> bool:
-        created.append(("volume", spec.name, "stub-token"))
-        return created_flag
-
-    monkeypatch.setattr(provider, "_ensure_volume", stub_ensure_volume)
-
-    provider.run(_make_plan())
+    _run(
+        DockerBackendProvider(sleep=lambda _seconds: None),
+        _make_plan(),
+        _FakeDatabaseProvider(data_volume_ownership=ownership),
+    )
 
     ran_bootstrap = any(
         call[1] == "run" and call[call.index("--name") + 1] == BOOTSTRAP_NAME
         for call in router.calls
     )
-    assert ran_bootstrap is created_flag
+    assert ran_bootstrap is expect_bootstrap
 
 
-def test_run_rollback_order_on_odoo_start_failure_is_containers_then_volumes_then_network(
+def test_run_rollback_order_on_odoo_start_failure_is_odoo_then_database_then_filestore_then_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pins the current single-ledger rollback order when Odoo never becomes
-    healthy: postgres/odoo/bootstrap containers first (reverse-created
-    order), then both volumes, then the network last.
+    """Two-ledger rollback order when Odoo never becomes healthy (design
 
-    Phase 7 of this change splits this into two coordinated ledgers (design
-    "Rollback Coordination (two ledgers)") — this test exists so that split
-    is deliberate and visible rather than a silent behavior change.
+    "Rollback Coordination (two ledgers)"): Odoo container first (reverse-
+    created order), then the delegated postgres leg via `db_provider`, then
+    the filestore volume, then the network last.
     """
     router = _make_router(
-        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME},
         odoo_healthy_after=9_999,
     )
     monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider()
     clock = _FakeClock()
     provider = DockerBackendProvider(
         monotonic=clock, sleep=clock.advance, health_wait_timeout=1.0, health_poll_interval=1.0
     )
 
     with pytest.raises(ContainerRunError):
-        provider.run(_make_plan())
+        _run(provider, _make_plan(), fake_db)
 
     rm_calls = [call for call in router.calls if call[1] == "rm" and "-f" in call]
     vol_rm_calls = [call for call in router.calls if call[1:3] == ["volume", "rm"]]
     net_rm_calls = [call for call in router.calls if call[1:3] == ["network", "rm"]]
 
-    assert [call[-1] for call in rm_calls] == [BOOTSTRAP_NAME, ODOO_NAME, DB_NAME]
+    assert [call[-1] for call in rm_calls] == [BOOTSTRAP_NAME, ODOO_NAME]
+    assert len(fake_db.cleanup_calls) == 1
+    assert fake_db.delete_calls == []
     last_container_rm_idx = router.calls.index(rm_calls[-1])
     first_volume_rm_idx = min(router.calls.index(call) for call in vol_rm_calls)
     network_rm_idx = router.calls.index(net_rm_calls[0])
     assert last_container_rm_idx < first_volume_rm_idx < network_rm_idx
+
+
+def test_run_provision_failure_never_touches_postgres_leg_via_docker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a Postgres provisioning failure, the adapter has already
+
+    self-cleaned its own leg via its receipt — the backend rolls back only
+    what it already created (the network) and never calls `delete()`/
+    `cleanup()` on a `DatabaseCreation` that was never returned (design
+    "on Postgres provisioning failure the adapter self-cleans").
+    """
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider(provision_error=ContainerRunError("adapter self-cleaned"))
+
+    with pytest.raises(ContainerRunError, match="adapter self-cleaned"):
+        _run(DockerBackendProvider(sleep=lambda _seconds: None), _make_plan(), fake_db)
+
+    assert fake_db.delete_calls == []
+    assert fake_db.cleanup_calls == []
+    assert ["docker", "network", "rm", NETWORK] in router.calls
+    assert ["docker", "volume", "rm", FILESTORE_VOL] in router.calls
+
+
+def test_run_rollback_on_backend_triggered_failure_removes_freshly_created_pgdata_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """R4 fix (CRITICAL volume-leak regression): a backend-triggered rollback
+
+    (here, Odoo never becoming healthy) after a successful Postgres
+    provision whose `data_volume_ownership == CREATED` MUST fully remove the
+    freshly-created pgdata volume, not just the container. Pre-fix,
+    `_rollback_database` called `delete(creation)` first — which the real
+    adapter's `delete()` implements as removing ONLY
+    `creation.ref.identifier` (the container) — and `delete()` succeeded
+    without raising, so `_rollback_database` returned `True` and never
+    reached `cleanup(receipt)`, silently leaking the volume. This test is
+    RED against that code (asserts `cleanup()` is the rollback path and the
+    volume ends up removed) and GREEN once `_rollback_database` calls
+    `cleanup(receipt)` unconditionally.
+    """
+    router = _make_router(
+        not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider(data_volume_ownership=ResourceOwnership.CREATED)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock, sleep=clock.advance, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
+
+    with pytest.raises(ContainerRunError):
+        _run(provider, _make_plan(), fake_db)
+
+    assert fake_db.delete_calls == []
+    assert len(fake_db.cleanup_calls) == 1
+    assert fake_db.cleanup_calls[0].owned_resource_ids == (DB_NAME, PGDATA_VOL)
+    assert PGDATA_VOL in fake_db.removed_resource_ids
+    assert DB_NAME in fake_db.removed_resource_ids
+
+
+def test_run_rollback_on_backend_triggered_failure_preserves_adopted_pgdata_volume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Symmetric guard: an ADOPTED (pre-existing) data volume is never added
+
+    to `owned_resource_ids` by the adapter, so `cleanup(receipt)` — the
+    rollback path after the R4 fix — must never remove it either.
+    """
+    router = _make_router(
+        not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider(data_volume_ownership=ResourceOwnership.ADOPTED)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock, sleep=clock.advance, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
+
+    with pytest.raises(ContainerRunError):
+        _run(provider, _make_plan(), fake_db)
+
+    assert fake_db.delete_calls == []
+    assert len(fake_db.cleanup_calls) == 1
+    assert fake_db.cleanup_calls[0].owned_resource_ids == (DB_NAME,)
+    assert PGDATA_VOL not in fake_db.removed_resource_ids
+    assert DB_NAME in fake_db.removed_resource_ids
+
+
+def test_run_rollback_reports_residual_when_cleanup_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    router = _make_router(
+        not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider(cleanup_residual=True)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock, sleep=clock.advance, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
+
+    with pytest.raises(ContainerRunError) as excinfo:
+        _run(provider, _make_plan(), fake_db)
+
+    assert f"cleanup incomplete: database={DB_NAME}" in str(excinfo.value)
