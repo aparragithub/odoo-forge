@@ -2081,3 +2081,119 @@ def test_signature_conformance_per_method() -> None:
         assert str(port_hints["return"]) == str(impl_hints["return"]), (
             f"{name} return: {port_hints['return']!r} != {impl_hints['return']!r}"
         )
+
+
+# -- characterization: baseline inline Postgres leg (Phase 0, pre-cutover) --
+#
+# These tests pin the CURRENT `run()` behavior before the Postgres leg is
+# delegated to an injected `DatabaseProvider` (design "The delegation seam").
+# They must stay GREEN against unmodified production code; a failure here
+# means the characterization itself is wrong, not that production code is
+# broken.
+
+
+def test_run_postgres_leg_calls_ensure_volume_then_run_container_then_wait_pg_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the current inline sequence for the Postgres leg of `run()`.
+
+    Phase 6 of this change replaces this exact sequence with a single
+    `self._database_provider.provision(db_spec, postgres_credentials)` call
+    — this test exists so that replacement is a deliberate, visible change
+    rather than a silent regression.
+    """
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+    provider = DockerBackendProvider(sleep=lambda _seconds: None)
+    calls: list[str] = []
+    original_ensure_volume = provider._ensure_volume
+    original_run_container = provider._run_container
+    original_wait_pg_ready = provider._wait_pg_ready
+
+    def tracking_ensure_volume(spec: VolumeSpec, created: list[object]) -> bool:
+        calls.append(f"_ensure_volume:{spec.name}")
+        return original_ensure_volume(spec, created)
+
+    def tracking_run_container(spec: ContainerSpec, created: list[object]) -> None:
+        calls.append(f"_run_container:{spec.name}")
+        original_run_container(spec, created)
+
+    def tracking_wait_pg_ready(spec: ContainerSpec) -> None:
+        calls.append(f"_wait_pg_ready:{spec.name}")
+        original_wait_pg_ready(spec)
+
+    monkeypatch.setattr(provider, "_ensure_volume", tracking_ensure_volume)
+    monkeypatch.setattr(provider, "_run_container", tracking_run_container)
+    monkeypatch.setattr(provider, "_wait_pg_ready", tracking_wait_pg_ready)
+
+    provider.run(_make_plan())
+
+    postgres_calls = [
+        call for call in calls if call.endswith(f":{PGDATA_VOL}") or call.endswith(f":{DB_NAME}")
+    ]
+    assert postgres_calls == [
+        f"_ensure_volume:{PGDATA_VOL}",
+        f"_run_container:{DB_NAME}",
+        f"_wait_pg_ready:{DB_NAME}",
+    ]
+
+
+@pytest.mark.parametrize("created_flag", [True, False])
+def test_run_bootstrap_gate_is_the_raw_ensure_volume_return_value(
+    monkeypatch: pytest.MonkeyPatch, created_flag: bool
+) -> None:
+    """Pins the current `pgdata_created` gate as the literal `_ensure_volume`
+    return value, replaced in Phase 6 by `creation.ref.ownership == CREATED`
+    (design "Fresh-pgdata signal via ownership")."""
+    router = _make_router(not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+    provider = DockerBackendProvider(sleep=lambda _seconds: None)
+
+    def stub_ensure_volume(spec: VolumeSpec, created: list[object]) -> bool:
+        created.append(("volume", spec.name, "stub-token"))
+        return created_flag
+
+    monkeypatch.setattr(provider, "_ensure_volume", stub_ensure_volume)
+
+    provider.run(_make_plan())
+
+    ran_bootstrap = any(
+        call[1] == "run" and call[call.index("--name") + 1] == BOOTSTRAP_NAME
+        for call in router.calls
+    )
+    assert ran_bootstrap is created_flag
+
+
+def test_run_rollback_order_on_odoo_start_failure_is_containers_then_volumes_then_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pins the current single-ledger rollback order when Odoo never becomes
+    healthy: postgres/odoo/bootstrap containers first (reverse-created
+    order), then both volumes, then the network last.
+
+    Phase 7 of this change splits this into two coordinated ledgers (design
+    "Rollback Coordination (two ledgers)") — this test exists so that split
+    is deliberate and visible rather than a silent behavior change.
+    """
+    router = _make_router(
+        not_found={NETWORK, PGDATA_VOL, FILESTORE_VOL, DB_NAME, ODOO_NAME},
+        odoo_healthy_after=9_999,
+    )
+    monkeypatch.setattr(subprocess, "run", router)
+    clock = _FakeClock()
+    provider = DockerBackendProvider(
+        monotonic=clock, sleep=clock.advance, health_wait_timeout=1.0, health_poll_interval=1.0
+    )
+
+    with pytest.raises(ContainerRunError):
+        provider.run(_make_plan())
+
+    rm_calls = [call for call in router.calls if call[1] == "rm" and "-f" in call]
+    vol_rm_calls = [call for call in router.calls if call[1:3] == ["volume", "rm"]]
+    net_rm_calls = [call for call in router.calls if call[1:3] == ["network", "rm"]]
+
+    assert [call[-1] for call in rm_calls] == [BOOTSTRAP_NAME, ODOO_NAME, DB_NAME]
+    last_container_rm_idx = router.calls.index(rm_calls[-1])
+    first_volume_rm_idx = min(router.calls.index(call) for call in vol_rm_calls)
+    network_rm_idx = router.calls.index(net_rm_calls[0])
+    assert last_container_rm_idx < first_volume_rm_idx < network_rm_idx
