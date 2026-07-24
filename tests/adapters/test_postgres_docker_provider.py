@@ -1593,6 +1593,55 @@ def test_remove_owned_volume_issues_docker_volume_rm_not_docker_rm(tmp_path: Pat
     assert ("docker", "rm", "-f", "pgdata-42") not in calls
 
 
+def test_cleanup_skips_retire_absent_for_an_already_removed_volume_never_tracked_by_authority(
+    tmp_path: Path,
+) -> None:
+    """WARNING fix: only container-kind resources are ever `reserve()`d/
+
+    `bind()`d/`activate()`d through the ownership authority — a volume-kind
+    resource id has no authority record at all. When that volume is already
+    externally removed (`docker inspect` reports "no such object"),
+    `_remove_owned`'s absent-resource branch must skip `retire_absent`
+    entirely (the `has_record` guard) rather than forcing it through
+    `retire_absent`'s active/retired state guard, which would raise
+    `AuthorityStateError` and turn a legitimate already-absent-volume
+    cleanup into a false `RollbackIncompleteError`.
+    """
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    # The container leg's own lifecycle already created the authority's
+    # state file (reserve/bind/activate), so `has_record` can safely
+    # `read()` it — the volume id was simply never written through it.
+    authority.write(
+        {
+            "operation": "postgres-docker:token-42",
+            "kind": "container",
+            "name": "database-42",
+            "docker_id": "immutable-database-42",
+            "state": "active",
+        }
+    )
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="postgres-docker:token-42"),
+        owned_resource_ids=("database-42", "pgdata-42"),
+    )
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["docker", "inspect"]:
+            name = argv[-1]
+            return subprocess.CompletedProcess(argv, 1, "", f"Error: No such object: {name}")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    provider = DockerPostgresqlDatabaseProvider(runner=runner, ownership_authority=authority)
+
+    report = provider.cleanup(receipt)
+
+    assert report.residual_failures == ()
+    last_record = authority.read()["records"][-1]
+    assert last_record["name"] == "database-42"
+    assert last_record["state"] == "retired"
+    assert not authority.has_record("postgres-docker:token-42", "pgdata-42")
+
+
 # WARNING fix: restore() must roll back its own freshly-created volume.
 
 

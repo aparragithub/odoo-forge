@@ -61,6 +61,11 @@ class BackendPlan(BaseModel):
     volumes: list[VolumeSpec]
     postgres: ContainerSpec
     odoo: ContainerSpec
+    # Dedicated carrier for the postgres credential handle
+    # (CAP-DATABASE-RUNTIME-CUTOVER, design "Credential convergence").
+    # Postgres injection is owned by the `odoo_forge_postgres_docker`
+    # adapter's `PostgreSQLSecretInjection`, never by `postgres.secret_env`.
+    postgres_credentials: CredentialHandle | None = None
 
 
 def _labels(project: str, instance: str, role: str | None = None) -> dict[str, str]:
@@ -80,6 +85,7 @@ def plan_backend(
     instance: str = "default",
     odoo_image: str | None = None,
     credentials: BackendCredentialBindings | None = None,
+    postgres_credentials: CredentialHandle | None = None,
 ) -> BackendPlan:
     """Compute a `BackendPlan` from validated evidence. Pure, zero I/O."""
     odoo_http_port = None
@@ -121,9 +127,10 @@ def plan_backend(
             "POSTGRES_USER": _DB_USER,
             "POSTGRES_DB": db_name,
         },
-        secret_env=(
-            {"POSTGRES_PASSWORD": credentials.postgres_password} if credentials is not None else {}
-        ),
+        # Postgres credential injection is owned by the adapter's
+        # `PostgreSQLSecretInjection`; the handle rides `postgres_credentials`
+        # below, never `secret_env` (design "Credential convergence").
+        secret_env={},
         mounts=[],
         labels=_labels(project, instance, role="postgres"),
         volumes=[pgdata_volume],
@@ -165,6 +172,7 @@ def plan_backend(
         volumes=[pgdata_volume, filestore_volume],
         postgres=postgres_spec,
         odoo=odoo_spec,
+        postgres_credentials=postgres_credentials,
     )
 
 

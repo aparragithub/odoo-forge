@@ -19,9 +19,15 @@ class _OpaqueCredentialValue(BaseModel):
 
 
 class BackendCredentialBindings(_OpaqueCredentialValue):
-    """Opaque handles required by the local backend planner."""
+    """Opaque handles required by the local backend planner.
 
-    postgres_password: CredentialHandle
+    Postgres credential injection is owned exclusively by the
+    `odoo_forge_postgres_docker` adapter's `PostgreSQLSecretInjection`
+    (CAP-DATABASE-RUNTIME-CUTOVER, design "Credential convergence"); the
+    postgres handle travels through `BackendPlan.postgres_credentials`
+    instead of this binding set.
+    """
+
     odoo_db_password: CredentialHandle
 
 
