@@ -28,7 +28,6 @@ from odoo_forge.backend.errors import (
     ImageNotFoundError,
     InstanceExistsError,
     InstanceNotFoundError,
-    PostgresReadinessError,
 )
 from odoo_forge.backend.plan import (
     BackendPlan,
@@ -45,12 +44,11 @@ from odoo_forge.backend.status import (
     parse_status,
 )
 from odoo_forge.credentials.errors import CredentialError
+from odoo_forge.database.types import DatabaseCreation, DatabaseSpec, ResourceOwnership
 from odoo_forge.ports.database_provider import DatabaseProvider
 from odoo_forge_docker.credential_injection import SopsEnvFileInjector
 
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
-DEFAULT_PG_READINESS_TIMEOUT_SECONDS = 30.0
-DEFAULT_PG_POLL_INTERVAL_SECONDS = 1.0
 # Two complete 150s health-failure envelopes permit one recovery window.
 DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS = 300.0
 DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = 5.0
@@ -81,7 +79,12 @@ _ROLE_VOLUME_TARGET: dict[ContainerRole, str] = {
     "odoo": "/var/lib/odoo",
 }
 
-# ("network", name) | ("volume", name) | ("container", name)
+# ("network", name) | ("volume", name) | ("container", name) | ("database", identifier)
+# The "database" marker records the delegated postgres leg's teardown
+# position in the backend's own ledger without duplicating its identity;
+# the actual `DatabaseCreation` needed to roll it back is threaded
+# separately (`_rollback`'s `db_creation` argument) — see two-ledger
+# rollback coordination (design "Rollback Coordination (two ledgers)").
 _CreatedResource = tuple[str, str] | tuple[str, str, str]
 
 
@@ -174,6 +177,23 @@ def _planned_env_values(plan: BackendPlan) -> tuple[str, ...]:
     return (*plan.postgres.env.values(), *plan.odoo.env.values())
 
 
+def _database_spec_from_plan(plan: BackendPlan) -> DatabaseSpec:
+    """Derive the delegated Postgres leg's provider-neutral topology.
+
+    Matches current onboarding behavior: the shared backend network, the
+    `pgdata` named volume, and the planned Postgres env (`POSTGRES_USER`/
+    `POSTGRES_DB`) — never a secret (design "Postgres Secret Injection Owned
+    by Adapter"; credentials flow separately via `plan.postgres_credentials`).
+    """
+    return DatabaseSpec(
+        name=plan.postgres.name,
+        network=plan.network.name,
+        data_volume=plan.postgres.volumes[0].name,
+        env=plan.postgres.env,
+        labels=plan.postgres.labels,
+    )
+
+
 class DockerBackendProvider:
     """Adapter that maps `BackendPlan` specs to `docker` CLI invocations."""
 
@@ -181,8 +201,6 @@ class DockerBackendProvider:
         self,
         *,
         docker_timeout: float = DEFAULT_DOCKER_TIMEOUT_SECONDS,
-        pg_readiness_timeout: float = DEFAULT_PG_READINESS_TIMEOUT_SECONDS,
-        pg_poll_interval: float = DEFAULT_PG_POLL_INTERVAL_SECONDS,
         health_wait_timeout: float = DEFAULT_HEALTH_WAIT_TIMEOUT_SECONDS,
         health_poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL_SECONDS,
         monotonic: Callable[[], float] = time.monotonic,
@@ -191,17 +209,15 @@ class DockerBackendProvider:
         database_provider: DatabaseProvider | None = None,
     ) -> None:
         self._docker_timeout = docker_timeout
-        self._pg_readiness_timeout = pg_readiness_timeout
-        self._pg_poll_interval = pg_poll_interval
         self._health_wait_timeout = health_wait_timeout
         self._health_poll_interval = health_poll_interval
         self._monotonic = monotonic
         self._sleep = sleep
         self._credential_injector = credential_injector or SopsEnvFileInjector()
-        # Constructor-injected only in this slice; `run()` does not read
-        # `self._database_provider` yet — the delegation seam that replaces
-        # the inline Postgres `docker run` legs below lands in a follow-up
-        # slice alongside the two-ledger rollback coordination it requires.
+        # Postgres provisioning is delegated exclusively to this port
+        # (design "The delegation seam"); `run()` requires it and raises
+        # `ContainerRunError` up front when it is absent, rather than
+        # failing later with a confusing `AttributeError`.
         self._database_provider = database_provider
 
     def run(self, plan: BackendPlan) -> InstanceRef:
@@ -210,6 +226,16 @@ class DockerBackendProvider:
         # at all — so a single `_container_exists` check already covers both
         # "running" and "stopped" for the refuse-if-exists gate; no separate
         # running-vs-stopped branch is needed here.
+        if self._database_provider is None:
+            raise ContainerRunError(
+                "run() requires a DatabaseProvider injected at construction time "
+                "to delegate Postgres provisioning"
+            )
+        if plan.postgres_credentials is None:
+            raise ContainerRunError(
+                "run() requires plan.postgres_credentials to provision Postgres"
+            )
+
         try:
             self._credential_injector.validate(plan.postgres)
             self._credential_injector.validate(plan.odoo)
@@ -229,18 +255,25 @@ class DockerBackendProvider:
             )
 
         created: list[_CreatedResource] = []
+        db_creation: DatabaseCreation | None = None
         try:
             self._ensure_odoo_image(plan.odoo)
             self._ensure_network(plan.network, created)
-            pgdata_created = self._ensure_volume(plan.postgres.volumes[0], created)
             for volume in plan.volumes:
                 if volume.name != plan.postgres.volumes[0].name:
                     self._ensure_volume(volume, created)
 
-            self._run_container(plan.postgres, created)
-            self._wait_pg_ready(plan.postgres)
+            # Postgres is provisioned exclusively via the injected
+            # `DatabaseProvider` (design "The delegation seam"). On failure
+            # here, the adapter has already self-cleaned its own leg via its
+            # receipt — this backend only needs to roll back what it had
+            # already created (e.g. the network) up to this point.
+            db_creation = self._database_provider.provision(
+                _database_spec_from_plan(plan), plan.postgres_credentials
+            )
+            created.append(("database", db_creation.ref.identifier))
 
-            if pgdata_created:
+            if db_creation.data_volume_ownership == ResourceOwnership.CREATED:
                 self._run_bootstrap(bootstrap, _planned_env_values(plan), created)
                 bootstrap_resource = created[-1]
                 self._exec(["docker", "rm", "-f", "-v", bootstrap_resource[1]])
@@ -255,7 +288,7 @@ class DockerBackendProvider:
                     f"odoo readiness timed out after {self._health_wait_timeout:g}s; "
                     f"{self._readiness_diagnostics(plan.odoo, _planned_env_values(plan))}"
                 )
-            residuals = self._rollback(created)
+            residuals = self._rollback(created, db_creation)
             if residuals:
                 detail = f"{detail}; cleanup incomplete: {', '.join(residuals)}"
             if detail != str(exc):
@@ -453,7 +486,9 @@ class DockerBackendProvider:
             return
         raise ContainerRunError(stderr or f"docker image inspect failed for {spec.image!r}")
 
-    def _rollback(self, created: list[_CreatedResource]) -> list[str]:
+    def _rollback(
+        self, created: list[_CreatedResource], db_creation: DatabaseCreation | None = None
+    ) -> list[str]:
         """Tear down ONLY resources this invocation created, in reverse order.
 
         Best-effort ACROSS EVERY STEP, not just within a single call: each
@@ -464,11 +499,20 @@ class DockerBackendProvider:
         `run()` failure that triggered this rollback — that original
         exception is always what `run()` re-raises to the caller, regardless
         of how much of the cleanup below actually succeeds.
+
+        The `("database", identifier)` marker delegates to the injected
+        `DatabaseProvider` (`db_creation`) instead of shelling `docker`
+        directly — the backend never touches the Postgres container/volume
+        itself (two-ledger rollback, design "Rollback Coordination").
         """
         residuals: list[str] = []
         for resource in reversed(created):
             kind, name = resource[:2]
             try:
+                if kind == "database":
+                    if db_creation is None or not self._rollback_database(db_creation):
+                        residuals.append(f"{kind}={name}")
+                    continue
                 if kind == "container":
                     argv = ["docker", "rm", "-f", "-v", name]
                 elif kind == "volume":
@@ -489,24 +533,32 @@ class DockerBackendProvider:
                 residuals.append(f"{kind}={name}")
         return residuals
 
+    def _rollback_database(self, db_creation: DatabaseCreation) -> bool:
+        """Delegate the Postgres leg's rollback to the injected `DatabaseProvider`.
+
+        Rollback MUST fully reclaim every resource this delegated creation
+        owns — the container AND any data volume the adapter itself just
+        created (`data_volume_ownership == CREATED`). `delete(creation)`
+        removes ONLY the container (`creation.ref.identifier`); it never
+        touches a freshly-created data volume also tracked in
+        `creation.receipt.owned_resource_ids`, so using it as the rollback
+        path silently leaked that volume on every backend-triggered rollback
+        (R4 fix — a CRITICAL regression from the pre-cutover behavior, which
+        removed the volume directly). `cleanup(receipt)` iterates every
+        owned resource id and dispatches removal by resource-kind (volume vs
+        container), so it is the ONLY rollback path used here. A
+        pre-existing (adopted) data volume is never added to
+        `owned_resource_ids` by the adapter, so `cleanup()` never touches it
+        either — that guarantee lives entirely in the adapter's own receipt.
+        """
+        assert self._database_provider is not None
+        try:
+            report = self._database_provider.cleanup(db_creation.receipt)
+            return not report.residual_failures
+        except Exception:
+            return False
+
     # -- readiness gates (injectable clock) ----------------------------------
-
-    def _wait_pg_ready(self, spec: ContainerSpec) -> None:
-        user = spec.env["POSTGRES_USER"]
-        db = spec.env["POSTGRES_DB"]
-        argv = ["docker", "exec", spec.name, "pg_isready", "-h", "127.0.0.1", "-U", user, "-d", db]
-
-        if self._wait_until(
-            lambda timeout: self._run_raw(argv, timeout=timeout).returncode == 0,
-            self._pg_readiness_timeout,
-            self._pg_poll_interval,
-        ):
-            return
-
-        raise PostgresReadinessError(
-            f"postgres container {spec.name!r} did not become TCP-ready "
-            f"within {self._pg_readiness_timeout}s"
-        )
 
     def _wait_odoo_healthy(self, spec: ContainerSpec) -> None:
         argv = ["docker", "inspect", spec.name]

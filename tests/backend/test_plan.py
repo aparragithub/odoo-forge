@@ -223,12 +223,16 @@ class TestPlanBackend:
         manifest = _manifest()
         mount_view = _mount_view()
         credentials = BackendCredentialBindings(
-            postgres_password=CredentialHandle("local-backend/postgres-password"),
             odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
         )
+        postgres_credentials = CredentialHandle("local-backend/postgres-password")
 
-        first = plan_backend(manifest, mount_view, credentials=credentials)
-        second = plan_backend(manifest, mount_view, credentials=credentials)
+        first = plan_backend(
+            manifest, mount_view, credentials=credentials, postgres_credentials=postgres_credentials
+        )
+        second = plan_backend(
+            manifest, mount_view, credentials=credentials, postgres_credentials=postgres_credentials
+        )
 
         assert first == second
 
@@ -280,13 +284,22 @@ def test_backend_plan_shape_matches_design_interfaces() -> None:
 
 def test_backend_plan_keeps_credential_handles_out_of_public_environment() -> None:
     credentials = BackendCredentialBindings(
-        postgres_password=CredentialHandle("local-backend/postgres-password"),
         odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
     )
+    postgres_credentials = CredentialHandle("local-backend/postgres-password")
 
-    plan = plan_backend(_manifest(), _mount_view(), credentials=credentials)
+    plan = plan_backend(
+        _manifest(),
+        _mount_view(),
+        credentials=credentials,
+        postgres_credentials=postgres_credentials,
+    )
 
-    assert plan.postgres.secret_env == {"POSTGRES_PASSWORD": credentials.postgres_password}
+    # Postgres credential injection is owned by the adapter's
+    # `PostgreSQLSecretInjection`; the handle rides `postgres_credentials`,
+    # never `postgres.secret_env` (design "Credential convergence").
+    assert plan.postgres.secret_env == {}
+    assert plan.postgres_credentials == postgres_credentials
     assert plan.odoo.secret_env == {"DB_PASSWORD": credentials.odoo_db_password}
 
 
@@ -298,20 +311,36 @@ def test_backend_plan_never_places_passwords_in_public_environment() -> None:
     assert "DB_PASSWORD" not in plan.odoo.env
 
 
-# -- characterization: baseline `plan_backend` credential emission --
+# -- Phase 4: credential convergence (design "Credential convergence") --
 #
-# Pins the pre-cutover behavior where `plan_backend` emits `POSTGRES_PASSWORD`
-# into `plan.postgres.secret_env` directly from `BackendCredentialBindings`,
-# before Phase 4 drops that field and routes the handle through
-# `BackendPlan.postgres_credentials` instead (design "Credential convergence").
+# REPLACES the prior characterization test that pinned the pre-cutover
+# behavior where `plan_backend` emitted `POSTGRES_PASSWORD` into
+# `plan.postgres.secret_env` directly from `BackendCredentialBindings`
+# (`test_current_plan_backend_emits_postgres_password_into_postgres_secret_env`,
+# now retired). `plan_backend` now routes the postgres handle through the
+# dedicated `postgres_credentials` param/`BackendPlan.postgres_credentials`
+# field instead, and never emits it into `secret_env`.
 
 
-def test_current_plan_backend_emits_postgres_password_into_postgres_secret_env() -> None:
+def test_plan_backend_never_emits_postgres_secret_env_and_carries_postgres_credentials() -> None:
     credentials = BackendCredentialBindings(
-        postgres_password=CredentialHandle("local-backend/postgres-password"),
         odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
     )
+    postgres_credentials = CredentialHandle("local-backend/postgres-password")
 
-    plan = plan_backend(_manifest(), _mount_view(), credentials=credentials)
+    plan = plan_backend(
+        _manifest(),
+        _mount_view(),
+        credentials=credentials,
+        postgres_credentials=postgres_credentials,
+    )
 
-    assert plan.postgres.secret_env["POSTGRES_PASSWORD"] == credentials.postgres_password
+    assert plan.postgres.secret_env == {}
+    assert plan.postgres_credentials == postgres_credentials
+
+
+def test_plan_backend_defaults_postgres_credentials_to_none() -> None:
+    plan = plan_backend(_manifest(), _mount_view())
+
+    assert plan.postgres_credentials is None
+    assert plan.postgres.secret_env == {}

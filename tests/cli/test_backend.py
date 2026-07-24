@@ -331,9 +331,9 @@ def test_run_binds_opaque_credentials_at_the_composition_root(
     assert result.exit_code == 0
     credentials = captured["credentials"]
     assert credentials == BackendCredentialBindings(
-        postgres_password=CredentialHandle("local-backend/postgres-password"),
         odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
     )
+    assert captured["postgres_credentials"] == CredentialHandle("local-backend/postgres-password")
 
 
 def test_default_backend_composition_configures_a_sops_resolver_for_the_manifest_directory(

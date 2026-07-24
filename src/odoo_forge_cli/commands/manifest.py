@@ -305,9 +305,9 @@ def _onboard_catalog_mode(client: str) -> None:
             instance="default",
             odoo_image=None,
             credentials=BackendCredentialBindings(
-                postgres_password=CredentialHandle("local-backend/postgres-password"),
                 odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
             ),
+            postgres_credentials=CredentialHandle("local-backend/postgres-password"),
         )
         backend_provider = _composition._make_backend_provider(
             credentials_file=manifest_path.resolve().parent / "credentials.sops.yaml"
