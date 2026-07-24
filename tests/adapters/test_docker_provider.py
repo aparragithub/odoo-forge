@@ -314,7 +314,7 @@ class _FakeDatabaseProvider:
         self.provision_calls.append((spec, credentials))
         if self.provision_error is not None:
             raise self.provision_error
-        owned_resource_ids = (spec.name,)
+        owned_resource_ids: tuple[str, ...] = (spec.name,)
         if spec.data_volume is not None and self.data_volume_ownership is ResourceOwnership.CREATED:
             # Matches the real adapter's `_provision`: a freshly-created data
             # volume is added to the receipt's `owned_resource_ids`; an
