@@ -234,6 +234,21 @@ class LocalOwnershipAuthority:
         except (AuthorityError, InvalidSignature, ValueError, TypeError, KeyError):
             return False
 
+    def has_record(self, operation: str, name: str) -> bool:
+        """Return whether ANY record exists for `(operation, name)`.
+
+        Only container-kind resources are ever `reserve()`d/`bind()`d/
+        `activate()`d through this authority — volume-kind resources are
+        never tracked here. Callers use this to distinguish "an already-
+        removed container this authority legitimately tracked" (which
+        `retire_absent` must still validate) from "an already-absent
+        volume-kind resource this authority never tracked" (which has no
+        state to retire and must not be forced through `retire_absent`'s
+        active/retired guard).
+        """
+        state = self.read()
+        return self._latest(state, operation, name) is not None
+
     def owns(self, operation: str, name: str, docker_id: str) -> bool:
         """Return whether a signed active local record proves this exact resource."""
         state = self.read()

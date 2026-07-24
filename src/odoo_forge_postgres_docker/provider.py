@@ -457,29 +457,19 @@ class DockerPostgresqlDatabaseProvider:
         return self._inspect_identity(resource_id)[0]
 
     def _inspect_identity(self, resource_id: str) -> tuple[Mapping[str, str], str]:
-        inspected = self._run(["docker", "inspect", resource_id])
-        try:
-            inspection = json.loads(inspected.stdout)
-        except (TypeError, ValueError) as exc:
-            raise OwnershipRefusedError() from exc
-        if (
-            not isinstance(inspection, list)
-            or not inspection
-            or not isinstance(inspection[0], dict)
-        ):
+        """Return `(labels, docker_id)` for a CONTAINER-kind inspected resource.
+
+        Delegates the generic docker-inspect JSON parsing/validation to
+        `_inspect_owned_resource` (WARNING fix — both previously duplicated
+        the same parsing logic) and rejects a non-container entry, since
+        this method's callers (`verify_runtime_ownership`, `_provision`)
+        require the container's immutable `Id`, which a volume entry has no
+        equivalent of.
+        """
+        kind, labels, identity = self._inspect_owned_resource(resource_id)
+        if kind != "container":
             raise OwnershipRefusedError()
-        config = inspection[0].get("Config")
-        docker_id = inspection[0].get("Id")
-        if not isinstance(config, dict):
-            raise OwnershipRefusedError()
-        labels = config.get("Labels")
-        if not isinstance(labels, dict) or not all(
-            isinstance(key, str) and isinstance(value, str) for key, value in labels.items()
-        ):
-            raise OwnershipRefusedError()
-        if not isinstance(docker_id, str) or not docker_id:
-            raise OwnershipRefusedError()
-        return labels, docker_id
+        return labels, identity
 
     def _wait_ready(self, resource_id: str, env: Mapping[str, str] | None = None) -> None:
         user = (env or {}).get("POSTGRES_USER", "postgres")
@@ -515,7 +505,16 @@ class DockerPostgresqlDatabaseProvider:
             kind, labels, identity = self._inspect_owned_resource(resource_id)
         except DockerCommandFailedError:
             if self._resource_absent(resource_id):
-                self._ownership_authority.retire_absent(receipt.operation.value, resource_id)
+                # Only container-kind resources are ever tracked through the
+                # ownership authority (`reserve`/`bind`/`activate`); a
+                # volume-kind resource has no authority record at all, so
+                # forcing it through `retire_absent`'s active/retired state
+                # guard would raise `AuthorityStateError` and turn a
+                # legitimate already-absent-volume cleanup into a false
+                # `RollbackIncompleteError` (WARNING fix). Skip the call
+                # entirely when there is nothing tracked to retire.
+                if self._ownership_authority.has_record(receipt.operation.value, resource_id):
+                    self._ownership_authority.retire_absent(receipt.operation.value, resource_id)
                 return
             raise
         if kind == "volume":

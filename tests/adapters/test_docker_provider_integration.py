@@ -7,6 +7,8 @@ import os
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -20,11 +22,16 @@ from odoo_forge.backend.plan import (
     VolumeSpec,
     plan_backend,
 )
-from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
+from odoo_forge.credentials.types import (
+    BackendCredentialBindings,
+    CredentialHandle,
+    CredentialInjectionDescriptor,
+)
 from odoo_forge.manifest.projection import MountPlanningView
 from odoo_forge.manifest.schema import Client, Manifest
 from odoo_forge_docker.credential_injection import SopsEnvFileInjector
 from odoo_forge_docker.provider import DockerBackendProvider
+from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
 
 pytestmark = pytest.mark.integration
 
@@ -211,7 +218,6 @@ def _plan(tmp_path: Path, image: str, secret: str) -> BackendPlan:
         client=Client(addons_path=tmp_path),
     )
     credentials = BackendCredentialBindings(
-        postgres_password=CredentialHandle("integration/postgres"),
         odoo_db_password=CredentialHandle("integration/odoo"),
     )
     plan = plan_backend(
@@ -220,6 +226,7 @@ def _plan(tmp_path: Path, image: str, secret: str) -> BackendPlan:
         instance=identity,
         odoo_image=image,
         credentials=credentials,
+        postgres_credentials=CredentialHandle("integration/postgres"),
     ).model_copy(deep=True)
     plan.odoo.mounts = []
     assert plan.postgres.image == "postgres:16"
@@ -273,6 +280,19 @@ def _residuals(plan: BackendPlan) -> list[str]:
     return residuals
 
 
+def _credential_target(
+    values: dict[CredentialHandle, str],
+) -> Callable[[CredentialInjectionDescriptor], AbstractContextManager[str]]:
+    """Bridge the adapter's opaque `sops://<handle>` descriptor to `values`."""
+
+    @contextmanager
+    def _target(descriptor: CredentialInjectionDescriptor) -> Iterator[str]:
+        handle = CredentialHandle(descriptor.store_ref.removeprefix("sops://"))
+        yield values[handle]
+
+    return _target
+
+
 def _container_exists(name: str) -> bool:
     return _docker(["container", "inspect", name]).returncode == 0
 
@@ -295,7 +315,12 @@ def test_run_status_stop_round_trip_against_real_daemon(tmp_path: Path) -> None:
         CredentialHandle("integration/postgres"): secret,
         CredentialHandle("integration/odoo"): secret,
     }
-    provider = DockerBackendProvider(credential_injector=SopsEnvFileInjector(values.__getitem__))
+    provider = DockerBackendProvider(
+        credential_injector=SopsEnvFileInjector(values.__getitem__),
+        database_provider=DockerPostgresqlDatabaseProvider(
+            credential_target=_credential_target(values)
+        ),
+    )
 
     try:
         ref = provider.run(plan)
@@ -341,7 +366,10 @@ def test_run_uses_a_localhost_tag_without_registry_pull(tmp_path: Path) -> None:
             CredentialHandle("integration/odoo"): secret,
         }
         provider = DockerBackendProvider(
-            credential_injector=SopsEnvFileInjector(values.__getitem__)
+            credential_injector=SopsEnvFileInjector(values.__getitem__),
+            database_provider=DockerPostgresqlDatabaseProvider(
+                credential_target=_credential_target(values)
+            ),
         )
         ref = provider.run(plan)
         status = provider.status(ref)
