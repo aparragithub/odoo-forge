@@ -40,6 +40,7 @@ from odoo_forge.database.types import (
     ResourceOwnership,
 )
 from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+from odoo_forge_postgres_docker.restore_target import make_docker_restore_target
 from odoo_forge_postgres_docker.secret_injection import (
     PostgreSQLSecretInjection,
     PostgreSQLSecretInjector,
@@ -103,6 +104,9 @@ def _discard_restore_component(_component: RestoreSetComponent, _target: str) ->
     return False
 
 
+_DEFAULT_RESTORE_INJECTOR: RestoreTarget = make_docker_restore_target()
+
+
 class RollbackIncompleteError(IncompleteCleanupError):
     """Redacted failure carrying the receipt required to reconcile residuals."""
 
@@ -139,7 +143,7 @@ class DockerPostgresqlDatabaseProvider:
             _discard_credential_descriptor
         ),
         credential_target: CredentialTarget = _unavailable_credential_target,
-        restore_injector: RestoreTarget = _discard_restore_component,
+        restore_injector: RestoreTarget = _DEFAULT_RESTORE_INJECTOR,
         ownership_authority: LocalOwnershipAuthority | None = None,
     ) -> None:
         self._runner = runner
