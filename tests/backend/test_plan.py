@@ -296,3 +296,22 @@ def test_backend_plan_never_places_passwords_in_public_environment() -> None:
 
     assert "POSTGRES_PASSWORD" not in plan.postgres.env
     assert "DB_PASSWORD" not in plan.odoo.env
+
+
+# -- characterization: baseline `plan_backend` credential emission --
+#
+# Pins the pre-cutover behavior where `plan_backend` emits `POSTGRES_PASSWORD`
+# into `plan.postgres.secret_env` directly from `BackendCredentialBindings`,
+# before Phase 4 drops that field and routes the handle through
+# `BackendPlan.postgres_credentials` instead (design "Credential convergence").
+
+
+def test_current_plan_backend_emits_postgres_password_into_postgres_secret_env() -> None:
+    credentials = BackendCredentialBindings(
+        postgres_password=CredentialHandle("local-backend/postgres-password"),
+        odoo_db_password=CredentialHandle("local-backend/odoo-db-password"),
+    )
+
+    plan = plan_backend(_manifest(), _mount_view(), credentials=credentials)
+
+    assert plan.postgres.secret_env["POSTGRES_PASSWORD"] == credentials.postgres_password
