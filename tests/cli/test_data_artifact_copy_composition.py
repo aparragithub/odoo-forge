@@ -20,6 +20,7 @@ from odoo_forge.data_artifacts.contracts import (
     RestoreSetComponent,
 )
 from odoo_forge.data_artifacts.coordinator import DataArtifactCopyCoordinator
+from odoo_forge.database.errors import DatabaseOperationError
 from odoo_forge_cli import _composition
 from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
 from odoo_forge_postgres_docker.staged_capability import StagedArtifactCapability
@@ -77,17 +78,29 @@ def test_make_data_artifact_copy_coordinator_wires_the_staged_store_end_to_end(
     assert coordinator._manifest_persistence == store.put
 
 
-def test_pass_through_mask_transform_is_identity_for_an_empty_policy() -> None:
+def test_mask_transform_is_identity_for_an_empty_policy(tmp_path: Path) -> None:
+    """An empty policy is a genuine no-op: no scratch container, no digest churn."""
+    store = FilesystemStagedArtifactStore(tmp_path / "artifact-store")
     component = _component(ArtifactComponentKind.DATABASE)
 
-    result = _composition._pass_through_mask_transform(component, ())
+    result = _composition._make_mask_transform(store)(component, ())
 
     assert result is component
 
 
-def test_pass_through_mask_transform_fails_closed_for_a_non_empty_policy() -> None:
+def test_a_non_empty_policy_is_no_longer_refused(tmp_path: Path) -> None:
+    """The composition root used to wire a pass-through that raised
+    `NotImplementedError` for any real rule. It now wires the real scratch-DB
+    `MaskTransform`, so a rule-bearing policy reaches actual byte masking rather
+    than a stub. The masking itself is covered in
+    `tests/adapters/test_postgres_docker_mask_transform.py`; here we only prove the
+    wiring is no longer a refusal — this call reaches `docker`, not a stub raise."""
+    store = FilesystemStagedArtifactStore(tmp_path / "artifact-store")
     component = _component(ArtifactComponentKind.DATABASE)
     rule = AnonymizationRule(table="res_partner", column="email", mask_strategy=MaskStrategy.REDACT)
+    transform = _composition._make_mask_transform(store)
 
-    with pytest.raises(NotImplementedError):
-        _composition._pass_through_mask_transform(component, (rule,))
+    with pytest.raises(DatabaseOperationError):
+        # The component's bytes were never staged, so the real transform fails on
+        # resolving them — a typed adapter failure, not `NotImplementedError`.
+        transform(component, (rule,))

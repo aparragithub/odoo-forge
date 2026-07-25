@@ -11,11 +11,11 @@ from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
-from odoo_forge.anonymization.policy import AnonymizationRule
+from odoo_forge.anonymization.apply import MaskTransform
 from odoo_forge.credentials.errors import CredentialUnavailableError
 from odoo_forge.credentials.types import CredentialHandle, CredentialInjectionDescriptor
-from odoo_forge.data_artifacts.contracts import RestoreSetComponent
 from odoo_forge.data_artifacts.coordinator import DataArtifactCopyCoordinator
+from odoo_forge.data_artifacts.staging import StagedArtifactStore
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.database_provider import DatabaseProvider
@@ -28,6 +28,7 @@ from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvF
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
 from odoo_forge_postgres_docker.capture import DockerPostgresqlCaptureAdapter
+from odoo_forge_postgres_docker.mask_transform import make_docker_mask_transform
 from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
 from odoo_forge_postgres_docker.restore_target import make_docker_restore_target
 from odoo_forge_postgres_docker.staged_capability import (
@@ -112,25 +113,21 @@ def _make_backend_provider(
     )
 
 
-def _pass_through_mask_transform(
-    component: RestoreSetComponent, rules: tuple[AnonymizationRule, ...]
-) -> RestoreSetComponent:
-    """Identity `MaskTransform`: v1 CLI wiring only ever runs an EMPTY policy.
+def _make_mask_transform(store: StagedArtifactStore) -> MaskTransform:
+    """Composition root: the ONE place the concrete `MaskTransform` is built.
 
-    Real byte-level masking of a custom-format `pg_dump` archive per
-    `AnonymizationRule`/`MaskStrategy` is explicitly deferred (design
-    WF-DATA-COPY Durable Byte Store, open question: "MaskTransform byte-masking
-    depth for custom-format dumps"). This composition root wires the
-    coordinator's REQUIRED `mask_transform` port with a pass-through so an
-    empty `AnonymizationPolicy` (the only policy the `copy` command currently
-    constructs) is a correct no-op re-stamp (design D11). A non-empty policy
-    fails closed rather than silently skipping masking.
+    Replaces the previous pass-through, which returned every component untouched
+    while the coordinator recorded `event="anonymization_applied"` — audit
+    evidence claiming a masking step that never ran. Real per-rule byte masking
+    now happens via a scratch-database round trip
+    (`odoo_forge_postgres_docker.mask_transform`), staging the masked bytes into
+    the SAME store so the re-persisted manifest's digest matches real bytes
+    (design D11).
+
+    An empty policy is still a genuine no-op: the transform returns the
+    component unchanged rather than round-tripping a dump for no reason.
     """
-    if rules:
-        raise NotImplementedError(
-            "byte-level anonymization masking is not yet implemented for the 'copy' command"
-        )
-    return component
+    return make_docker_mask_transform(store=store)
 
 
 def _make_staged_artifact_store(*, root: Path | None = None) -> FilesystemStagedArtifactStore:
@@ -162,7 +159,7 @@ def _make_data_artifact_copy_coordinator(
         capture_capability=capture_capability,
         artifact_capability=artifact_capability,
         database_provider=database_provider,
-        mask_transform=_pass_through_mask_transform,
+        mask_transform=_make_mask_transform(store),
         manifest_persistence=store.put,
     )
 
