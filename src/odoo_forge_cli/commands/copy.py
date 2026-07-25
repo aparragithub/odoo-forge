@@ -4,9 +4,12 @@ Composes the durable `DataArtifactCopyCoordinator` (real `FilesystemStagedArtifa
 `StagedArtifactCapability` + store-backed byte source + real `RestoreTarget` + Postgres
 `DatabaseProvider`, see `odoo_forge_cli._composition._make_data_artifact_copy_coordinator`)
 to clone a live source Postgres database into a target, moving real bytes through the
-staged artifact store. Anonymize-by-default (design D4): this v1 command always runs an
-empty `AnonymizationPolicy`, matching the pass-through `mask_transform` wired at the
-composition root (real per-rule byte masking is explicitly deferred).
+staged artifact store. Anonymize-by-default (design D4): the coordinator always routes
+the captured manifest through the real `mask_transform` wired at the composition root,
+which masks bytes per rule via a scratch-database round trip. This v1 command still
+constructs an EMPTY `AnonymizationPolicy` — there is no CLI surface for supplying rules
+yet — so today that transform is a genuine no-op rather than a fake one; a policy with
+rules now masks for real instead of raising.
 """
 
 from __future__ import annotations
