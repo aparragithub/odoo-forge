@@ -708,12 +708,12 @@ class TestCaptureInContainerBackendReaping:
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 
-        terminate_in_container_backend("odoo-source", "odoo-forge-capture-abc123")
+        terminate_in_container_backend("odoo-source", f"{CAPTURE_APPLICATION_NAME_PREFIX}abc123")
 
         argv = cast("list[str]", recorded["argv"])
         assert argv[:5] == ["docker", "exec", "odoo-source", "psql", "-U"]
         assert "pg_terminate_backend" in argv[-1]
-        assert "odoo-forge-capture-abc123" in argv[-1]
+        assert f"{CAPTURE_APPLICATION_NAME_PREFIX}abc123" in argv[-1]
         assert recorded["shell"] is False
         assert isinstance(recorded["timeout"], float)
 
@@ -725,7 +725,7 @@ class TestCaptureInContainerBackendReaping:
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 
-        terminate_in_container_backend("odoo-source", "odoo-forge-capture-abc123")
+        terminate_in_container_backend("odoo-source", f"{CAPTURE_APPLICATION_NAME_PREFIX}abc123")
 
     def test_default_reaper_rejects_an_unsafe_application_name(self) -> None:
         """The application name is interpolated into a SQL literal, so it is
@@ -842,6 +842,46 @@ class TestOrphanedStagedFileReaper:
         orphan.write_bytes(b"orphaned dump")
         self._aged(orphan, ORPHAN_STAGED_FILE_MAX_AGE_SECONDS * 2)
         adapter = DockerPostgresqlCaptureAdapter(runner=_RecordingRunner(), store=_store(tmp_path))
+
+        adapter.capture(_source())
+
+        assert not orphan.exists()
+
+    def test_an_in_flight_file_is_never_reaped_by_a_longer_running_capture(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Follow-up #175 item 6: the 24h floor assumed a capture is bounded at an hour,
+        but `timeout` is caller-overridable for very large sources. A capture configured
+        to run longer than the floor could have its still-being-written staged file
+        unlinked by a CONCURRENT capture's sweep, and the live readback would then fail
+        with an unrelated FileNotFoundError."""
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        in_flight = tmp_path / "odoo-forge-capture-inflight"
+        in_flight.write_bytes(b"a capture still writing this")
+        # Older than the fixed floor, but well inside a 48h-timeout capture's own window.
+        self._aged(in_flight, ORPHAN_STAGED_FILE_MAX_AGE_SECONDS * 1.5)
+        adapter = DockerPostgresqlCaptureAdapter(
+            runner=_RecordingRunner(),
+            store=_store(tmp_path),
+            timeout=ORPHAN_STAGED_FILE_MAX_AGE_SECONDS * 2,
+        )
+
+        adapter.capture(_source())
+
+        assert in_flight.exists(), "a file younger than this adapter's own bound must survive"
+
+    def test_the_floor_still_applies_for_a_short_timeout(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The timeout-derived window only ever RAISES the floor; a default-timeout
+        adapter must still reap genuine 24h-old orphans."""
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        orphan = tmp_path / "odoo-forge-capture-orphan"
+        orphan.write_bytes(b"orphaned")
+        self._aged(orphan, ORPHAN_STAGED_FILE_MAX_AGE_SECONDS * 2)
+        adapter = DockerPostgresqlCaptureAdapter(
+            runner=_RecordingRunner(), store=_store(tmp_path), timeout=60.0
+        )
 
         adapter.capture(_source())
 

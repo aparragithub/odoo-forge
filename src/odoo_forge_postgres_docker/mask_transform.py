@@ -73,8 +73,11 @@ from odoo_forge.database.errors import DatabaseOperationError
 
 _SQL_IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]+$")
 _CHUNK_SIZE = 1 << 20  # 1 MiB, matching capture.py: bounds the re-dump hash readback.
-_STAGED_FILE_PREFIX = "odoo-forge-mask-"
-_SCRATCH_NAME_PREFIX = "odoo-forge-mask-"
+# Two DIFFERENT namespaces, deliberately spelled differently. They previously shared a
+# literal, so a maintainer changing one and assuming the other followed would have
+# renamed the wrong resource: one names a file on the host, the other a Docker container.
+_STAGED_FILE_PREFIX = "odoo-forge-mask-dump-"
+_SCRATCH_NAME_PREFIX = "odoo-forge-mask-scratch-"
 
 _DEFAULT_MASK_TIMEOUT = 3600.0
 _DEFAULT_SCRATCH_IMAGE = "postgres:16"
@@ -120,6 +123,56 @@ class MaskPersistenceError(DatabaseOperationError):
     """A `StagedArtifactStore` failure occurred while persisting masked bytes."""
 
     public_detail = "masked artifact persistence failed"
+
+
+class MaskSelectorNotFoundError(DatabaseOperationError):
+    """A rule selects a table or column that does not exist in the captured database."""
+
+    public_detail = "anonymization rule targets a table or column that does not exist"
+
+
+class MaskColumnTypeUnsupportedError(DatabaseOperationError):
+    """A rule's strategy cannot produce a value assignable to its column's type."""
+
+    public_detail = "anonymization strategy cannot mask a column of this type"
+
+
+class MaskUniqueColumnCollisionError(DatabaseOperationError):
+    """A rule would collapse a UNIQUE or PRIMARY KEY column to one repeated value."""
+
+    public_detail = "anonymization strategy would violate a unique constraint"
+
+
+class MaskNotNullColumnError(DatabaseOperationError):
+    """A `nullify` rule targets a NOT NULL column."""
+
+    public_detail = "anonymization strategy would violate a not-null constraint"
+
+
+class MaskScratchNotIsolatedError(DatabaseOperationError):
+    """The scratch database is attached to a network and must not receive raw data."""
+
+    public_detail = "scratch masking database is not network-isolated"
+
+
+class _Deadline:
+    """One wall-clock budget shared by every command in a masking round trip.
+
+    `timeout` used to be handed to each command individually, so a round trip with N
+    rules could legitimately block for `(2 + N) * timeout` — with the 3600s default and
+    twenty rules, ~22 hours before anything fired. The budget is now allocated ONCE and
+    drawn down, so `timeout` means what a caller would assume it means.
+    """
+
+    def __init__(self, timeout: float) -> None:
+        self._expires_at = time.monotonic() + timeout
+
+    def remaining(self) -> float:
+        """Return the time left, raising as soon as the budget is spent."""
+        left = self._expires_at - time.monotonic()
+        if left <= 0:
+            raise MaskTimeoutError()
+        return left
 
 
 @dataclass(frozen=True)
@@ -204,35 +257,99 @@ def docker_scratch_database(
     while it exists it may hold raw, un-anonymized data.
     """
     container = f"{_SCRATCH_NAME_PREFIX}{uuid.uuid4().hex}"
-    _run_mask_subprocess(
-        [
-            "docker",
-            "run",
-            "--detach",
-            "--name",
-            container,
-            "--network",
-            "none",
-            "--env",
-            "POSTGRES_HOST_AUTH_METHOD=trust",
-            "--env",
-            f"POSTGRES_DB={database}",
-            image,
-        ],
-        timeout=_SCRATCH_COMMAND_TIMEOUT,
-    )
+    # `docker run` is INSIDE the try: a client-side failure (missing binary, timeout
+    # while the daemon is still creating the container) can leave a container the
+    # daemon finished creating after we gave up, and until it is removed it may hold
+    # raw data. The `finally` therefore has to cover the start attempt itself, not
+    # just the readiness wait and the body.
     try:
+        _invoke(
+            _run_mask_subprocess,
+            [
+                "docker",
+                "run",
+                "--detach",
+                "--name",
+                container,
+                "--network",
+                "none",
+                "--env",
+                "POSTGRES_HOST_AUTH_METHOD=trust",
+                "--env",
+                f"POSTGRES_DB={database}",
+                image,
+            ],
+            timeout=_SCRATCH_COMMAND_TIMEOUT,
+            # A nonzero `docker run` (bad image, daemon out of resources) means no
+            # container exists to become ready; say so now instead of burning the whole
+            # readiness loop and reporting a misleading "never became ready".
+            failure=MaskScratchUnavailableError,
+        )
         _await_scratch_readiness(container, database, attempts=readiness_attempts)
+        _require_network_isolation(container)
         yield ScratchDatabase(container=container, database=database)
     finally:
         _run_mask_subprocess(["docker", "rm", "-f", container], timeout=_SCRATCH_COMMAND_TIMEOUT)
 
 
+def _require_network_isolation(container: str) -> None:
+    """Refuse to load raw PII into a container that is reachable over the network.
+
+    Defense in depth for the `--network none` + trust-auth pairing. Trust auth is only
+    safe BECAUSE nothing can connect from outside; a refactor that dropped the flag
+    while keeping trust auth would leave an unauthenticated database full of raw PII
+    reachable by every container on the default bridge, and nothing would fail. Asking
+    the daemon what actually happened — rather than trusting the argv we just built —
+    is what makes the guarantee hold at runtime instead of only in a docstring.
+    """
+    completed = subprocess.run(  # noqa: S603 - argv-only, shell=False, never a shell string
+        [
+            "docker",
+            "inspect",
+            "-f",
+            "{{range $network, $_ := .NetworkSettings.Networks}}{{$network}} {{end}}",
+            container,
+        ],
+        capture_output=True,
+        check=False,
+        shell=False,
+        timeout=_SCRATCH_COMMAND_TIMEOUT,
+    )
+    # `stdout` is None whenever the output was not captured. Treat "cannot tell" as
+    # "not proven isolated" rather than assuming the best: this guard exists precisely
+    # to stop raw PII entering a reachable container.
+    if completed.returncode != 0 or completed.stdout is None:
+        raise MaskScratchNotIsolatedError()
+    attached = completed.stdout.decode(errors="replace").split()
+    if attached not in ([], ["none"]):
+        raise MaskScratchNotIsolatedError()
+
+
 def _await_scratch_readiness(container: str, database: str, *, attempts: int) -> None:
-    """Poll `pg_isready` until the scratch database accepts connections."""
+    """Poll until `database` itself answers a query.
+
+    Deliberately a real `psql` query and NOT `pg_isready`: the postgres image's
+    entrypoint runs a TEMPORARY bootstrap server during initdb, and `pg_isready`
+    reports success against that bootstrap server — before `POSTGRES_DB` has been
+    created. It also ignores its own `-d` argument for existence purposes. Probing
+    with `pg_isready` therefore returns "ready" too early, and the `pg_restore` that
+    follows fails against a database that does not exist yet. Only a query executed
+    against the target database proves the database is really there.
+    """
     for attempt in range(attempts):
         completed = _run_mask_subprocess(
-            ["docker", "exec", container, "pg_isready", "-U", "postgres", "-d", database],
+            [
+                "docker",
+                "exec",
+                container,
+                "psql",
+                "-U",
+                "postgres",
+                "-d",
+                database,
+                "-tAc",
+                "SELECT 1",
+            ],
             timeout=_SCRATCH_COMMAND_TIMEOUT,
         )
         if completed.returncode == 0:
@@ -240,6 +357,117 @@ def _await_scratch_readiness(container: str, database: str, *, attempts: int) ->
         if attempt < attempts - 1:
             time.sleep(_READINESS_INTERVAL_SECONDS)
     raise MaskScratchUnavailableError()
+
+
+@dataclass(frozen=True)
+class _ColumnFacts:
+    """What the scratch database knows about one rule's target column."""
+
+    data_type: str
+    is_unique: bool
+    is_nullable: bool
+
+
+# Types `md5(...)` and a quoted literal can be assigned back into directly. Anything
+# else (integer, uuid, timestamp, jsonb, ...) has no implicit assignment cast from
+# text, so Postgres rejects the UPDATE outright.
+_TEXT_ASSIGNABLE_TYPES = frozenset({"text", "character varying", "character"})
+
+_INTROSPECTION_SQL = """
+SELECT c.table_name, c.column_name, c.data_type, c.is_nullable,
+  EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.key_column_usage kcu
+      ON tc.constraint_name = kcu.constraint_name
+     AND tc.table_schema = kcu.table_schema
+    WHERE tc.table_name = c.table_name
+      AND kcu.column_name = c.column_name
+      AND tc.constraint_type IN ('UNIQUE', 'PRIMARY KEY')
+  ) AS is_unique
+FROM information_schema.columns c
+WHERE (c.table_name, c.column_name) IN (%s)
+"""
+
+
+def _introspect_columns(
+    runner: DockerMaskRunner,
+    scratch: ScratchDatabase,
+    rules: Sequence[AnonymizationRule],
+    *,
+    deadline: _Deadline,
+) -> dict[tuple[str, str], _ColumnFacts]:
+    """Read the real type and constraints of every rule's target column.
+
+    One round trip for all rules. Without this, an unmaskable rule surfaced as a
+    generic `MaskCommandFailedError` with the reason discarded to `DEVNULL` — an
+    operator saw "masking command failed" and had nothing to act on. Knowing the
+    schema up front lets each incompatibility raise its own named error BEFORE any
+    row is touched.
+    """
+    pairs = ", ".join(
+        f"({_quote_literal(rule.table)}, {_quote_literal(rule.column)})" for rule in rules
+    )
+    argv = [
+        "docker",
+        "exec",
+        scratch.container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        scratch.database,
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-tAc",
+        _INTROSPECTION_SQL % pairs,
+    ]
+    with tempfile.NamedTemporaryFile(prefix=_STAGED_FILE_PREFIX, delete=True) as sink:
+        _invoke(runner, argv, stdout=sink, timeout=deadline.remaining())
+        sink.flush()
+        rows = Path(sink.name).read_text(encoding="utf-8")
+    facts: dict[tuple[str, str], _ColumnFacts] = {}
+    for line in rows.splitlines():
+        if not line.strip():
+            continue
+        table, column, data_type, is_nullable, is_unique = line.split("|")
+        facts[(table, column)] = _ColumnFacts(
+            data_type=data_type,
+            is_unique=is_unique == "t",
+            is_nullable=is_nullable == "YES",
+        )
+    return facts
+
+
+def _require_maskable(
+    rules: Sequence[AnonymizationRule], facts: dict[tuple[str, str], _ColumnFacts]
+) -> None:
+    """Fail closed, with a NAMED reason, before any row is modified.
+
+    Every check here corresponds to an `UPDATE` Postgres would reject anyway; the
+    point is that the caller learns WHICH rule is wrong and WHY, instead of a
+    generic command failure, and that the scratch database is never left
+    half-masked by a batch that dies partway through.
+    """
+    for rule in rules:
+        column = facts.get((rule.table, rule.column))
+        if column is None:
+            raise MaskSelectorNotFoundError()
+        writes_text = rule.mask_strategy in (
+            MaskStrategy.HASH,
+            MaskStrategy.REDACT,
+            MaskStrategy.STATIC_REPLACE,
+        )
+        if writes_text and column.data_type not in _TEXT_ASSIGNABLE_TYPES:
+            raise MaskColumnTypeUnsupportedError()
+        collapses_to_one_value = rule.mask_strategy in (
+            MaskStrategy.REDACT,
+            MaskStrategy.STATIC_REPLACE,
+        )
+        if collapses_to_one_value and column.is_unique:
+            raise MaskUniqueColumnCollisionError()
+        if rule.mask_strategy is MaskStrategy.NULLIFY and not column.is_nullable:
+            raise MaskNotNullColumnError()
 
 
 def _quote_identifier(value: str) -> str:
@@ -300,12 +528,21 @@ def make_docker_mask_transform(
             return component
         statements = [_update_statement(rule) for rule in rules]
         raw_path = _open_staged_bytes(store, component)
+        # ONE budget for the whole round trip, drawn down per command — not `timeout`
+        # handed afresh to each of the (2 + N) commands.
+        deadline = _Deadline(timeout)
         masked_path: Path | None = None
         try:
             with scratch_factory() as scratch:
-                _restore_into_scratch(runner, scratch, raw_path, timeout=timeout)
-                _apply_statements(runner, scratch, statements, timeout=timeout)
-                masked_path, digest = _redump_from_scratch(runner, scratch, timeout=timeout)
+                _restore_into_scratch(runner, scratch, raw_path, deadline=deadline)
+                # Validate every rule against the REAL schema before touching a row, so
+                # an unmaskable rule names itself instead of dying mid-batch as a
+                # generic command failure.
+                _require_maskable(
+                    rules, _introspect_columns(runner, scratch, rules, deadline=deadline)
+                )
+                _apply_statements(runner, scratch, statements, deadline=deadline)
+                masked_path, digest = _redump_from_scratch(runner, scratch, deadline=deadline)
             _stage_masked_bytes(store, digest, masked_path)
         finally:
             if masked_path is not None:
@@ -329,7 +566,7 @@ def _open_staged_bytes(store: StagedArtifactStore, component: RestoreSetComponen
 
 
 def _restore_into_scratch(
-    runner: DockerMaskRunner, scratch: ScratchDatabase, raw_path: Path, *, timeout: float
+    runner: DockerMaskRunner, scratch: ScratchDatabase, raw_path: Path, *, deadline: _Deadline
 ) -> None:
     argv = [
         "docker",
@@ -348,7 +585,7 @@ def _restore_into_scratch(
     # Opened here rather than inside the runner so a `FileNotFoundError` from the
     # runner can only mean `docker` is missing (same split as `restore_target.py`).
     with raw_path.open("rb") as stream:
-        _invoke(runner, argv, stdin=stream, timeout=timeout)
+        _invoke(runner, argv, stdin=stream, timeout=deadline.remaining())
 
 
 def _apply_statements(
@@ -356,7 +593,7 @@ def _apply_statements(
     scratch: ScratchDatabase,
     statements: Sequence[str],
     *,
-    timeout: float,
+    deadline: _Deadline,
 ) -> None:
     """Apply every rule's `UPDATE`, aborting on the first one that fails."""
     for statement in statements:
@@ -374,11 +611,11 @@ def _apply_statements(
             "-c",
             statement,
         ]
-        _invoke(runner, argv, timeout=timeout)
+        _invoke(runner, argv, timeout=deadline.remaining())
 
 
 def _redump_from_scratch(
-    runner: DockerMaskRunner, scratch: ScratchDatabase, *, timeout: float
+    runner: DockerMaskRunner, scratch: ScratchDatabase, *, deadline: _Deadline
 ) -> tuple[Path, ArtifactDigest]:
     """Re-dump the masked database into a staged temp file and hash it back.
 
@@ -401,7 +638,7 @@ def _redump_from_scratch(
     try:
         with tempfile.NamedTemporaryFile(prefix=_STAGED_FILE_PREFIX, delete=False) as staged:
             staged_path = Path(staged.name)
-            _invoke(runner, argv, stdout=staged, timeout=timeout)
+            _invoke(runner, argv, stdout=staged, timeout=deadline.remaining())
         hasher = hashlib.sha256()
         with staged_path.open("rb") as readback:
             while chunk := readback.read(_CHUNK_SIZE):
@@ -429,8 +666,14 @@ def _invoke(
     stdin: IO[bytes] | None = None,
     stdout: IO[bytes] | None = None,
     timeout: float,
+    failure: type[DatabaseOperationError] = MaskCommandFailedError,
 ) -> None:
-    """Run one masking command, mapping every subprocess outcome to the taxonomy."""
+    """Run one masking command, mapping every subprocess outcome to the taxonomy.
+
+    `failure` lets a caller name what a nonzero exit means in ITS context (a failed
+    `docker run` is an unavailable scratch database, not a failed masking command)
+    without duplicating the binary/timeout mapping.
+    """
     try:
         completed = runner(argv, stdin=stdin, stdout=stdout, timeout=timeout)
     except FileNotFoundError as exc:
@@ -438,7 +681,7 @@ def _invoke(
     except subprocess.TimeoutExpired as exc:
         raise MaskTimeoutError() from exc
     if completed.returncode != 0:
-        raise MaskCommandFailedError()
+        raise failure()
 
 
 __all__ = [
@@ -447,7 +690,12 @@ __all__ = [
     "MaskBinaryUnavailableError",
     "MaskCommandFailedError",
     "MaskPersistenceError",
+    "MaskColumnTypeUnsupportedError",
+    "MaskNotNullColumnError",
+    "MaskScratchNotIsolatedError",
     "MaskScratchUnavailableError",
+    "MaskSelectorNotFoundError",
+    "MaskUniqueColumnCollisionError",
     "MaskTimeoutError",
     "ScratchDatabase",
     "ScratchDatabaseFactory",
