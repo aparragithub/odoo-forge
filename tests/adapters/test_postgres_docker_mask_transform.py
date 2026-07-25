@@ -10,6 +10,7 @@ delivery target — the anonymize-before-delivery contract holds.
 from __future__ import annotations
 
 import hashlib
+import re
 import subprocess
 import tempfile
 from collections.abc import Callable, Iterator, Sequence
@@ -29,10 +30,15 @@ from odoo_forge.data_artifacts.staging import StagedArtifactStore
 from odoo_forge_postgres_docker.mask_transform import (
     DockerMaskRunner,
     MaskBinaryUnavailableError,
+    MaskColumnTypeUnsupportedError,
     MaskCommandFailedError,
+    MaskNotNullColumnError,
     MaskPersistenceError,
+    MaskScratchNotIsolatedError,
     MaskScratchUnavailableError,
+    MaskSelectorNotFoundError,
     MaskTimeoutError,
+    MaskUniqueColumnCollisionError,
     ScratchDatabase,
     ScratchDatabaseFactory,
     docker_scratch_database,
@@ -77,13 +83,59 @@ def _rule(
 
 
 class _RecordingRunner:
-    """Records every scratch-container invocation and fakes the re-dump output."""
+    """Records every scratch-container invocation, answers schema introspection, and
+    fakes the re-dump output.
 
-    def __init__(self, *, masked: bytes = _MASKED, returncode: int = 0) -> None:
+    `columns` maps (table, column) -> `table|column|data_type|is_nullable|is_unique`
+    facts. The default answers every selector as a nullable, non-unique `text` column,
+    i.e. maskable by every strategy, so tests that are not about schema compatibility
+    do not have to describe one.
+    """
+
+    def __init__(
+        self,
+        *,
+        masked: bytes = _MASKED,
+        returncode: int = 0,
+        data_type: str = "text",
+        is_unique: bool = False,
+        is_nullable: bool = True,
+        columns: dict[tuple[str, str], tuple[str, bool, bool]] | None = None,
+        missing: bool = False,
+    ) -> None:
         self.calls: list[list[str]] = []
         self.stdin_bytes: list[bytes] = []
         self._masked = masked
         self._returncode = returncode
+        self._data_type = data_type
+        self._is_unique = is_unique
+        self._is_nullable = is_nullable
+        self._columns = columns
+        self._missing = missing
+
+    def _introspection_rows(self, statement: str) -> bytes:
+        """Answer the introspection query for whatever selectors it asked about."""
+        if self._missing:
+            return b""
+        pairs = re.findall(r"\('([^']*)', '([^']*)'\)", statement)
+        lines = []
+        for table, column in pairs:
+            if self._columns is not None:
+                found = self._columns.get((table, column))
+                if found is None:
+                    continue
+                data_type, is_unique, is_nullable = found
+            else:
+                data_type, is_unique, is_nullable = (
+                    self._data_type,
+                    self._is_unique,
+                    self._is_nullable,
+                )
+            lines.append(
+                f"{table}|{column}|{data_type}|"
+                f"{'YES' if is_nullable else 'NO'}|{'t' if is_unique else 'f'}"
+            )
+        return ("\n".join(lines) + "\n").encode() if lines else b""
 
     def __call__(
         self,
@@ -97,12 +149,17 @@ class _RecordingRunner:
         if stdin is not None:
             self.stdin_bytes.append(stdin.read())
         if stdout is not None:
-            stdout.write(self._masked)
+            payload = (
+                self._introspection_rows(argv[argv.index("-tAc") + 1])
+                if "-tAc" in argv
+                else self._masked
+            )
+            stdout.write(payload)
             stdout.flush()
         return subprocess.CompletedProcess(list(argv), self._returncode)
 
     def statements(self) -> list[str]:
-        """Every `-c <sql>` payload, in invocation order."""
+        """Every `-c <sql>` payload, in invocation order (introspection uses `-tAc`)."""
         return [argv[argv.index("-c") + 1] for argv in self.calls if "-c" in argv]
 
 
@@ -267,7 +324,10 @@ class TestScratchRoundTrip:
             for argv in runner.calls
             if any(tool in argv for tool in ("pg_restore", "psql", "pg_dump"))
         ]
-        assert stages == ["pg_restore", "psql", "pg_dump"]
+        # restore, then schema introspection, then the rule's UPDATE, then the re-dump.
+        assert stages == ["pg_restore", "psql", "psql", "pg_dump"]
+        assert "-tAc" in runner.calls[1], "introspection must precede any UPDATE"
+        assert "-c" in runner.calls[2]
 
     def test_the_scratch_container_is_torn_down_on_success(self, tmp_path: Path) -> None:
         closed: list[str] = []
@@ -366,6 +426,184 @@ class TestMaskStrategySql:
 
         psql_argv = next(argv for argv in runner.calls if "psql" in argv)
         assert "ON_ERROR_STOP=1" in psql_argv
+
+
+class TestUnmaskableColumnsFailClosedWithANamedReason:
+    """Follow-up #175 items 1-2. These rules were already rejected — by Postgres, mid
+    batch, surfacing as a generic `MaskCommandFailedError` with the real reason sent to
+    `DEVNULL`. An operator got "masking command failed" and nothing to act on. Now the
+    schema is read up front and each incompatibility names itself BEFORE any row is
+    touched, so the scratch database is never left half-masked either."""
+
+    def _transform_for(
+        self, tmp_path: Path, runner: _RecordingRunner
+    ) -> Callable[[RestoreSetComponent, tuple[AnonymizationRule, ...]], RestoreSetComponent]:
+        return make_docker_mask_transform(
+            store=_store_with_raw(tmp_path), runner=runner, scratch_factory=_scratch_factory()
+        )
+
+    def test_hash_on_a_non_text_column_names_the_type_problem(self, tmp_path: Path) -> None:
+        """Verified against a real backend in the `real_docker` harness: Postgres has no
+        implicit text->integer assignment cast, so `md5(col::text)` is rejected."""
+        runner = _RecordingRunner(data_type="integer")
+        transform = self._transform_for(tmp_path, runner)
+
+        with pytest.raises(MaskColumnTypeUnsupportedError) as exc_info:
+            transform(_database_component(), (_rule(strategy=MaskStrategy.HASH),))
+
+        assert str(exc_info.value) == MaskColumnTypeUnsupportedError.public_detail
+        assert runner.statements() == [], "no UPDATE may run once a rule is known unmaskable"
+
+    def test_redact_on_a_unique_column_names_the_constraint_problem(self, tmp_path: Path) -> None:
+        """Collapsing a UNIQUE column to one literal duplicates on the second row.
+        `login` and `email` — the most obvious targets — are commonly UNIQUE."""
+        runner = _RecordingRunner(is_unique=True)
+        transform = self._transform_for(tmp_path, runner)
+
+        with pytest.raises(MaskUniqueColumnCollisionError) as exc_info:
+            transform(_database_component(), (_rule(strategy=MaskStrategy.REDACT),))
+
+        assert str(exc_info.value) == MaskUniqueColumnCollisionError.public_detail
+        assert runner.statements() == []
+
+    def test_static_replace_on_a_unique_column_is_refused_too(self, tmp_path: Path) -> None:
+        runner = _RecordingRunner(is_unique=True)
+        transform = self._transform_for(tmp_path, runner)
+
+        with pytest.raises(MaskUniqueColumnCollisionError):
+            transform(
+                _database_component(),
+                (_rule(strategy=MaskStrategy.STATIC_REPLACE, static_value="x"),),
+            )
+
+    def test_hash_on_a_unique_column_is_allowed(self, tmp_path: Path) -> None:
+        """HASH is deterministic and injective in practice, so distinct inputs stay
+        distinct — a UNIQUE column is a legitimate HASH target and must NOT be refused."""
+        runner = _RecordingRunner(is_unique=True)
+        transform = self._transform_for(tmp_path, runner)
+
+        transform(_database_component(), (_rule(strategy=MaskStrategy.HASH),))
+
+        assert len(runner.statements()) == 1
+
+    def test_nullify_on_a_not_null_column_names_the_constraint_problem(
+        self, tmp_path: Path
+    ) -> None:
+        runner = _RecordingRunner(is_nullable=False)
+        transform = self._transform_for(tmp_path, runner)
+
+        with pytest.raises(MaskNotNullColumnError) as exc_info:
+            transform(_database_component(), (_rule(strategy=MaskStrategy.NULLIFY),))
+
+        assert str(exc_info.value) == MaskNotNullColumnError.public_detail
+
+    def test_nullify_on_a_non_text_column_is_allowed(self, tmp_path: Path) -> None:
+        """`NULL` is assignable to any nullable column regardless of type, so the
+        text-assignability check must not over-reject."""
+        runner = _RecordingRunner(data_type="integer", is_nullable=True)
+        transform = self._transform_for(tmp_path, runner)
+
+        transform(_database_component(), (_rule(strategy=MaskStrategy.NULLIFY),))
+
+        assert len(runner.statements()) == 1
+
+    def test_a_selector_that_does_not_exist_names_itself(self, tmp_path: Path) -> None:
+        """A typo in a policy used to reach Postgres as a failing UPDATE; now it is
+        caught before the round trip does any work."""
+        runner = _RecordingRunner(missing=True)
+        transform = self._transform_for(tmp_path, runner)
+
+        with pytest.raises(MaskSelectorNotFoundError) as exc_info:
+            transform(_database_component(), (_rule(table="no_such_table"),))
+
+        assert str(exc_info.value) == MaskSelectorNotFoundError.public_detail
+        assert runner.statements() == []
+
+    def test_one_bad_rule_blocks_the_whole_batch(self, tmp_path: Path) -> None:
+        """Fail-closed is per-BATCH, not per-rule: delivering a dump stamped
+        `anonymization_applied` with one rule skipped is the worst outcome."""
+        runner = _RecordingRunner(
+            columns={
+                ("res_partner", "email"): ("text", False, True),
+                ("res_partner", "age"): ("integer", False, True),
+            }
+        )
+        transform = self._transform_for(tmp_path, runner)
+
+        with pytest.raises(MaskColumnTypeUnsupportedError):
+            transform(
+                _database_component(),
+                (_rule(column="email"), _rule(column="age", strategy=MaskStrategy.HASH)),
+            )
+
+        assert runner.statements() == [], "not even the valid rule may be applied"
+
+    def test_varchar_is_treated_as_maskable(self, tmp_path: Path) -> None:
+        runner = _RecordingRunner(data_type="character varying")
+        transform = self._transform_for(tmp_path, runner)
+
+        transform(_database_component(), (_rule(strategy=MaskStrategy.REDACT),))
+
+        assert len(runner.statements()) == 1
+
+
+class TestOneSharedTimeoutBudget:
+    """Follow-up #175 item 5: `timeout` was handed afresh to each of the (2 + N)
+    commands, so a 20-rule policy on the 3600s default could block ~22 hours before
+    anything fired. It is now one budget for the whole round trip."""
+
+    def test_the_budget_is_drawn_down_across_commands_not_reset(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        clock = iter([100.0, 101.0, 103.0, 106.0, 110.0, 115.0, 121.0, 128.0])
+        monkeypatch.setattr(
+            "odoo_forge_postgres_docker.mask_transform.time.monotonic", lambda: next(clock)
+        )
+        seen: list[float] = []
+
+        class _TimeoutCapturingRunner(_RecordingRunner):
+            def __call__(
+                self,
+                argv: Sequence[str],
+                *,
+                stdin: IO[bytes] | None = None,
+                stdout: IO[bytes] | None = None,
+                timeout: float,
+            ) -> subprocess.CompletedProcess[bytes]:
+                seen.append(timeout)
+                return super().__call__(argv, stdin=stdin, stdout=stdout, timeout=timeout)
+
+        transform = make_docker_mask_transform(
+            store=_store_with_raw(tmp_path),
+            runner=_TimeoutCapturingRunner(),
+            scratch_factory=_scratch_factory(),
+            timeout=100.0,
+        )
+
+        transform(_database_component(), (_rule(),))
+
+        assert seen == sorted(seen, reverse=True), "each command must get LESS time, not a reset"
+        assert seen[0] < 100.0
+
+    def test_an_exhausted_budget_raises_before_issuing_another_command(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A round trip that has already spent its budget must stop, not keep issuing
+        commands each with a fresh allowance."""
+        clock = iter([0.0, 1.0, 500.0, 500.0, 500.0, 500.0])
+        monkeypatch.setattr(
+            "odoo_forge_postgres_docker.mask_transform.time.monotonic", lambda: next(clock)
+        )
+        runner = _RecordingRunner()
+        transform = make_docker_mask_transform(
+            store=_store_with_raw(tmp_path),
+            runner=runner,
+            scratch_factory=_scratch_factory(),
+            timeout=100.0,
+        )
+
+        with pytest.raises(MaskTimeoutError):
+            transform(_database_component(), (_rule(),))
 
 
 class TestSqlInjectionSafety:
@@ -531,7 +769,8 @@ class TestDefaultScratchDatabaseFactory:
 
         def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
             calls.append(list(argv))
-            return subprocess.CompletedProcess(list(argv), 0)
+            # `docker inspect` reports the container's networks; empty means isolated.
+            return subprocess.CompletedProcess(list(argv), 0, stdout=b"")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -540,9 +779,16 @@ class TestDefaultScratchDatabaseFactory:
 
         tools = [argv[1] for argv in calls]
         assert tools[0] == "run"
-        assert "pg_isready" in calls[1]
         assert tools[-1] == "rm"
         assert "-f" in calls[-1]
+        # Readiness is a real query against the TARGET database, deliberately not
+        # `pg_isready`: the postgres entrypoint runs a temporary bootstrap server
+        # during initdb, so `pg_isready` reports ready before `POSTGRES_DB` exists and
+        # the pg_restore that follows would hit a database that is not there yet.
+        assert "pg_isready" not in calls[1]
+        assert calls[1][3] == "psql"
+        assert "maskdb" in calls[1]
+        assert calls[1][-1] == "SELECT 1"
 
     def test_the_scratch_container_has_no_network_interface(
         self, monkeypatch: pytest.MonkeyPatch
@@ -556,7 +802,8 @@ class TestDefaultScratchDatabaseFactory:
 
         def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
             calls.append(list(argv))
-            return subprocess.CompletedProcess(list(argv), 0)
+            # `docker inspect` reports the container's networks; empty means isolated.
+            return subprocess.CompletedProcess(list(argv), 0, stdout=b"")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -579,7 +826,8 @@ class TestDefaultScratchDatabaseFactory:
 
         def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
             calls.append(list(argv))
-            return subprocess.CompletedProcess(list(argv), 0)
+            # `docker inspect` reports the container's networks; empty means isolated.
+            return subprocess.CompletedProcess(list(argv), 0, stdout=b"")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -590,6 +838,50 @@ class TestDefaultScratchDatabaseFactory:
         assert not any("POSTGRES_PASSWORD" in item for item in run_argv)
         assert "POSTGRES_HOST_AUTH_METHOD=trust" in run_argv
 
+    def test_a_failing_docker_run_is_reported_and_still_cleaned_up(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Follow-up #175 items 3-4: a nonzero `docker run` (bad image, daemon out of
+        resources) used to be ignored, burning the whole 60-attempt readiness loop
+        before reporting a misleading "never became ready". And because the start call
+        sat outside the `try`, nothing guaranteed cleanup of a container the daemon may
+        have finished creating anyway."""
+        calls: list[list[str]] = []
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            calls.append(list(argv))
+            returncode = 1 if argv[1] == "run" else 0
+            return subprocess.CompletedProcess(list(argv), returncode, stdout=b"")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(MaskScratchUnavailableError), docker_scratch_database():
+            pytest.fail("the body must never run when the container failed to start")
+
+        tools = [argv[1] for argv in calls]
+        assert tools == ["run", "rm"], "no readiness polling after a failed start"
+        assert calls[-1][1] == "rm", "a failed start is still cleaned up"
+
+    def test_a_client_side_start_failure_still_removes_the_container(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The start call is inside the `try`, so even a client-side raise (the daemon
+        may still have created the container) reaches the teardown `finally`."""
+        calls: list[list[str]] = []
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            calls.append(list(argv))
+            if argv[1] == "run":
+                raise subprocess.TimeoutExpired(list(argv), 1.0)
+            return subprocess.CompletedProcess(list(argv), 0, stdout=b"")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(MaskTimeoutError), docker_scratch_database():
+            pytest.fail("the body must never run when the container failed to start")
+
+        assert calls[-1][1] == "rm"
+
     def test_the_container_is_removed_even_when_the_body_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -597,7 +889,8 @@ class TestDefaultScratchDatabaseFactory:
 
         def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
             calls.append(list(argv))
-            return subprocess.CompletedProcess(list(argv), 0)
+            # `docker inspect` reports the container's networks; empty means isolated.
+            return subprocess.CompletedProcess(list(argv), 0, stdout=b"")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -614,7 +907,7 @@ class TestDefaultScratchDatabaseFactory:
         def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
             calls.append(list(argv))
             returncode = 0 if argv[1] in ("run", "rm") else 1
-            return subprocess.CompletedProcess(list(argv), returncode)
+            return subprocess.CompletedProcess(list(argv), returncode, stdout=b"")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
         monkeypatch.setattr("time.sleep", lambda _seconds: None)
@@ -627,13 +920,57 @@ class TestDefaultScratchDatabaseFactory:
 
         assert calls[-1][1] == "rm", "an unready container is still removed"
 
+    def test_a_container_attached_to_a_network_is_refused_before_yielding(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Follow-up #175 item 9: trust auth is safe ONLY because of `--network none`.
+        That pairing was enforced by a docstring and two argv tests — nothing failed
+        closed at runtime if a refactor dropped the flag while keeping trust auth,
+        which would leave an unauthenticated database full of raw PII reachable from
+        the default bridge. The daemon is now asked what actually happened."""
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            stdout = b"bridge " if argv[1] == "inspect" else b""
+            return subprocess.CompletedProcess(list(argv), 0, stdout=stdout)
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(MaskScratchNotIsolatedError), docker_scratch_database():
+            pytest.fail("raw data must never enter a reachable scratch container")
+
+    def test_an_unreadable_isolation_check_fails_closed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ "Cannot tell" must read as "not proven isolated", not as "fine"."""
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            returncode = 1 if argv[1] == "inspect" else 0
+            return subprocess.CompletedProcess(list(argv), returncode, stdout=b"")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(MaskScratchNotIsolatedError), docker_scratch_database():
+            pytest.fail("an unverifiable isolation check must not admit raw data")
+
+    def test_an_isolated_container_passes_the_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`--network none` reports the single network literally named `none`."""
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            stdout = b"none " if argv[1] == "inspect" else b""
+            return subprocess.CompletedProcess(list(argv), 0, stdout=stdout)
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with docker_scratch_database() as scratch:
+            assert scratch.database == "maskdb"
+
     def test_each_scratch_container_gets_a_unique_safe_name(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         names: list[str] = []
 
         def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
-            return subprocess.CompletedProcess(list(argv), 0)
+            return subprocess.CompletedProcess(list(argv), 0, stdout=b"")
 
         monkeypatch.setattr(subprocess, "run", _fake_run)
 

@@ -106,8 +106,16 @@ _CHUNK_SIZE = 1 << 20  # 1 MiB: bounds in-memory buffering of a streamed dump.
 # should override it.
 _DEFAULT_CAPTURE_TIMEOUT = 3600.0
 
-_STAGED_FILE_PREFIX = "odoo-forge-capture-"
-CAPTURE_APPLICATION_NAME_PREFIX = "odoo-forge-capture-"
+# Two DIFFERENT namespaces, deliberately spelled differently. They previously shared a
+# literal, which invited the assumption that changing one changed both: the first names
+# a private host temp file (and is what the orphan sweep globs for), the second is a
+# PUBLIC, SQL-interpolated libpq tag used to identify a backend for termination.
+_STAGED_FILE_PREFIX = "odoo-forge-capture-dump-"
+CAPTURE_APPLICATION_NAME_PREFIX = "odoo-forge-capture-backend-"
+# The sweep globs the whole namespace, not just `_STAGED_FILE_PREFIX`, so orphans
+# written by an older build (which used the bare `odoo-forge-capture-` prefix) are
+# still reclaimed after an upgrade instead of being stranded forever.
+_STAGED_FILE_SWEEP_GLOB = "odoo-forge-capture-*"
 _APPLICATION_NAME = re.compile(rf"^{re.escape(CAPTURE_APPLICATION_NAME_PREFIX)}[0-9a-f]{{1,64}}$")
 
 # Free-space floor checked before a dump is streamed to `/tmp`. A constrained
@@ -236,19 +244,29 @@ def terminate_in_container_backend(container: str, application_name: str) -> Non
         )
 
 
-def reap_orphaned_staged_files() -> None:
+def reap_orphaned_staged_files(
+    *, max_age_seconds: float = ORPHAN_STAGED_FILE_MAX_AGE_SECONDS
+) -> None:
     """Remove staged capture temp files left behind by a killed parent process.
 
     `capture()`'s `try/finally` cleans the staged temp file on every path the
     interpreter survives — but a SIGKILL or an OOM kill runs no `finally`, so
     the file (potentially multi-GB) is orphaned in `/tmp` with no owner left.
     This sweep is the backstop: it reaps only files carrying this adapter's own
-    `_STAGED_FILE_PREFIX` and only once they are older than
-    `ORPHAN_STAGED_FILE_MAX_AGE_SECONDS`, so a concurrently running capture's
-    in-flight file is never taken out from under it.
+    `_STAGED_FILE_PREFIX` and only once they are older than `max_age_seconds`,
+    so a concurrently running capture's in-flight file is never taken out from
+    under it.
+
+    `max_age_seconds` is a parameter rather than the bare constant because the
+    default assumes a capture is bounded at an hour, while `timeout` is
+    caller-overridable and the module docstring explicitly invites raising it
+    for very large sources. A capture configured to run longer than the fixed
+    floor would otherwise be eligible for reaping BY ANOTHER CONCURRENT CAPTURE
+    while still writing — see `capture()`, which derives the floor from its own
+    timeout so an in-flight file can never age into eligibility.
     """
-    cutoff = time.time() - ORPHAN_STAGED_FILE_MAX_AGE_SECONDS
-    for candidate in Path(tempfile.gettempdir()).glob(f"{_STAGED_FILE_PREFIX}*"):
+    cutoff = time.time() - max_age_seconds
+    for candidate in Path(tempfile.gettempdir()).glob(_STAGED_FILE_SWEEP_GLOB):
         with suppress(OSError):
             if candidate.is_file() and candidate.stat().st_mtime < cutoff:
                 candidate.unlink(missing_ok=True)
@@ -365,7 +383,13 @@ class DockerPostgresqlCaptureAdapter:
         container = source.target.target_id
         self._validate_identifier(container)
         with suppress(Exception):
-            reap_orphaned_staged_files()
+            # Never reap younger than THIS adapter's own bound: a capture legitimately
+            # running longer than the fixed floor must not have its in-flight staged
+            # file unlinked by a concurrently started capture's sweep. The 2x margin
+            # covers the hash readback and persistence that follow the subprocess.
+            reap_orphaned_staged_files(
+                max_age_seconds=max(ORPHAN_STAGED_FILE_MAX_AGE_SECONDS, self._timeout * 2)
+            )
         application_name = new_capture_application_name()
         argv = [
             "docker",

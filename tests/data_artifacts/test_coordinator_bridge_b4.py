@@ -561,7 +561,11 @@ def test_the_real_mask_transform_composes_with_the_raw_blob_reap(tmp_path: Path)
             # The transform must stream the REAL staged raw bytes into pg_restore.
             assert stdin.read() == raw_payload
         if stdout is not None:
-            stdout.write(masked_payload)
+            # `-tAc` is the schema introspection pre-flight; anything else writing to
+            # stdout is the re-dump. Report the selector as a plain nullable text
+            # column so every strategy is considered maskable.
+            payload = b"res_partner|email|text|YES|f\n" if "-tAc" in argv else masked_payload
+            stdout.write(payload)
             stdout.flush()
         return subprocess.CompletedProcess(list(argv), 0)
 
