@@ -544,6 +544,52 @@ class TestDefaultScratchDatabaseFactory:
         assert tools[-1] == "rm"
         assert "-f" in calls[-1]
 
+    def test_the_scratch_container_has_no_network_interface(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review R1-001 (CRITICAL): without `--network none` the container attaches to
+        Docker's default bridge, where any neighbouring container can reach its 5432
+        directly — no published port needed. This container holds the RAW, unmasked
+        database, so the flag is the thing that makes the module's no-network-exposure
+        claim true rather than aspirational."""
+        calls: list[list[str]] = []
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(list(argv), 0)
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with docker_scratch_database():
+            pass
+
+        run_argv = calls[0]
+        assert "--network" in run_argv
+        assert run_argv[run_argv.index("--network") + 1] == "none"
+
+    def test_no_password_is_ever_passed_in_the_container_argv(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review R1-001 (CRITICAL): a fixed password in `docker run` argv is a
+        hardcoded secret readable via `docker inspect`, which `provider.py`'s
+        credential contract forbids (secrets reach Postgres only via a bind-mounted
+        `POSTGRES_PASSWORD_FILE`). With `--network none` nothing can connect from
+        outside, so trust auth carries no secret at all."""
+        calls: list[list[str]] = []
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(list(argv), 0)
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with docker_scratch_database():
+            pass
+
+        run_argv = calls[0]
+        assert not any("POSTGRES_PASSWORD" in item for item in run_argv)
+        assert "POSTGRES_HOST_AUTH_METHOD=trust" in run_argv
+
     def test_the_container_is_removed_even_when_the_body_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

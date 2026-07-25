@@ -23,7 +23,8 @@ so the DELIVERY TARGET never sees un-anonymized data. Masking after restoring
 into the target would be simpler and would also mean shipping the raw data to
 the target first, which is precisely what anonymize-before-delivery forbids.
 The scratch container is torn down in a `finally`, on success and on every
-failure path, because until it is gone it holds the raw PII.
+failure path, and runs with `--network none` throughout, because for as long as
+it exists it holds the raw PII (see `docker_scratch_database`).
 
 Fail-closed everywhere: an `UPDATE` that cannot be applied (missing table or
 column) aborts the whole transform via `ON_ERROR_STOP=1` plus a nonzero-exit
@@ -179,9 +180,24 @@ def docker_scratch_database(
     """Start a throwaway Postgres container, yield it, and always destroy it.
 
     The container is named rather than referenced by id so every argv stays
-    within the safe identifier shape the sibling adapters validate. It is
-    started with no published ports and reached only through `docker exec`, so
-    the raw data restored into it is never exposed on the network.
+    within the safe identifier shape the sibling adapters validate.
+
+    `--network none` is load-bearing, not hygiene. This container holds the RAW,
+    un-anonymized database for the duration of the round trip. Omitting the flag
+    attaches it to Docker's default bridge, where every other container on that
+    bridge can reach its `5432` directly — no published port required — so the
+    raw PII would be readable by any neighbour that can authenticate. With
+    `--network none` the container has no interface at all, and `docker exec`
+    (which is not network-based) still reaches it over the local socket.
+
+    Because nothing can connect from outside, no password is needed, so
+    `POSTGRES_HOST_AUTH_METHOD=trust` replaces a `POSTGRES_PASSWORD` env: a
+    password here would be a fixed, hardcoded secret sitting in `docker run`
+    argv and readable via `docker inspect`, which is exactly what
+    `provider.py`'s credential-injection contract forbids (secrets reach a
+    Postgres container only through a bind-mounted `POSTGRES_PASSWORD_FILE`,
+    never through env or labels). Trust auth is safe ONLY in combination with
+    `--network none`; the two must be changed together or not at all.
 
     `docker rm -f` runs in a `finally` covering the readiness wait as well as
     the body: a container that never became ready may still have started, and
@@ -195,8 +211,10 @@ def docker_scratch_database(
             "--detach",
             "--name",
             container,
+            "--network",
+            "none",
             "--env",
-            "POSTGRES_PASSWORD=scratch",
+            "POSTGRES_HOST_AUTH_METHOD=trust",
             "--env",
             f"POSTGRES_DB={database}",
             image,
