@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
 import subprocess
 import tempfile
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import IO, NoReturn, cast
+from typing import IO, NamedTuple, NoReturn, cast
 
 import pytest
 
@@ -16,18 +19,39 @@ from odoo_forge.data_artifacts.capture import CaptureSource
 from odoo_forge.data_artifacts.contracts import ArtifactComponentKind
 from odoo_forge.data_artifacts.staging import StagedArtifactStore
 from odoo_forge.data_artifacts.types import DataArtifactRef
+from odoo_forge_postgres_docker import capture as capture_module
 from odoo_forge_postgres_docker.capture import (
+    CAPTURE_APPLICATION_NAME_PREFIX,
+    MIN_STAGING_FREE_BYTES,
+    ORPHAN_STAGED_FILE_MAX_AGE_SECONDS,
     CaptureBinaryUnavailableError,
     CaptureCommandFailedError,
     CapturePersistenceError,
     CaptureRunResult,
+    CaptureStagingSpaceError,
     CaptureTimeoutError,
     DockerPostgresqlCaptureAdapter,
     InvalidCaptureIdentifierError,
+    reap_orphaned_staged_files,
+    terminate_in_container_backend,
 )
-from odoo_forge_postgres_docker.staged_store import FilesystemStagedArtifactStore
+from odoo_forge_postgres_docker.staged_store import (
+    FilesystemStagedArtifactStore,
+    StagedArtifactError,
+)
 
 _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
+
+
+class _DiskUsage(NamedTuple):
+    total: int
+    used: int
+    free: int
+
+
+def _disk_usage_stub(*, free: int) -> Callable[[object], _DiskUsage]:
+    """Return a `shutil.disk_usage` double reporting exactly `free` free bytes."""
+    return lambda _path: _DiskUsage(total=free * 2, used=free, free=free)
 
 
 def _source(target_id: str = "odoo-source") -> CaptureSource:
@@ -146,21 +170,25 @@ def test_capture_runs_pg_dump_argv_only_and_computes_digest_before_return(
 
     manifest = adapter.capture(_source())
 
-    assert runner.calls == [
-        [
-            "docker",
-            "exec",
-            "odoo-source",
-            "pg_dump",
-            "-U",
-            "postgres",
-            "--format=custom",
-            "odoo-source",
-        ]
+    assert len(runner.calls) == 1
+    argv = list(runner.calls[0])
+    assert argv[:-1] == [
+        "docker",
+        "exec",
+        "odoo-source",
+        "pg_dump",
+        "-U",
+        "postgres",
+        "--format=custom",
     ]
-    for argv in runner.calls:
-        assert isinstance(argv, list)
-        assert all(isinstance(item, str) for item in argv)
+    # The dbname is passed as a libpq conninfo string so the invocation carries a
+    # unique `application_name` a timeout can reap in-container (follow-up #153).
+    assert argv[-1].startswith(
+        f"dbname=odoo-source application_name={CAPTURE_APPLICATION_NAME_PREFIX}"
+    )
+    for recorded in runner.calls:
+        assert isinstance(recorded, list)
+        assert all(isinstance(item, str) for item in recorded)
 
     database = next(
         component
@@ -271,17 +299,38 @@ def test_capture_default_runner_invokes_subprocess_run_argv_only_never_shell(
 def test_default_runner_hashes_staged_file_in_bounded_chunks_without_full_buffering(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    chunks = [b"chunk-one-", b"chunk-two-", b"chunk-three"]
-    full = b"".join(chunks)
+    """Follow-up #153 item 4: the payload must be LARGER than one read chunk, so the
+    multi-chunk `while chunk := readback.read(...)` loop is genuinely exercised and a
+    hash fed only the first chunk would fail. `_CHUNK_SIZE` is shrunk rather than
+    writing a multi-MiB fixture, keeping the test fast while crossing real boundaries.
+    """
+    monkeypatch.setattr(capture_module, "_CHUNK_SIZE", 8)
+    # 31 bytes over an 8-byte chunk: 3 full chunks plus a 7-byte partial tail, so the
+    # loop terminates on a short read rather than an exact boundary.
+    full = b"".join([b"chunk-one-", b"chunk-two-", b"chunk-three"])
+    assert len(full) == 31
+
+    read_sizes: list[int] = []
 
     def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         stdout = cast("IO[bytes]", kwargs["stdout"])
-        for chunk in chunks:
-            stdout.write(chunk)
+        stdout.write(full)
         stdout.flush()
         return subprocess.CompletedProcess(list(argv), returncode=0)
 
+    class _CountingHasher:
+        def __init__(self) -> None:
+            self._inner = hashlib.new("sha256")
+
+        def update(self, chunk: bytes) -> None:
+            read_sizes.append(len(chunk))
+            self._inner.update(chunk)
+
+        def hexdigest(self) -> str:
+            return self._inner.hexdigest()
+
     monkeypatch.setattr(subprocess, "run", _fake_run)
+    monkeypatch.setattr(hashlib, "sha256", lambda: _CountingHasher())
     adapter = DockerPostgresqlCaptureAdapter(store=_store(tmp_path))
 
     manifest = adapter.capture(_source())
@@ -291,7 +340,8 @@ def test_default_runner_hashes_staged_file_in_bounded_chunks_without_full_buffer
         for component in manifest.components
         if component.kind is ArtifactComponentKind.DATABASE
     )
-    assert database.digest.value == hashlib.sha256(full).hexdigest()
+    assert database.digest.value == hashlib.new("sha256", full).hexdigest()
+    assert read_sizes[:4] == [8, 8, 8, 7], "multi-chunk read path must be exercised"
 
 
 def test_default_runner_raises_capture_timeout_when_real_subprocess_run_times_out(
@@ -422,6 +472,56 @@ class TestCapturePersistsIntoStagedArtifactStore:
         assert stage_failing_store.stage_calls
         assert stage_failing_store.discard_calls == stage_failing_store.put_calls
 
+    def test_no_orphaned_manifest_when_the_real_store_fails_to_stage(self, tmp_path: Path) -> None:
+        """Follow-up #161: the compensation above is proven against a MOCK store, so it
+        only shows `capture()` calls `discard`. This proves the outcome against the real
+        `FilesystemStagedArtifactStore`: an unwritable blobs directory fails `stage`
+        after `put` already succeeded, and the compensation must leave no resolvable
+        manifest pointing at bytes that were never staged."""
+        store = _store(tmp_path)
+        # `put` writes under `manifests/`; `stage` writes under `blobs/`. Pre-creating
+        # `blobs/` read-only fails exactly one of the two, in the required order.
+        blobs_dir = tmp_path / "artifact-store" / "blobs"
+        blobs_dir.mkdir(parents=True)
+        blobs_dir.chmod(0o500)
+        adapter = DockerPostgresqlCaptureAdapter(
+            runner=_RecordingRunner(stdout=b"dump-bytes"), store=store
+        )
+
+        try:
+            with pytest.raises(CapturePersistenceError):
+                adapter.capture(_source())
+
+            with pytest.raises(StagedArtifactError):
+                store.resolve(DataArtifactRef("restore-set-odoo-source"))
+        finally:
+            blobs_dir.chmod(0o700)
+
+    def test_a_failed_compensation_chains_both_failures_rather_than_swallowing_one(
+        self, tmp_path: Path
+    ) -> None:
+        """Follow-up #161: the compensating `discard` was `suppress(Exception)` in a
+        module with no logger, so a failed compensation vanished without a trace. Both
+        failures must now reach the caller through the raised error's cause chain."""
+
+        class _StageAndDiscardFailingStore(_StageFailingStore):
+            def discard(self, ref: object) -> object:
+                super().discard(ref)
+                raise RuntimeError("simulated discard failure")
+
+        adapter = DockerPostgresqlCaptureAdapter(
+            runner=_RecordingRunner(stdout=b"dump-bytes"),
+            store=cast("StagedArtifactStore", _StageAndDiscardFailingStore()),
+        )
+
+        with pytest.raises(CapturePersistenceError) as exc_info:
+            adapter.capture(_source())
+
+        cause = exc_info.value.__cause__
+        assert isinstance(cause, ExceptionGroup)
+        messages = {str(inner) for inner in cause.exceptions}
+        assert messages == {"simulated stage failure", "simulated discard failure"}
+
     def test_persistence_failure_surfaces_as_capture_persistence_error(
         self, tmp_path: Path
     ) -> None:
@@ -494,3 +594,266 @@ class TestCaptureStagedTempFileSingleOwnerCleanup:
 
         assert runner.last_staged_path is not None
         assert not runner.last_staged_path.exists()
+
+    def test_real_runner_timeout_cleans_the_staged_temp_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Follow-up #153 item 5: the timeout failure path is asserted against the
+        REAL `_run_subprocess`, where a staged temp file genuinely exists."""
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            stdout = cast("IO[bytes]", kwargs["stdout"])
+            stdout.write(b"partial-dump")
+            raise subprocess.TimeoutExpired(list(argv), cast("float", kwargs["timeout"]))
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        adapter = DockerPostgresqlCaptureAdapter(store=_store(tmp_path), reaper=lambda _c, _a: None)
+
+        with pytest.raises(CaptureTimeoutError):
+            adapter.capture(_source())
+
+        assert list(tmp_path.glob("odoo-forge-capture-*")) == []
+
+    def test_real_runner_missing_binary_cleans_the_staged_temp_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Follow-up #153 item 5: same for the missing-`docker` failure path."""
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            raise FileNotFoundError("docker")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        adapter = DockerPostgresqlCaptureAdapter(store=_store(tmp_path))
+
+        with pytest.raises(CaptureBinaryUnavailableError):
+            adapter.capture(_source())
+
+        assert list(tmp_path.glob("odoo-forge-capture-*")) == []
+
+
+class TestCaptureInContainerBackendReaping:
+    """Follow-up #153 item 1: killing the local `docker exec` client does not reap
+    the in-container `pg_dump`. Each invocation tags its libpq connection with a
+    unique `application_name`, so a timeout can terminate exactly that backend."""
+
+    def test_capture_tags_the_invocation_with_a_unique_application_name(
+        self, tmp_path: Path
+    ) -> None:
+        runner = _RecordingRunner()
+        adapter = DockerPostgresqlCaptureAdapter(runner=runner, store=_store(tmp_path))
+
+        adapter.capture(_source())
+        adapter.capture(_source())
+
+        conninfos = [argv[-1] for argv in runner.calls]
+        application_names = [conninfo.split("application_name=")[1] for conninfo in conninfos]
+        assert all(conninfo.startswith("dbname=odoo-source ") for conninfo in conninfos)
+        assert all(name.startswith(CAPTURE_APPLICATION_NAME_PREFIX) for name in application_names)
+        assert len(set(application_names)) == 2, "each invocation must be uniquely tagged"
+
+    def test_timeout_reaps_the_backend_for_exactly_that_invocation(self, tmp_path: Path) -> None:
+        runner = _TimeoutRunner()
+        reaped: list[tuple[str, str]] = []
+        adapter = DockerPostgresqlCaptureAdapter(
+            runner=runner,
+            store=_store(tmp_path),
+            reaper=lambda container, application_name: reaped.append((container, application_name)),
+        )
+
+        with pytest.raises(CaptureTimeoutError):
+            adapter.capture(_source())
+
+        assert len(reaped) == 1
+        container, application_name = reaped[0]
+        assert container == "odoo-source"
+        assert application_name in runner.calls[0][-1]
+
+    def test_successful_capture_never_reaps(self, tmp_path: Path) -> None:
+        reaped: list[tuple[str, str]] = []
+        adapter = DockerPostgresqlCaptureAdapter(
+            runner=_RecordingRunner(),
+            store=_store(tmp_path),
+            reaper=lambda container, application_name: reaped.append((container, application_name)),
+        )
+
+        adapter.capture(_source())
+
+        assert reaped == []
+
+    def test_reaper_failure_never_masks_the_capture_timeout(self, tmp_path: Path) -> None:
+        """The reaper is best-effort: a dead container or a missing `psql` must not
+        replace the caller-meaningful `CaptureTimeoutError` with a reaper error."""
+
+        def _boom_reaper(_container: str, _application_name: str) -> NoReturn:
+            raise RuntimeError("simulated reaper failure")
+
+        adapter = DockerPostgresqlCaptureAdapter(
+            runner=_TimeoutRunner(), store=_store(tmp_path), reaper=_boom_reaper
+        )
+
+        with pytest.raises(CaptureTimeoutError):
+            adapter.capture(_source())
+
+    def test_default_reaper_terminates_the_matching_backend_argv_only_and_bounded(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        recorded: dict[str, object] = {}
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+            recorded["argv"] = list(argv)
+            recorded.update(kwargs)
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        terminate_in_container_backend("odoo-source", "odoo-forge-capture-abc123")
+
+        argv = cast("list[str]", recorded["argv"])
+        assert argv[:5] == ["docker", "exec", "odoo-source", "psql", "-U"]
+        assert "pg_terminate_backend" in argv[-1]
+        assert "odoo-forge-capture-abc123" in argv[-1]
+        assert recorded["shell"] is False
+        assert isinstance(recorded["timeout"], float)
+
+    def test_default_reaper_swallows_subprocess_failures(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> NoReturn:
+            raise FileNotFoundError("docker")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        terminate_in_container_backend("odoo-source", "odoo-forge-capture-abc123")
+
+    def test_default_reaper_rejects_an_unsafe_application_name(self) -> None:
+        """The application name is interpolated into a SQL literal, so it is
+        validated rather than trusted — it never originates from user input, but
+        the guard keeps that invariant mechanical."""
+        with pytest.raises(InvalidCaptureIdentifierError):
+            terminate_in_container_backend("odoo-source", "capture'; DROP TABLE x; --")
+
+
+class TestCaptureStagingDiskSpaceGuard:
+    """Follow-up #153 item 2: a constrained `/tmp` (tmpfs containers) filling
+    mid multi-GB dump surfaced a generic error. A pre-flight free-space floor
+    turns that into an explicit, diagnosable signal."""
+
+    def test_capture_refuses_to_stage_below_the_free_space_floor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> NoReturn:
+            raise AssertionError("subprocess must never start below the free-space floor")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(shutil, "disk_usage", _disk_usage_stub(free=1))
+        adapter = DockerPostgresqlCaptureAdapter(store=_store(tmp_path))
+
+        with pytest.raises(CaptureStagingSpaceError) as exc_info:
+            adapter.capture(_source())
+
+        assert str(exc_info.value) == CaptureStagingSpaceError.public_detail
+
+    def test_capture_proceeds_above_the_free_space_floor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            stdout = cast("IO[bytes]", kwargs["stdout"])
+            stdout.write(b"payload")
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(shutil, "disk_usage", _disk_usage_stub(free=MIN_STAGING_FREE_BYTES * 4))
+        adapter = DockerPostgresqlCaptureAdapter(store=_store(tmp_path))
+
+        assert adapter.capture(_source()) is not None
+
+    def test_an_unreadable_staging_directory_never_blocks_a_capture(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The guard is advisory: if free space cannot be determined, capture
+        proceeds rather than failing closed on a diagnostic."""
+
+        def _fake_run(argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            stdout = cast("IO[bytes]", kwargs["stdout"])
+            stdout.write(b"payload")
+            return subprocess.CompletedProcess(list(argv), returncode=0)
+
+        def _boom_disk_usage(_path: str) -> NoReturn:
+            raise OSError("simulated statvfs failure")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+        monkeypatch.setattr(shutil, "disk_usage", _boom_disk_usage)
+        adapter = DockerPostgresqlCaptureAdapter(store=_store(tmp_path))
+
+        assert adapter.capture(_source()) is not None
+
+
+class TestOrphanedStagedFileReaper:
+    """Follow-up #153 item 3: a SIGKILLed/OOM-killed parent leaves its
+    `odoo-forge-capture-*` temp file behind with no owner left to clean it."""
+
+    def _aged(self, path: Path, age_seconds: float) -> None:
+        stale = time.time() - age_seconds
+        os.utime(path, (stale, stale))
+
+    def test_reaps_stale_capture_temp_files(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        orphan = tmp_path / "odoo-forge-capture-abc"
+        orphan.write_bytes(b"orphaned dump")
+        self._aged(orphan, ORPHAN_STAGED_FILE_MAX_AGE_SECONDS * 2)
+
+        reap_orphaned_staged_files()
+
+        assert not orphan.exists()
+
+    def test_keeps_capture_temp_files_younger_than_the_age_floor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A concurrently running capture's staged file must never be reaped."""
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        live = tmp_path / "odoo-forge-capture-live"
+        live.write_bytes(b"in-flight dump")
+
+        reap_orphaned_staged_files()
+
+        assert live.exists()
+
+    def test_never_touches_unrelated_temp_files(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        unrelated = tmp_path / "some-other-tool-file"
+        unrelated.write_bytes(b"not ours")
+        self._aged(unrelated, ORPHAN_STAGED_FILE_MAX_AGE_SECONDS * 10)
+
+        reap_orphaned_staged_files()
+
+        assert unrelated.exists()
+
+    def test_capture_reaps_orphans_before_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(tempfile, "gettempdir", lambda: str(tmp_path))
+        orphan = tmp_path / "odoo-forge-capture-abc"
+        orphan.write_bytes(b"orphaned dump")
+        self._aged(orphan, ORPHAN_STAGED_FILE_MAX_AGE_SECONDS * 2)
+        adapter = DockerPostgresqlCaptureAdapter(runner=_RecordingRunner(), store=_store(tmp_path))
+
+        adapter.capture(_source())
+
+        assert not orphan.exists()
+
+    def test_a_reaper_failure_never_blocks_a_capture(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def _boom_reap() -> NoReturn:
+            raise OSError("simulated temp dir failure")
+
+        monkeypatch.setattr(capture_module, "reap_orphaned_staged_files", _boom_reap)
+        adapter = DockerPostgresqlCaptureAdapter(runner=_RecordingRunner(), store=_store(tmp_path))
+
+        assert adapter.capture(_source()) is not None

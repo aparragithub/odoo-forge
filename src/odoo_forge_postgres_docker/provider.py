@@ -99,11 +99,6 @@ def _unavailable_credential_target(
     raise CredentialUnavailableError()
 
 
-def _discard_restore_component(_component: RestoreSetComponent, _target: str) -> bool:
-    """Default target injector retains no artifact bytes in the provider."""
-    return False
-
-
 _DEFAULT_RESTORE_INJECTOR: RestoreTarget = make_docker_restore_target()
 
 

@@ -13,6 +13,7 @@ import hashlib
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -602,9 +603,9 @@ def test_store_wiring_restore_target_reads_real_staged_bytes_via_byte_source(
     seen_stdin_bytes: list[bytes] = []
 
     def _fake_runner(
-        argv: Sequence[str], *, stdin_path: Path, timeout: float
+        argv: Sequence[str], *, stdin: IO[bytes], timeout: float
     ) -> subprocess.CompletedProcess[str]:
-        seen_stdin_bytes.append(stdin_path.read_bytes())
+        seen_stdin_bytes.append(stdin.read())
         return subprocess.CompletedProcess(args=argv, returncode=0, stdout="", stderr="")
 
     restore_target = make_docker_restore_target(byte_source=byte_source, runner=_fake_runner)

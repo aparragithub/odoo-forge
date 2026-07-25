@@ -10,6 +10,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -20,10 +21,11 @@ from odoo_forge.data_artifacts.contracts import (
 )
 from odoo_forge_postgres_docker.restore_target import (
     InvalidRestoreIdentifierError,
+    RestoreArtifactUnreadableError,
+    RestoreBinaryUnavailableError,
     RestoreByteSourceUnavailableError,
-    RestoreInjectionBinaryUnavailableError,
-    RestoreInjectionFailedError,
-    RestoreInjectionTimeoutError,
+    RestoreCommandFailedError,
+    RestoreTimeoutError,
     make_docker_restore_target,
 )
 
@@ -53,26 +55,26 @@ def _filestore_component() -> RestoreSetComponent:
 
 class _RecordingRunner:
     def __init__(self, returncode: int = 0) -> None:
-        self.calls: list[tuple[list[str], Path]] = []
+        self.calls: list[tuple[list[str], bytes]] = []
         self._returncode = returncode
 
     def __call__(
-        self, argv: Sequence[str], *, stdin_path: Path, timeout: float
+        self, argv: Sequence[str], *, stdin: IO[bytes], timeout: float
     ) -> subprocess.CompletedProcess[str]:
-        self.calls.append((list(argv), stdin_path))
+        self.calls.append((list(argv), stdin.read()))
         return subprocess.CompletedProcess(list(argv), self._returncode, "", "")
 
 
 class _MissingBinaryRunner:
     def __call__(
-        self, argv: Sequence[str], *, stdin_path: Path, timeout: float
+        self, argv: Sequence[str], *, stdin: IO[bytes], timeout: float
     ) -> subprocess.CompletedProcess[str]:
         raise FileNotFoundError("docker")
 
 
 class _TimeoutRunner:
     def __call__(
-        self, argv: Sequence[str], *, stdin_path: Path, timeout: float
+        self, argv: Sequence[str], *, stdin: IO[bytes], timeout: float
     ) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(list(argv), timeout)
 
@@ -95,11 +97,11 @@ def test_restore_target_streams_database_component_via_argv_only_pg_restore(
     result = target(_database_component(), "odoo-target")
 
     assert result is True
-    argv, stdin_path = runner.calls[0]
+    argv, streamed = runner.calls[0]
     assert argv[:4] == ["docker", "exec", "-i", "odoo-target"]
     assert "pg_restore" in argv
     assert "-d" in argv and "odoo-target" in argv
-    assert stdin_path == staged
+    assert streamed == b"dump-bytes", "the runner receives the staged bytes, already opened"
     for item in argv:
         assert isinstance(item, str)
 
@@ -115,10 +117,10 @@ def test_restore_target_nonzero_returncode_raises_distinct_failed_error() -> Non
     runner = _RecordingRunner(returncode=1)
     target = make_docker_restore_target(byte_source=_byte_source(Path("/dev/null")), runner=runner)
 
-    with pytest.raises(RestoreInjectionFailedError) as exc_info:
+    with pytest.raises(RestoreCommandFailedError) as exc_info:
         target(_database_component(), "odoo-target")
 
-    assert str(exc_info.value) == RestoreInjectionFailedError.public_detail
+    assert str(exc_info.value) == RestoreCommandFailedError.public_detail
 
 
 def test_restore_target_missing_docker_binary_raises_distinct_error() -> None:
@@ -126,10 +128,10 @@ def test_restore_target_missing_docker_binary_raises_distinct_error() -> None:
         byte_source=_byte_source(Path("/dev/null")), runner=_MissingBinaryRunner()
     )
 
-    with pytest.raises(RestoreInjectionBinaryUnavailableError) as exc_info:
+    with pytest.raises(RestoreBinaryUnavailableError) as exc_info:
         target(_database_component(), "odoo-target")
 
-    assert str(exc_info.value) == RestoreInjectionBinaryUnavailableError.public_detail
+    assert str(exc_info.value) == RestoreBinaryUnavailableError.public_detail
 
 
 def test_restore_target_timeout_raises_distinct_timeout_error() -> None:
@@ -137,10 +139,10 @@ def test_restore_target_timeout_raises_distinct_timeout_error() -> None:
         byte_source=_byte_source(Path("/dev/null")), runner=_TimeoutRunner()
     )
 
-    with pytest.raises(RestoreInjectionTimeoutError) as exc_info:
+    with pytest.raises(RestoreTimeoutError) as exc_info:
         target(_database_component(), "odoo-target")
 
-    assert str(exc_info.value) == RestoreInjectionTimeoutError.public_detail
+    assert str(exc_info.value) == RestoreTimeoutError.public_detail
 
 
 @pytest.mark.parametrize(
@@ -184,6 +186,55 @@ def test_filestore_component_is_a_no_op_success_without_invoking_docker() -> Non
 
     assert result is True
     assert runner.calls == []
+
+
+class TestMissingStagedArtifactIsNotMisreportedAsAMissingBinary:
+    """Follow-up #161 item 1: opening the staged dump used to happen inside the same
+    `try` as the docker-exec call, so an absent artifact (`FileNotFoundError`) was
+    diagnosed as `RestoreBinaryUnavailableError` — "docker binary unavailable" sent
+    an operator hunting for a broken Docker install instead of a missing dump."""
+
+    def test_a_missing_staged_file_raises_the_artifact_error(self, tmp_path: Path) -> None:
+        runner = _RecordingRunner()
+        absent = tmp_path / "never-written.dump"
+        target = make_docker_restore_target(byte_source=_byte_source(absent), runner=runner)
+
+        with pytest.raises(RestoreArtifactUnreadableError) as exc_info:
+            target(_database_component(), "odoo-target")
+
+        assert str(exc_info.value) == RestoreArtifactUnreadableError.public_detail
+        assert runner.calls == [], "docker must never be invoked without readable bytes"
+
+    def test_a_missing_staged_file_is_never_the_binary_error(self, tmp_path: Path) -> None:
+        target = make_docker_restore_target(
+            byte_source=_byte_source(tmp_path / "never-written.dump"), runner=_RecordingRunner()
+        )
+
+        with pytest.raises(RestoreArtifactUnreadableError):
+            target(_database_component(), "odoo-target")
+
+    def test_an_unreadable_staged_file_raises_the_artifact_error(self, tmp_path: Path) -> None:
+        """A directory where a dump was expected: readable path, unopenable bytes."""
+        staged = tmp_path / "not-a-file"
+        staged.mkdir()
+        target = make_docker_restore_target(
+            byte_source=_byte_source(staged), runner=_RecordingRunner()
+        )
+
+        with pytest.raises(RestoreArtifactUnreadableError):
+            target(_database_component(), "odoo-target")
+
+    def test_a_missing_docker_binary_still_raises_the_binary_error(self, tmp_path: Path) -> None:
+        """The other half of the split: with readable bytes, `FileNotFoundError` from
+        the runner can only mean `docker` itself is gone."""
+        staged = tmp_path / "database-odoo-target.dump"
+        staged.write_bytes(b"dump-bytes")
+        target = make_docker_restore_target(
+            byte_source=_byte_source(staged), runner=_MissingBinaryRunner()
+        )
+
+        with pytest.raises(RestoreBinaryUnavailableError):
+            target(_database_component(), "odoo-target")
 
 
 def test_default_runner_streams_from_file_argv_only_never_shell(
