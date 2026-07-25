@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 
@@ -45,6 +46,10 @@ from odoo_forge.database.types import (
 )
 from odoo_forge.durable_operations.types import DurableOperationIdentity, LifecycleState
 from odoo_forge.resource_ownership.types import OperationIdentity, ResourceOwnership
+from odoo_forge_postgres_docker.mask_transform import (
+    ScratchDatabase,
+    make_docker_mask_transform,
+)
 from odoo_forge_postgres_docker.restore_target import make_docker_restore_target
 from odoo_forge_postgres_docker.staged_capability import (
     StagedArtifactCapability,
@@ -69,6 +74,18 @@ def _component(
     return RestoreSetComponent(
         kind=kind, opaque_component_ref=ref, format_version="v1", digest=digest
     )
+
+
+def _database_component_of(manifest: RestoreSetManifest) -> RestoreSetComponent:
+    return next(
+        component
+        for component in manifest.components
+        if component.kind is ArtifactComponentKind.DATABASE
+    )
+
+
+def _database_digest(manifest: RestoreSetManifest) -> ArtifactDigest:
+    return _database_component_of(manifest).digest
 
 
 def _manifest_with_database_digest(digest: ArtifactDigest) -> RestoreSetManifest:
@@ -515,6 +532,59 @@ def test_shared_filestore_blob_survives_the_digest_changing_raw_reap(tmp_path: P
     assert filestore_blob_path.exists()
     raw_blob_path = store.root / "blobs" / f"{raw_digest.algorithm}-{raw_digest.value}.bin"
     assert not raw_blob_path.exists()
+
+
+def test_the_real_mask_transform_composes_with_the_raw_blob_reap(tmp_path: Path) -> None:
+    """Every other test here drives the reap with `_make_masking_transform`, a mock that
+    stages masked bytes because the test tells it to. This one wires the REAL
+    `make_docker_mask_transform` (fake subprocess runner and scratch factory only, so no
+    `docker` is needed) and proves the two halves actually fit: the transform's new digest
+    is what lands in the re-persisted manifest, and the raw pre-mask blob — real,
+    unmasked PII in production — is gone from the store afterward."""
+    store = FilesystemStagedArtifactStore(tmp_path / "artifact-store")
+    raw_payload = b"raw-pii-bytes"
+    masked_payload = b"masked-by-the-real-transform"
+    raw_manifest = _stage_raw_manifest(store, tmp_path, raw_payload)
+
+    @contextmanager
+    def _scratch_factory() -> Iterator[ScratchDatabase]:
+        yield ScratchDatabase(container="odoo-forge-mask-test", database="maskdb")
+
+    def _fake_runner(
+        argv: Sequence[str],
+        *,
+        stdin: IO[bytes] | None = None,
+        stdout: IO[bytes] | None = None,
+        timeout: float,
+    ) -> subprocess.CompletedProcess[bytes]:
+        if stdin is not None:
+            # The transform must stream the REAL staged raw bytes into pg_restore.
+            assert stdin.read() == raw_payload
+        if stdout is not None:
+            stdout.write(masked_payload)
+            stdout.flush()
+        return subprocess.CompletedProcess(list(argv), 0)
+
+    coordinator = _build_coordinator(
+        store=store,
+        capture_manifest=raw_manifest,
+        mask_transform=make_docker_mask_transform(
+            store=store, runner=_fake_runner, scratch_factory=_scratch_factory
+        ),
+        database_provider=_FakeDatabaseProvider(_creation()),
+    )
+    raw_digest = _digest_of(raw_payload)
+    raw_blob_path = store.root / "blobs" / f"{raw_digest.algorithm}-{raw_digest.value}.bin"
+    assert raw_blob_path.exists(), "guard: the raw blob must exist before the copy runs"
+
+    result = _run(coordinator, retain_staged=True)
+
+    assert result.state is LifecycleState.SUCCEEDED
+    delivered = store.resolve(DataArtifactRef(_RESTORE_SET_ID))
+    masked_digest = _digest_of(masked_payload)
+    assert _database_digest(delivered) == masked_digest
+    assert store.open_component(_database_component_of(delivered)).read_bytes() == masked_payload
+    assert not raw_blob_path.exists(), "the raw pre-mask blob must never outlive the copy"
 
 
 def test_discard_on_success_removes_staged_bytes_by_default(tmp_path: Path) -> None:
