@@ -26,8 +26,11 @@ from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge.project_catalog.interfaces import CatalogIndex
 from odoo_forge_catalog import YamlCatalogIndex
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
+from odoo_forge_docker.ownership import BackendOwnershipCustody
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_git.git_provider import GitSourceProvider
+from odoo_forge_pipeline_github.provider import GitHubActionsPipelineProvider
+from odoo_forge_pipeline_github.transport import GitHubActionsRestTransport
 from odoo_forge_postgres_docker.capture import DockerPostgresqlCaptureAdapter
 from odoo_forge_postgres_docker.mask_transform import make_docker_mask_transform
 from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
@@ -40,8 +43,6 @@ from odoo_forge_postgres_docker.staged_store import (
     FilesystemStagedArtifactStore,
     default_staged_artifact_store_root,
 )
-from odoo_forge_pipeline_github.provider import GitHubActionsPipelineProvider
-from odoo_forge_pipeline_github.transport import GitHubActionsRestTransport
 from odoo_forge_registry import GhcrImageRegistryProvider, PublishedArtifactRegistryResolver
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
@@ -134,6 +135,7 @@ def _make_backend_provider(
     return DockerBackendProvider(
         credential_injector=SopsEnvFileInjector(SopsCommandResolver(credentials_file)),
         database_provider=_make_database_provider(credentials_file=credentials_file),
+        custody=BackendOwnershipCustody.default(),
     )
 
 

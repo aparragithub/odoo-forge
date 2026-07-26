@@ -14,6 +14,7 @@ created-only rollback (PR-2a-ii). PR-2b adds `status()`/`stop()`/`logs()`/
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -21,6 +22,7 @@ import uuid
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+from odoo_forge.backend.destruction import DestroyOutcome, DestroyResourceResult, DestroyResult
 from odoo_forge.backend.errors import (
     ContainerRunError,
     DockerUnavailableError,
@@ -47,6 +49,7 @@ from odoo_forge.credentials.errors import CredentialError
 from odoo_forge.database.types import DatabaseCreation, DatabaseSpec, ResourceOwnership
 from odoo_forge.ports.database_provider import DatabaseProvider
 from odoo_forge_docker.credential_injection import SopsEnvFileInjector
+from odoo_forge_docker.ownership import BackendOwnershipCustody
 
 DEFAULT_DOCKER_TIMEOUT_SECONDS = 30.0
 # Two complete 150s health-failure envelopes permit one recovery window.
@@ -73,6 +76,7 @@ _PULL_AUTH_MARKERS = (
     "denied",
 )
 _BOOTSTRAP_OUTPUT_LIMIT = 8_000
+_SAFE_IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 
 _ROLE_VOLUME_TARGET: dict[ContainerRole, str] = {
     "postgres": "/var/lib/postgresql/data",
@@ -207,6 +211,7 @@ class DockerBackendProvider:
         sleep: Callable[[float], None] = time.sleep,
         credential_injector: SopsEnvFileInjector | None = None,
         database_provider: DatabaseProvider | None = None,
+        custody: BackendOwnershipCustody | None = None,
     ) -> None:
         self._docker_timeout = docker_timeout
         self._health_wait_timeout = health_wait_timeout
@@ -219,6 +224,7 @@ class DockerBackendProvider:
         # `ContainerRunError` up front when it is absent, rather than
         # failing later with a confusing `AttributeError`.
         self._database_provider = database_provider
+        self._custody = custody
 
     def run(self, plan: BackendPlan) -> InstanceRef:
         # `docker inspect <name>` exits 0 for a container in ANY state
@@ -281,6 +287,24 @@ class DockerBackendProvider:
 
             self._run_container(plan.odoo, created)
             self._wait_odoo_healthy(plan.odoo)
+
+            ref = instance_ref(plan)
+            if self._custody is not None and plan.odoo.volumes:
+                token = next(
+                    (
+                        item[2]
+                        for item in created
+                        if len(item) == 3
+                        and item[0] == "volume"
+                        and item[1] == plan.odoo.volumes[0].name
+                    ),
+                    None,
+                )
+                try:
+                    self._custody.record(ref.project, ref.instance, db_creation.receipt, token)
+                except OSError as exc:
+                    raise ContainerRunError(f"custody persistence failed: {exc}") from exc
+            return ref
         except Exception as exc:
             detail = str(exc)
             if isinstance(exc, ContainerRunError) and "did not become healthy" in detail:
@@ -296,8 +320,6 @@ class DockerBackendProvider:
             raise
         finally:
             self._credential_injector.clear()
-
-        return instance_ref(plan)
 
     # -- status/stop/logs/exec (PR-2b) ---------------------------------------
 
@@ -329,24 +351,145 @@ class DockerBackendProvider:
         `stop` -> `run` cycle (design "stop semantics"). Raises
         `InstanceNotFoundError` when NEITHER role container exists.
         """
-        pg_exists = self._container_exists(ref.postgres_container)
-        odoo_exists = self._container_exists(ref.odoo_container)
-        if not pg_exists and not odoo_exists:
+        self._remove_runtime(ref, absent_is_error=True)
+
+    def destroy(self, ref: InstanceRef) -> DestroyResult:
+        """Stop first, then report only resources with positive ownership evidence."""
+        self._validate_ref(ref)
+        existing = self._runtime_exists(ref)
+        try:
+            runtime_results = self._remove_runtime(ref, absent_is_error=False)
+        except Exception as exc:
+            failed = tuple(
+                DestroyResourceResult(
+                    kind="network" if name == ref.network else "container",
+                    identifier=name,
+                    outcome="failed" if existing[name] else "absent",
+                    detail=str(exc) if existing[name] else None,
+                )
+                for name in (ref.postgres_container, ref.odoo_container, ref.network)
+            )
+            return DestroyResult(resources=failed + self._protected_data(ref, failed=True))
+        if any(item.outcome in ("protected", "failed") for item in runtime_results):
+            return DestroyResult(resources=runtime_results + self._protected_data(ref))
+        return DestroyResult(resources=runtime_results + self._reclaim_data(ref))
+
+    def _remove_runtime(
+        self, ref: InstanceRef, *, absent_is_error: bool
+    ) -> tuple[DestroyResourceResult, ...]:
+        self._validate_ref(ref)
+        existing = self._runtime_exists(ref)
+        if absent_is_error and not any(existing.values()):
             raise InstanceNotFoundError(
                 f"no managed containers found for instance {ref.instance!r}"
             )
+        results: list[DestroyResourceResult] = []
+        for name, role in ((ref.postgres_container, "postgres"), (ref.odoo_container, "odoo")):
+            if existing[name]:
+                if not self._runtime_has_ownership("container", name, ref, role=role):
+                    outcome: DestroyOutcome = "protected"
+                else:
+                    self._exec(["docker", "stop", name])
+                    self._exec(["docker", "rm", "-f", "-v", name])
+                    outcome = "removed"
+            else:
+                outcome = "absent"
+            results.append(
+                DestroyResourceResult(kind="container", identifier=name, outcome=outcome)
+            )
+        if existing[ref.network]:
+            if self._runtime_has_ownership("network", ref.network, ref):
+                self._exec(["docker", "network", "rm", ref.network])
+                outcome = "removed"
+            else:
+                outcome = "protected"
+        else:
+            outcome = "absent"
+        results.append(
+            DestroyResourceResult(kind="network", identifier=ref.network, outcome=outcome)
+        )
+        return tuple(results)
 
-        for name, exists in (
-            (ref.postgres_container, pg_exists),
-            (ref.odoo_container, odoo_exists),
-        ):
-            if not exists:
-                continue
-            self._exec(["docker", "stop", name])
-            self._exec(["docker", "rm", "-f", "-v", name])
+    def _runtime_exists(self, ref: InstanceRef) -> dict[str, bool]:
+        return {
+            ref.postgres_container: self._container_exists(ref.postgres_container),
+            ref.odoo_container: self._container_exists(ref.odoo_container),
+            ref.network: self._network_exists(ref.network),
+        }
 
-        if self._network_exists(ref.network):
-            self._exec(["docker", "network", "rm", ref.network])
+    def _validate_ref(self, ref: InstanceRef) -> None:
+        for identifier in (ref.network, ref.postgres_container, ref.odoo_container):
+            if _SAFE_IDENTIFIER.fullmatch(identifier) is None:
+                raise ValueError(f"invalid Docker identifier: {identifier!r}")
+
+    def _protected_data(
+        self, ref: InstanceRef, *, failed: bool = False
+    ) -> tuple[DestroyResourceResult, ...]:
+        results = []
+        for name in (f"{ref.network}-pgdata", f"{ref.network}-filestore"):
+            if not self._volume_exists(name):
+                outcome: DestroyOutcome = "absent"
+                detail = None
+            else:
+                outcome = "failed" if failed else "protected"
+                detail = "runtime removal failed" if failed else "ownership proof unavailable"
+            results.append(
+                DestroyResourceResult(
+                    kind="volume", identifier=name, outcome=outcome, detail=detail
+                )
+            )
+        return tuple(results)
+
+    def _reclaim_data(self, ref: InstanceRef) -> tuple[DestroyResourceResult, ...]:
+        if self._custody is None or self._database_provider is None:
+            return self._protected_data(ref)
+        try:
+            proof = self._custody.consume(ref.project, ref.instance)
+        except OSError as exc:
+            raise ContainerRunError(f"custody persistence failed: {exc}") from exc
+        if proof is None:
+            return self._protected_data(ref)
+        receipt, token = proof
+        pgdata = f"{ref.network}-pgdata"
+        owned = set(receipt.owned_resource_ids)
+        before = self._volume_exists(pgdata)
+        cleanup_failed = False
+        try:
+            residuals = set(self._database_provider.cleanup(receipt).residual_failures)
+            cleanup_failed = bool(residuals)
+        except Exception:
+            residuals = owned
+            cleanup_failed = True
+        pg_outcome: DestroyOutcome = (
+            ("failed" if pgdata in residuals else "removed" if before else "absent")
+            if pgdata in owned
+            else ("protected" if before else "absent")
+        )
+        pg_result = DestroyResourceResult(kind="volume", identifier=pgdata, outcome=pg_outcome)
+        filestore = f"{ref.network}-filestore"
+        if not token:
+            fs_outcome: DestroyOutcome = "protected" if self._volume_exists(filestore) else "absent"
+        elif not self._volume_exists(filestore):
+            fs_outcome = "absent"
+        elif not self._volume_has_label(filestore, "com.odoo-forge.create-token", token):
+            fs_outcome = "protected"
+        else:
+            try:
+                self._exec(["docker", "volume", "rm", filestore])
+            except Exception:
+                fs_outcome = "failed"
+            else:
+                fs_outcome = "removed"
+        results = (
+            pg_result,
+            DestroyResourceResult(kind="volume", identifier=filestore, outcome=fs_outcome),
+        )
+        if not cleanup_failed and all(item.outcome in ("removed", "absent") for item in results):
+            try:
+                self._custody.complete(ref.project, ref.instance, receipt, token)
+            except OSError as exc:
+                raise ContainerRunError(f"custody persistence failed: {exc}") from exc
+        return results
 
     def logs(self, ref: InstanceRef, role: ContainerRole) -> str:
         """Return `role`'s captured `docker logs` output for `ref`."""
@@ -652,6 +795,35 @@ class DockerBackendProvider:
         except (ValueError, TypeError, IndexError, AttributeError):
             return False
         return labels.get(key) == value
+
+    def _runtime_has_ownership(
+        self, kind: str, name: str, ref: InstanceRef, *, role: str | None = None
+    ) -> bool:
+        argv = ["docker", "inspect", name]
+        if kind == "network":
+            argv.insert(1, "network")
+        result = self._run_raw(argv)
+        try:
+            entry = json.loads(result.stdout)[0]
+            labels = (
+                (entry.get("Config") or {}).get("Labels")
+                if kind == "container"
+                else entry.get("Labels")
+            )
+        except (ValueError, TypeError, IndexError, AttributeError):
+            return False
+        expected = {
+            "com.odoo-forge.managed": "true",
+            "com.odoo-forge.project": ref.project,
+            "com.odoo-forge.instance": ref.instance,
+        }
+        if role is not None:
+            expected["com.odoo-forge.role"] = role
+        return (
+            result.returncode == 0
+            and isinstance(labels, dict)
+            and expected.items() <= labels.items()
+        )
 
     def _container_exists(self, name: str) -> bool:
         return self._exists(["docker", "inspect", name])

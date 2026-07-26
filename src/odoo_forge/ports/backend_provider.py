@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    from odoo_forge.backend.destruction import DestroyResult
     from odoo_forge.backend.plan import BackendPlan, ContainerRole
     from odoo_forge.backend.status import ExecResult, InstanceRef, InstanceStatus
 
@@ -36,6 +37,10 @@ class BackendProvider(Protocol):
 
     def stop(self, ref: InstanceRef) -> None:
         """Stop and remove `ref`'s containers/network, preserving named volumes."""
+        ...
+
+    def destroy(self, ref: InstanceRef) -> DestroyResult:
+        """Irreversibly remove only provider-owned resources for `ref`."""
         ...
 
     def logs(self, ref: InstanceRef, role: ContainerRole) -> str:

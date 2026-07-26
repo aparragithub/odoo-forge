@@ -349,6 +349,26 @@ def test_default_backend_composition_configures_a_sops_resolver_for_the_manifest
     assert provider._credential_injector._resolver._credentials_file == credentials_file
 
 
+def test_destroy_positional_instance_requires_noninteractive_yes_before_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project_yaml = _write_manifest(tmp_path)
+    constructed = False
+
+    def _forbidden_provider(**_kwargs: object) -> _FakeBackendProvider:
+        nonlocal constructed
+        constructed = True
+        return _FakeBackendProvider()
+
+    monkeypatch.setattr(_composition, "_make_backend_provider", _forbidden_provider)
+
+    result = runner.invoke(app, ["destroy", "named", "--manifest", str(project_yaml)])
+
+    assert result.exit_code != 0
+    assert "--yes" in result.output
+    assert not constructed
+
+
 def test_make_database_provider_returns_a_docker_postgresql_provider(
     tmp_path: Path,
 ) -> None:

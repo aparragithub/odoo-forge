@@ -3,10 +3,12 @@ import json
 import stat
 import subprocess
 import typing
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+from odoo_forge.backend.destruction import DestroyResult
 from odoo_forge.backend.errors import (
     ContainerRunError,
     DockerUnavailableError,
@@ -36,6 +38,7 @@ from odoo_forge.database.types import (
 )
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
+from odoo_forge_docker.ownership import BackendOwnershipCustody
 from odoo_forge_docker.provider import (
     _BOOTSTRAP_TIMEOUT_SECONDS,
     DockerBackendProvider,
@@ -200,7 +203,9 @@ class _Router:
 
         if argv[1:3] == ["network", "inspect"]:
             name = argv[3]
-            return _FakeCompletedProcess(1 if name in self.not_found else 0)
+            return _FakeCompletedProcess(
+                1 if name in self.not_found else 0, stdout=json.dumps([{"Labels": _labels()}])
+            )
         if argv[1:3] == ["volume", "inspect"]:
             name = argv[3]
             if name in self.not_found:
@@ -220,7 +225,11 @@ class _Router:
             if name not in self._created_containers:
                 # Pre-creation existence check (precheck): only "exists" if
                 # NOT in `not_found` — used for the run() refuse-if-exists gate.
-                return _FakeCompletedProcess(1 if name in self.not_found else 0)
+                role = "postgres" if name == DB_NAME else "odoo"
+                return _FakeCompletedProcess(
+                    1 if name in self.not_found else 0,
+                    stdout=json.dumps([{"Config": {"Labels": _labels(role)}}]),
+                )
             if name == ODOO_NAME:
                 self._odoo_attempts += 1
                 if self._odoo_attempts > self.odoo_healthy_after:
@@ -231,7 +240,13 @@ class _Router:
                         [{"State": {"Running": True, "Health": {"Status": "starting"}}}]
                     ),
                 )
-            return _FakeCompletedProcess(0, stdout=json.dumps([{"State": {"Running": True}}]))
+            role = "postgres" if name == DB_NAME else "odoo"
+            return _FakeCompletedProcess(
+                0,
+                stdout=json.dumps(
+                    [{"Config": {"Labels": _labels(role)}, "State": {"Running": True}}]
+                ),
+            )
         if argv[1:3] == ["network", "create"]:
             return _FakeCompletedProcess(0)
         if argv[1:3] == ["volume", "create"]:
@@ -246,6 +261,8 @@ class _Router:
         if argv[1] == "pull":
             if self.pull_error_stderr is not None:
                 return _FakeCompletedProcess(1, stderr=self.pull_error_stderr)
+            return _FakeCompletedProcess(0)
+        if argv[1] == "stop":
             return _FakeCompletedProcess(0)
         if argv[1] == "run":
             name = argv[argv.index("--name") + 1]
@@ -347,7 +364,7 @@ class _FakeDatabaseProvider:
     def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
         self.cleanup_calls.append(receipt)
         if self.cleanup_residual:
-            return CleanupReport(residual_failures=("db-residual",))
+            return CleanupReport(residual_failures=(PGDATA_VOL,))
         self.removed_resource_ids.update(receipt.owned_resource_ids)
         return CleanupReport(residual_failures=())
 
@@ -2043,7 +2060,14 @@ def test_stop_argv_preserves_named_volumes(monkeypatch: pytest.MonkeyPatch) -> N
 
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         calls.append(list(argv))
-        return _FakeCompletedProcess(0)  # both containers/network exist; every op succeeds
+        if argv[1:3] == ["network", "inspect"]:
+            return _FakeCompletedProcess(0, stdout=json.dumps([{"Labels": _labels()}]))
+        if argv[1] == "inspect":
+            role = "postgres" if argv[-1] == DB_NAME else "odoo"
+            return _FakeCompletedProcess(
+                0, stdout=json.dumps([{"Config": {"Labels": _labels(role)}}])
+            )
+        return _FakeCompletedProcess(0)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
 
@@ -2075,7 +2099,12 @@ def test_stop_partial_instance_stops_only_existing_container(
         calls.append(list(argv))
         if argv[1] == "inspect" and len(argv) == 3:
             name = argv[2]
-            return _FakeCompletedProcess(0 if name == DB_NAME else 1)
+            return _FakeCompletedProcess(
+                0 if name == DB_NAME else 1,
+                stdout=json.dumps([{"Config": {"Labels": _labels("postgres")}}]),
+            )
+        if argv[1:3] == ["network", "inspect"]:
+            return _FakeCompletedProcess(0, stdout=json.dumps([{"Labels": _labels()}]))
         return _FakeCompletedProcess(0)
 
     monkeypatch.setattr(subprocess, "run", _fake_run)
@@ -2101,6 +2130,235 @@ def test_stop_unknown_instance_raises_instance_not_found(monkeypatch: pytest.Mon
 
     with pytest.raises(InstanceNotFoundError):
         DockerBackendProvider().stop(_make_ref())
+
+
+def test_destroy_removes_runtime_and_protects_unproven_volumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(list(argv))
+        if argv[1:3] == ["network", "inspect"]:
+            return _FakeCompletedProcess(0, stdout=json.dumps([{"Labels": _labels()}]))
+        if argv[1] == "inspect":
+            role = "postgres" if argv[-1] == DB_NAME else "odoo"
+            return _FakeCompletedProcess(
+                0, stdout=json.dumps([{"Config": {"Labels": _labels(role)}}])
+            )
+        return _FakeCompletedProcess(0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = DockerBackendProvider().destroy(_make_ref())
+
+    assert isinstance(result, DestroyResult)
+    assert [resource.outcome for resource in result.resources] == [
+        "removed",
+        "removed",
+        "removed",
+        "protected",
+        "protected",
+    ]
+    assert all(call[1:3] != ["volume", "rm"] for call in calls)
+
+
+def test_destroy_protects_foreign_predictable_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: object) -> _FakeCompletedProcess:
+        calls.append(argv)
+        if "inspect" in argv:
+            return _FakeCompletedProcess(0, stdout=json.dumps([{"Labels": {"foreign": "true"}}]))
+        return _FakeCompletedProcess(0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    result = DockerBackendProvider().destroy(_make_ref())
+
+    assert [item.outcome for item in result.resources[:3]] == ["protected"] * 3
+    assert not any(call[1] in {"stop", "rm"} for call in calls)
+
+
+def test_destroy_absent_instance_is_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: _FakeCompletedProcess(1))
+
+    result = DockerBackendProvider().destroy(_make_ref())
+
+    assert {resource.outcome for resource in result.resources} == {"absent"}
+
+
+def test_destroy_stop_failure_skips_data_reclamation_with_deterministic_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        calls.append(argv)
+        if argv[1] == "stop":
+            return _FakeCompletedProcess(1, stderr="stop failed")
+        if argv[1:3] == ["network", "inspect"]:
+            return _FakeCompletedProcess(0, stdout=json.dumps([{"Labels": _labels()}]))
+        if argv[1] == "inspect":
+            role = "postgres" if argv[-1] == DB_NAME else "odoo"
+            return _FakeCompletedProcess(
+                0, stdout=json.dumps([{"Config": {"Labels": _labels(role)}}])
+            )
+        if argv[1:3] == ["volume", "inspect"]:
+            return _FakeCompletedProcess(0, stdout=json.dumps([{"Labels": {}}]))
+        return _FakeCompletedProcess(0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    result = DockerBackendProvider().destroy(_make_ref())
+
+    assert [item.outcome for item in result.resources[-2:]] == ["failed", "failed"]
+    assert all(call[1:3] != ["volume", "rm"] for call in calls)
+
+
+def test_destroy_reclaims_custodied_database_and_filestore_only_with_live_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    router = _make_router()
+    router._volume_labels[FILESTORE_VOL] = {"com.odoo-forge.create-token": "token-42"}
+    monkeypatch.setattr(subprocess, "run", router)
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+    custody.record(
+        "proj",
+        "default",
+        CreationReceipt(
+            operation=OperationIdentity(value="fake-db-proven"),
+            owned_resource_ids=(DB_NAME, PGDATA_VOL),
+        ),
+        "token-42",
+    )
+
+    result = DockerBackendProvider(
+        database_provider=_FakeDatabaseProvider(), custody=custody
+    ).destroy(_make_ref())
+
+    assert [item.outcome for item in result.resources[-2:]] == ["removed", "removed"]
+    assert custody.load("proj", "default") is None
+
+
+def test_destroy_retains_custody_when_cleanup_has_residuals(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    router = _make_router()
+    monkeypatch.setattr(subprocess, "run", router)
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="retryable"), owned_resource_ids=(DB_NAME, PGDATA_VOL)
+    )
+    custody.record("proj", "default", receipt, None)
+    database = _FakeDatabaseProvider(cleanup_residual=True)
+
+    result = DockerBackendProvider(database_provider=database, custody=custody).destroy(_make_ref())
+
+    assert result.resources[-2].outcome == "failed"
+    assert custody.load("proj", "default") == (receipt, None)
+
+
+def test_destroy_retains_custody_for_unreported_cleanup_residual(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _ResidualDatabaseProvider(_FakeDatabaseProvider):
+        def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
+            self.cleanup_calls.append(receipt)
+            return CleanupReport(residual_failures=("unexpected-resource",))
+
+    router = _make_router()
+    monkeypatch.setattr(subprocess, "run", router)
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+    receipt = CreationReceipt(
+        operation=OperationIdentity(value="unknown-residual"), owned_resource_ids=(PGDATA_VOL,)
+    )
+    custody.record("proj", "default", receipt, None)
+
+    DockerBackendProvider(database_provider=_ResidualDatabaseProvider(), custody=custody).destroy(
+        _make_ref()
+    )
+
+    assert custody.load("proj", "default") == (receipt, None)
+
+
+def test_destroy_recovers_custody_after_interruption(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _InterruptedDatabaseProvider(_FakeDatabaseProvider):
+        def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
+            raise KeyboardInterrupt
+
+    router = _make_router()
+    router._volume_labels[FILESTORE_VOL] = {"com.odoo-forge.create-token": "token-42"}
+    monkeypatch.setattr(subprocess, "run", router)
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+    custody.record(
+        "proj",
+        "default",
+        CreationReceipt(
+            operation=OperationIdentity(value="remove-failure"),
+            owned_resource_ids=(DB_NAME, PGDATA_VOL),
+        ),
+        "token-42",
+    )
+
+    provider = DockerBackendProvider(
+        database_provider=_InterruptedDatabaseProvider(), custody=custody
+    )
+    with pytest.raises(KeyboardInterrupt):
+        provider.destroy(_make_ref())
+    recovered = BackendOwnershipCustody(custody.path)
+    result = DockerBackendProvider(
+        database_provider=_FakeDatabaseProvider(), custody=recovered
+    ).destroy(_make_ref())
+
+    assert [item.outcome for item in result.resources[-2:]] == ["removed", "removed"]
+    assert recovered.load("proj", "default") is None
+
+
+def test_stale_completion_preserves_recreated_instance_custody(tmp_path: Path) -> None:
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+    old = CreationReceipt(operation=OperationIdentity(value="old"), owned_resource_ids=("old",))
+    new = CreationReceipt(operation=OperationIdentity(value="new"), owned_resource_ids=("new",))
+    custody.record("proj", "default", old, "old-token")
+    assert custody.consume("proj", "default") == (old, "old-token")
+
+    custody.record("proj", "default", new, "new-token")
+    custody.complete("proj", "default", old, "old-token")
+
+    assert custody.load("proj", "default") == (new, "new-token")
+
+
+def test_custody_isolates_receipts_by_project_and_instance(tmp_path: Path) -> None:
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+    first = CreationReceipt(
+        operation=OperationIdentity(value="project-a-db"), owned_resource_ids=("project-a-db",)
+    )
+    second = CreationReceipt(
+        operation=OperationIdentity(value="project-b-db"), owned_resource_ids=("project-b-db",)
+    )
+
+    custody.record("project-a", "shared", first, "token-a")
+    custody.record("project-b", "shared", second, "token-b")
+
+    assert custody.load("project-a", "shared") == (first, "token-a")
+    assert custody.load("project-b", "shared") == (second, "token-b")
+
+
+def test_custody_concurrent_records_do_not_lose_updates(tmp_path: Path) -> None:
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+
+    def record(index: int) -> None:
+        receipt = CreationReceipt(
+            operation=OperationIdentity(value=f"operation-{index}"),
+            owned_resource_ids=(f"resource-{index}",),
+        )
+        custody.record("project", f"instance-{index}", receipt, None)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(record, range(20)))
+
+    assert all(custody.load("project", f"instance-{index}") is not None for index in range(20))
 
 
 # -- logs() -----------------------------------------------------------------
@@ -2187,12 +2445,13 @@ def test_signature_conformance_per_method() -> None:
     port_localns = {
         "BackendPlan": BackendPlan,
         "ContainerRole": ContainerRole,
+        "DestroyResult": DestroyResult,
         "InstanceRef": InstanceRef,
         "InstanceStatus": InstanceStatus,
         "ExecResult": ExecResult,
     }
 
-    for name in ("run", "status", "stop", "logs", "exec"):
+    for name in ("run", "status", "stop", "destroy", "logs", "exec"):
         port_method = getattr(BackendProvider, name)
         impl_method = getattr(DockerBackendProvider, name)
 
@@ -2261,6 +2520,36 @@ def test_run_delegates_postgres_exclusively_to_the_injected_database_provider(
     assert credentials == CredentialHandle("local-backend/postgres-password")
     assert not any(call[1] == "run" and DB_NAME in call for call in router.calls)
     assert not any(call[1] == "exec" and "pg_isready" in call for call in router.calls)
+
+
+def test_run_rolls_back_when_custody_persistence_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class _FailingCustody(BackendOwnershipCustody):
+        def record(
+            self,
+            project: str,
+            instance: str,
+            receipt: CreationReceipt,
+            token: str | None,
+        ) -> None:
+            raise OSError("custody write failed")
+
+    router = _make_router(not_found={NETWORK, FILESTORE_VOL, DB_NAME, ODOO_NAME})
+    monkeypatch.setattr(subprocess, "run", router)
+    fake_db = _FakeDatabaseProvider()
+    provider = DockerBackendProvider(
+        database_provider=fake_db,
+        custody=_FailingCustody(tmp_path / "custody.json"),
+        sleep=lambda _seconds: None,
+    )
+
+    with pytest.raises(ContainerRunError, match="custody persistence failed: custody write failed"):
+        provider.run(_make_plan())
+
+    assert len(fake_db.cleanup_calls) == 1
+    assert ["docker", "volume", "rm", FILESTORE_VOL] in router.calls
+    assert ["docker", "network", "rm", NETWORK] in router.calls
 
 
 @pytest.mark.parametrize(

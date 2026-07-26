@@ -10,11 +10,13 @@ canonical patch target for `plan_backend` is
 `odoo_forge_cli.main`.
 """
 
+import sys
 from pathlib import Path
 
 import typer
 from pydantic import ValidationError
 
+from odoo_forge.backend.destruction import DestroyResult
 from odoo_forge.backend.errors import BackendError
 from odoo_forge.backend.plan import ContainerRole
 from odoo_forge.backend.plan import plan_backend as plan_backend
@@ -177,6 +179,41 @@ def stop(
     typer.echo(f"stopped: project '{ref.project}' instance '{ref.instance}'")
 
 
+def destroy(
+    instance: str = typer.Argument(..., help="Instance name to irreversibly destroy"),
+    manifest: Path = typer.Option(Path("project.yaml"), "--manifest", help="Manifest path"),
+    yes: bool = typer.Option(False, "--yes", help="Confirm destruction in non-interactive mode"),
+) -> None:
+    """Destroy one local instance after explicit confirmation."""
+    if not yes:
+        if not sys.stdin.isatty():
+            typer.echo("error: non-interactive destroy requires --yes", err=True)
+            raise typer.Exit(code=1)
+        if not typer.confirm(f"Destroy local instance '{instance}' and its owned data?"):
+            typer.echo("error: destroy declined", err=True)
+            raise typer.Exit(code=1)
+    try:
+        ref = _derive_ref(manifest, instance)
+        backend_provider = _composition._make_backend_provider()
+        result: DestroyResult = backend_provider.destroy(ref)
+    except ValidationError as exc:
+        _presentation._render_validation_errors(exc)
+        raise typer.Exit(code=1) from exc
+    except (ManifestError, BackendError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    for resource in result.resources:
+        typer.echo(f"{resource.kind} {resource.identifier}: {resource.outcome}")
+    retained = [
+        resource.identifier
+        for resource in result.resources
+        if resource.outcome in ("protected", "failed")
+    ]
+    if retained:
+        typer.echo(f"retained: {', '.join(retained)}", err=True)
+        raise typer.Exit(code=1)
+
+
 def logs(
     manifest: Path = typer.Option(
         Path("project.yaml"), "--manifest", help="Path to the project.yaml manifest file"
@@ -240,10 +277,11 @@ def exec_(
 
 
 def register(app: typer.Typer) -> None:
-    """Bind the five backend/instance-lifecycle commands onto `app`, byte-identical names."""
+    """Bind backend/instance-lifecycle commands onto `app`."""
     app.command(name="run")(run)
     app.command(name="status")(status)
     app.command(name="stop")(stop)
+    app.command(name="destroy")(destroy)
     app.command(name="logs")(logs)
     app.command(
         name="exec",

@@ -1,5 +1,8 @@
 from collections.abc import Sequence
 
+from pydantic import ValidationError
+
+from odoo_forge.backend.destruction import DestroyResourceResult, DestroyResult
 from odoo_forge.ports.backend_provider import BackendProvider
 
 
@@ -26,6 +29,9 @@ class _FakeBackendProvider:
 
     def exec(self, ref: object, argv: Sequence[str]) -> object:
         return "exec-result"
+
+    def destroy(self, ref: object) -> DestroyResult:
+        return DestroyResult(resources=())
 
 
 def test_conforming_class_satisfies_backend_provider_protocol() -> None:
@@ -60,3 +66,35 @@ def test_backend_port_documents_opaque_credential_injection_boundary() -> None:
     assert documentation is not None
     assert "opaque injection descriptor" in documentation.lower()
     assert "plaintext" in documentation.lower()
+
+
+def test_backend_port_exposes_destroy_result() -> None:
+    provider = _FakeBackendProvider()
+
+    assert isinstance(provider.destroy(object()), DestroyResult)
+    assert "destroy" in dir(BackendProvider)
+
+
+def test_destroy_result_is_frozen_and_validates_outcome_vocabulary() -> None:
+    result = DestroyResult(
+        resources=(DestroyResourceResult(kind="volume", identifier="data", outcome="protected"),)
+    )
+
+    assert result.resources[0].detail is None
+    try:
+        result.resources[0].outcome = "removed"  # type: ignore[misc]
+    except ValidationError:
+        pass
+    else:
+        raise AssertionError("destroy outcomes must be immutable")
+
+
+def test_destroy_result_keeps_ordered_resource_outcomes() -> None:
+    result = DestroyResult(
+        resources=(
+            DestroyResourceResult(kind="container", identifier="app", outcome="removed"),
+            DestroyResourceResult(kind="network", identifier="net", outcome="absent"),
+        )
+    )
+
+    assert [resource.outcome for resource in result.resources] == ["removed", "absent"]
