@@ -61,6 +61,13 @@ _OWNED_LABELS = (
 _OWNED_INSPECT = '[{"Id":"immutable-database-42","Config":{"Labels":' + _OWNED_LABELS + "}}]"
 
 
+@pytest.fixture(autouse=True)
+def _isolate_default_authority_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path_factory.mktemp("authority-state")))
+
+
 def _credential_target(
     _descriptor: CredentialInjectionDescriptor,
 ) -> AbstractContextManager[str]:

@@ -71,6 +71,7 @@ def test_copy_wires_source_capture_anonymize_deliver_and_prints_the_target(
 
     assert result.exit_code == 0, result.output
     assert "copied: source 'db-source' -> target 'db-target'" in result.output
+    assert "no effective anonymization rules were applied" in result.output
     assert len(fake.run_calls) == 1
     call = fake.run_calls[0]
     assert isinstance(call["source"], CaptureSource)
@@ -171,3 +172,107 @@ def test_copy_surfaces_an_artifact_unavailable_failure_as_a_clean_error_line(
 
     assert result.exit_code == 1
     assert "error:" in result.output
+
+
+def test_copy_rejects_invalid_policy_before_constructing_coordinator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[bool] = []
+    monkeypatch.setattr(
+        _composition, "_make_data_artifact_copy_coordinator", lambda **_: calls.append(True)
+    )
+    policy_file = tmp_path / "policy.yaml"
+    policy_file.write_text(
+        "version: 1\nrules:\n - table: x\n   column: y\n   mask_strategy: unknown\n"
+    )
+
+    result = runner.invoke(
+        app, ["copy", "db-source", "db-target", "--anonymization-policy-file", str(policy_file)]
+    )
+
+    assert result.exit_code == 1 and not calls and "mask_strategy" in result.output
+
+
+def test_copy_forwards_a_valid_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = _FakeCoordinator(
+        result=_FakeCoordinatedCopyResult(
+            creation=_creation("db-target"), state=LifecycleState.SUCCEEDED
+        )
+    )
+    monkeypatch.setattr(
+        _composition, "_make_data_artifact_copy_coordinator", lambda **_kwargs: fake
+    )
+    policy_file = tmp_path / "policy.yaml"
+    policy_file.write_text(
+        "version: 1\nrules:\n - table: x\n   column: y\n   mask_strategy: hash\n"
+    )
+
+    result = runner.invoke(
+        app, ["copy", "db-source", "db-target", "--anonymization-policy-file", str(policy_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    policy = fake.run_calls[0]["policy"]
+    assert isinstance(policy, AnonymizationPolicy)
+    assert policy.rules[0].column == "y"
+
+
+def test_copy_operation_digest_tracks_policy_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeCoordinator(
+        result=_FakeCoordinatedCopyResult(
+            creation=_creation("db-target"), state=LifecycleState.SUCCEEDED
+        )
+    )
+    monkeypatch.setattr(
+        _composition, "_make_data_artifact_copy_coordinator", lambda **_kwargs: fake
+    )
+    documents = (
+        "version: 1\nrules:\n - table: x\n   column: y\n   mask_strategy: hash\n",
+        "rules:\n - mask_strategy: hash\n   column: y\n   table: x\nversion: 1\n",
+        "version: 1\nrules:\n - table: x\n   column: y\n   mask_strategy: redact\n",
+    )
+
+    for index, document in enumerate(documents):
+        policy_file = tmp_path / f"policy-{index}.yaml"
+        policy_file.write_text(document)
+        result = runner.invoke(
+            app, ["copy", "db-source", "db-target", "--anonymization-policy-file", str(policy_file)]
+        )
+        assert result.exit_code == 0, result.output
+
+    digests = []
+    for call in fake.run_calls:
+        operation = call["operation"]
+        assert isinstance(operation, DurableOperationIdentity)
+        digests.append(operation.request_digest)
+    assert digests[0] == digests[1]
+    assert digests[0] != digests[2]
+
+    for _ in range(2):
+        result = runner.invoke(app, ["copy", "db-source", "db-target"])
+        assert result.exit_code == 0, result.output
+    assert fake.run_calls[3]["operation"] == fake.run_calls[4]["operation"]
+
+
+def test_copy_identifies_an_explicit_empty_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake = _FakeCoordinator(
+        result=_FakeCoordinatedCopyResult(
+            creation=_creation("db-target"), state=LifecycleState.SUCCEEDED
+        )
+    )
+    monkeypatch.setattr(
+        _composition, "_make_data_artifact_copy_coordinator", lambda **_kwargs: fake
+    )
+    policy_file = tmp_path / "policy.yaml"
+    policy_file.write_text("version: 1\nrules: []\n")
+
+    result = runner.invoke(
+        app, ["copy", "db-source", "db-target", "--anonymization-policy-file", str(policy_file)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "policy is empty" in result.output
