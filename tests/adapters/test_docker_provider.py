@@ -2080,6 +2080,9 @@ def test_stop_argv_preserves_named_volumes(monkeypatch: pytest.MonkeyPatch) -> N
 
     assert {c[-1] for c in stop_calls} == {DB_NAME, ODOO_NAME}
     assert {c[-1] for c in rm_calls} == {DB_NAME, ODOO_NAME}
+    assert ["docker", "stop", DB_NAME] in calls
+    assert ["docker", "rm", "-f", "-v", ODOO_NAME] in calls
+    assert all(isinstance(argv, list) for argv in calls)
     assert vol_rm_calls == []  # named PG/filestore volumes are never touched
     assert net_rm_calls[0][-1] == NETWORK
 
@@ -2163,6 +2166,54 @@ def test_destroy_removes_runtime_and_protects_unproven_volumes(
     assert all(call[1:3] != ["volume", "rm"] for call in calls)
 
 
+def test_destroy_success_orders_runtime_removal_before_data_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events: list[str] = []
+    router = _make_router()
+    router._volume_labels[FILESTORE_VOL] = {"com.odoo-forge.create-token": "token-42"}
+
+    def fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        if argv[1] == "rm" and "-f" in argv and argv[-1] in {DB_NAME, ODOO_NAME}:
+            events.append(f"container:{argv[-1]}")
+        elif argv[1:3] == ["network", "rm"]:
+            events.append("network")
+        elif argv[1:3] == ["volume", "rm"] and argv[-1] == FILESTORE_VOL:
+            events.append("filestore")
+        return router(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    class _RecordingDatabaseProvider(_FakeDatabaseProvider):
+        def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
+            events.append("database")
+            return super().cleanup(receipt)
+
+    custody = BackendOwnershipCustody(tmp_path / "custody.json")
+    custody.record(
+        "proj",
+        "default",
+        CreationReceipt(
+            operation=OperationIdentity(value="ordered-cleanup"),
+            owned_resource_ids=(DB_NAME, PGDATA_VOL),
+        ),
+        "token-42",
+    )
+
+    result = DockerBackendProvider(
+        database_provider=_RecordingDatabaseProvider(), custody=custody
+    ).destroy(_make_ref())
+
+    assert [item.outcome for item in result.resources] == ["removed"] * 5
+    assert events == [
+        f"container:{DB_NAME}",
+        f"container:{ODOO_NAME}",
+        "network",
+        "database",
+        "filestore",
+    ]
+
+
 def test_destroy_protects_foreign_predictable_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[list[str]] = []
 
@@ -2185,6 +2236,78 @@ def test_destroy_absent_instance_is_idempotent(monkeypatch: pytest.MonkeyPatch) 
     result = DockerBackendProvider().destroy(_make_ref())
 
     assert {resource.outcome for resource in result.resources} == {"absent"}
+
+
+@pytest.mark.parametrize("identifier", ["bad;rm", "-leading", "", "bad id", "bad\nname"])
+def test_destroy_rejects_malformed_identifiers_before_subprocess(
+    identifier: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **_kwargs: calls.append(list(argv)))
+    ref = _make_ref().model_copy(update={"network": identifier})
+
+    with pytest.raises(ValueError, match="invalid Docker identifier"):
+        DockerBackendProvider().destroy(ref)
+
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("failure", "first", "second"),
+    [
+        ("container", ["failed", "removed", "removed"], ["removed", "absent", "absent"]),
+        ("network", ["removed", "removed", "failed"], ["absent", "absent", "removed"]),
+    ],
+)
+def test_destroy_reports_partial_stop_failures_and_retries_only_residuals(
+    failure: str,
+    first: list[str],
+    second: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[list[str]] = []
+    containers = {DB_NAME, ODOO_NAME}
+    network_exists = True
+    failed_once = False
+
+    def _fake_run(argv: list[str], **_kwargs: object) -> _FakeCompletedProcess:
+        nonlocal failed_once, network_exists
+        calls.append(list(argv))
+        if argv[1:3] == ["network", "inspect"]:
+            return _FakeCompletedProcess(
+                0 if network_exists else 1, stdout=json.dumps([{"Labels": _labels()}])
+            )
+        if argv[1:3] == ["volume", "inspect"]:
+            return _FakeCompletedProcess(1)
+        if argv[1] == "inspect":
+            name = argv[-1]
+            if name not in containers:
+                return _FakeCompletedProcess(1)
+            role = "postgres" if name == DB_NAME else "odoo"
+            return _FakeCompletedProcess(
+                0, stdout=json.dumps([{"Config": {"Labels": _labels(role)}}])
+            )
+        if argv[1] == "stop" and failure == "container" and not failed_once:
+            failed_once = True
+            return _FakeCompletedProcess(1, stderr="stop failed")
+        if argv[1:3] == ["network", "rm"] and failure == "network" and not failed_once:
+            failed_once = True
+            return _FakeCompletedProcess(1, stderr="network removal failed")
+        if argv[1] == "rm" and "-f" in argv:
+            containers.discard(argv[-1])
+        if argv[1:3] == ["network", "rm"]:
+            network_exists = False
+        return _FakeCompletedProcess(0)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+    provider = DockerBackendProvider()
+
+    first_result = provider.destroy(_make_ref())
+    second_result = provider.destroy(_make_ref())
+
+    assert [item.outcome for item in first_result.resources[:3]] == first
+    assert [item.outcome for item in second_result.resources[:3]] == second
+    assert calls.count(["docker", "rm", "-f", "-v", ODOO_NAME]) == 1
 
 
 def test_destroy_stop_failure_skips_data_reclamation_with_deterministic_failures(

@@ -1,11 +1,14 @@
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 import pytest
+import typer
 import yaml
 from typer.testing import CliRunner
 
+from odoo_forge.backend.destruction import DestroyResourceResult, DestroyResult
 from odoo_forge.backend.errors import (
     DockerUnavailableError,
     ImageAuthorizationError,
@@ -181,6 +184,7 @@ class _FakeBackendProvider:
         logs_error: Exception | None = None,
         exec_result: ExecResult | None = None,
         exec_error: Exception | None = None,
+        destroy_result: DestroyResult | None = None,
     ) -> None:
         self.run_calls: list[BackendPlan] = []
         self.status_calls: list[InstanceRef] = []
@@ -195,6 +199,8 @@ class _FakeBackendProvider:
         self._logs_error = logs_error
         self._exec_result = exec_result
         self._exec_error = exec_error
+        self.destroy_calls: list[InstanceRef] = []
+        self._destroy_result = destroy_result or DestroyResult(resources=())
 
     def run(self, plan: BackendPlan) -> InstanceRef:
         self.run_calls.append(plan)
@@ -226,6 +232,10 @@ class _FakeBackendProvider:
             raise self._exec_error
         assert self._exec_result is not None
         return self._exec_result
+
+    def destroy(self, ref: InstanceRef) -> DestroyResult:
+        self.destroy_calls.append(ref)
+        return self._destroy_result
 
 
 def test_run_succeeds_prints_instance_ref(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -367,6 +377,88 @@ def test_destroy_positional_instance_requires_noninteractive_yes_before_provider
     assert result.exit_code != 0
     assert "--yes" in result.output
     assert not constructed
+
+
+def test_destroy_interactive_decline_performs_no_provider_action(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class _TTY:
+        def isatty(self) -> bool:
+            return True
+
+    constructed = False
+
+    def _forbidden_provider(**_kwargs: object) -> _FakeBackendProvider:
+        nonlocal constructed
+        constructed = True
+        return _FakeBackendProvider()
+
+    monkeypatch.setattr(sys, "stdin", _TTY())
+    monkeypatch.setattr(typer, "confirm", lambda _prompt: False)
+    monkeypatch.setattr(_composition, "_make_backend_provider", _forbidden_provider)
+
+    with pytest.raises(typer.Exit) as error:
+        backend.destroy("named", _write_manifest(tmp_path), yes=False)
+
+    assert error.value.exit_code == 1
+    assert not constructed
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "exit_code", "expected"),
+    [
+        (
+            [("container", "postgres", "removed"), ("volume", "data", "absent")],
+            0,
+            ["container postgres: removed", "volume data: absent"],
+        ),
+        (
+            [
+                ("container", "postgres", "removed"),
+                ("volume", "data", "protected"),
+                ("volume", "other", "failed"),
+            ],
+            1,
+            [
+                "container postgres: removed",
+                "volume data: protected",
+                "volume other: failed",
+                "retained: data, other",
+            ],
+        ),
+    ],
+)
+def test_destroy_confirmed_results_have_exact_exit_contract(
+    outcomes: list[tuple[str, str, str]],
+    exit_code: int,
+    expected: list[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resources = tuple(
+        DestroyResourceResult.model_validate({"kind": k, "identifier": i, "outcome": o})
+        for k, i, o in outcomes
+    )
+    fake = _FakeBackendProvider(destroy_result=DestroyResult(resources=resources))
+    monkeypatch.setattr(_composition, "_make_backend_provider", lambda **_kwargs: fake)
+    result = runner.invoke(
+        app, ["destroy", "named", "--manifest", str(_write_manifest(tmp_path)), "--yes"]
+    )
+
+    assert result.exit_code == exit_code
+    assert result.output.splitlines() == expected
+    assert len(fake.destroy_calls) == 1
+
+
+def test_destroy_rejects_unsupported_remote_request_before_provider_construction(
+    tmp_path: Path,
+) -> None:
+    result = runner.invoke(
+        app,
+        ["destroy", "named", "--manifest", str(_write_manifest(tmp_path)), "--yes", "--remote"],
+    )
+
+    assert result.exit_code != 0
 
 
 def test_make_database_provider_returns_a_docker_postgresql_provider(

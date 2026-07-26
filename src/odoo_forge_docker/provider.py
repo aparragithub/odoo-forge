@@ -370,7 +370,10 @@ class DockerBackendProvider:
                 for name in (ref.postgres_container, ref.odoo_container, ref.network)
             )
             return DestroyResult(resources=failed + self._protected_data(ref, failed=True))
-        if any(item.outcome in ("protected", "failed") for item in runtime_results):
+        runtime_failed = any(item.outcome == "failed" for item in runtime_results)
+        if runtime_failed:
+            return DestroyResult(resources=runtime_results + self._protected_data(ref, failed=True))
+        if any(item.outcome == "protected" for item in runtime_results):
             return DestroyResult(resources=runtime_results + self._protected_data(ref))
         return DestroyResult(resources=runtime_results + self._reclaim_data(ref))
 
@@ -389,8 +392,16 @@ class DockerBackendProvider:
                 if not self._runtime_has_ownership("container", name, ref, role=role):
                     outcome: DestroyOutcome = "protected"
                 else:
-                    self._exec(["docker", "stop", name])
-                    self._exec(["docker", "rm", "-f", "-v", name])
+                    try:
+                        self._exec(["docker", "stop", name])
+                        self._exec(["docker", "rm", "-f", "-v", name])
+                    except Exception as exc:
+                        results.append(
+                            DestroyResourceResult(
+                                kind="container", identifier=name, outcome="failed", detail=str(exc)
+                            )
+                        )
+                        continue
                     outcome = "removed"
             else:
                 outcome = "absent"
@@ -399,7 +410,18 @@ class DockerBackendProvider:
             )
         if existing[ref.network]:
             if self._runtime_has_ownership("network", ref.network, ref):
-                self._exec(["docker", "network", "rm", ref.network])
+                try:
+                    self._exec(["docker", "network", "rm", ref.network])
+                except Exception as exc:
+                    results.append(
+                        DestroyResourceResult(
+                            kind="network",
+                            identifier=ref.network,
+                            outcome="failed",
+                            detail=str(exc),
+                        )
+                    )
+                    return tuple(results)
                 outcome = "removed"
             else:
                 outcome = "protected"
