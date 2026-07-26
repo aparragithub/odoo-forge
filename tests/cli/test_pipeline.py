@@ -1,7 +1,12 @@
 import pytest
 from typer.testing import CliRunner
 
-from odoo_forge.pipeline.types import PipelineRunRef, PipelineRunSpec, PipelineRunStatus
+from odoo_forge.pipeline.types import (
+    PipelineRunRef,
+    PipelineRunSpec,
+    PipelineRunState,
+    PipelineRunStatus,
+)
 from odoo_forge_cli import _composition
 from odoo_forge_cli.main import app
 
@@ -15,7 +20,7 @@ class _FakePipelineProvider:
         self,
         *,
         run_id: str = "12345",
-        state: str = "succeeded",
+        state: PipelineRunState = "succeeded",
         trigger_error: Exception | None = None,
         status_error: Exception | None = None,
     ) -> None:
