@@ -35,6 +35,7 @@ _NOT_FOUND_MARKERS = (
     "does not exist",
     "manifest unknown",
 )
+_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _PUSH_DIGEST_RE = re.compile(r"digest:\s*(sha256:[0-9a-f]{64})", re.IGNORECASE | re.MULTILINE)
 
 
@@ -108,9 +109,9 @@ class GhcrImageRegistryProvider:
             ) from exc
 
         digest = _extract_digest(payload)
-        if digest is None:
+        if digest is None or _DIGEST_RE.fullmatch(digest) is None:
             raise RegistryUnavailableError(
-                _safe_repository(ref), "registry inspect did not return a manifest digest"
+                _safe_repository(ref), "registry inspect did not return a valid manifest digest"
             )
         return digest
 
@@ -146,6 +147,13 @@ class GhcrImageRegistryProvider:
             exc.args = ("docker executable not found",)
             raise RegistryUnavailableError(
                 _safe_repository(ref), "docker executable not found"
+            ) from exc
+        except OSError as exc:
+            exc.filename = None
+            exc.strerror = "docker command failed to execute"
+            exc.args = ("docker command failed to execute",)
+            raise RegistryUnavailableError(
+                _safe_repository(ref), "docker command failed to execute"
             ) from exc
         except subprocess.TimeoutExpired as exc:
             exc.cmd = ["docker"]
