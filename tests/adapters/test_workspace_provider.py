@@ -684,3 +684,30 @@ class TestPromote:
 
         with pytest.raises(PromotionError):
             provider.promote(source, dest, "unlock/custom-x/odoo-partner")
+
+    def test_promote_timeout_is_typed_and_recursively_sanitized(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "custom" / "custom-x" / "odoo-partner"
+        source.mkdir(parents=True)
+        dest = tmp_path / "worktrees" / "custom-x" / "odoo-partner"
+        branch = "unlock/custom-x/odoo-partner"
+        secret = "promotion-timeout-secret"
+
+        timeout = subprocess.TimeoutExpired(
+            cmd=["git", "worktree", "add", "--", f"https://user:{secret}@host/repo.git"],
+            timeout=7,
+            output=f"stdout-{secret}",
+            stderr=f"stderr-{secret}",
+        )
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            raise timeout
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(PromotionError) as excinfo:
+            GitWorkspaceProvider(timeout=7).promote(source, dest, branch)
+
+        assert str(excinfo.value) == "git worktree timed out after 7s"
+        _assert_error_is_safe(excinfo, secret)
