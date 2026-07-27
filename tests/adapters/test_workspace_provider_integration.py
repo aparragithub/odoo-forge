@@ -7,11 +7,13 @@ produces a correct materialized tree via `checkout` and `promote`.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
+from odoo_forge.manifest.errors import CheckoutError
 from odoo_forge_workspace.provider import GitWorkspaceProvider
 
 pytestmark = pytest.mark.integration
@@ -62,6 +64,14 @@ def _make_bare_repo_with_commit(
     return bare, sha
 
 
+def _add_commit(work: Path, bare: Path, marker: str) -> str:
+    (work / "README.md").write_text(f"partial clone fixture: {marker}\n")
+    assert _git(["add", "."], cwd=work).returncode == 0
+    assert _git(["commit", "-q", "-m", marker], cwd=work).returncode == 0
+    assert _git(["push", "-q", "origin", "HEAD:refs/heads/main"], cwd=work).returncode == 0
+    return _git(["rev-parse", "HEAD"], cwd=work).stdout.strip()
+
+
 class TestPartialCloneWithAllowFilter:
     """Fixture A: remote advertises `uploadpack.allowFilter`."""
 
@@ -108,3 +118,34 @@ class TestFullCloneFallbackWithoutAllowFilter:
 
         assert (dest / "README.md").read_text() == "partial clone fixture: no-allow-filter\n"
         assert _git(["rev-parse", "HEAD"], cwd=dest).stdout.strip() == sha
+
+
+def test_real_two_commit_replacement_restores_and_cleans_on_swap_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _require_git()
+    bare, first_sha = _make_bare_repo_with_commit(tmp_path, "replacement", allow_filter=True)
+    work = tmp_path / "replacement-work"
+    second_sha = _add_commit(work, bare, "replacement-second")
+    dest = tmp_path / "checkouts" / "replacement"
+    provider = GitWorkspaceProvider()
+    url = f"file://{bare}"
+    provider.checkout(url, first_sha, dest)
+
+    real_replace = os.replace
+    failed_once = False
+
+    def _fail_final_swap(src: str | Path, dst: str | Path) -> None:
+        nonlocal failed_once
+        if Path(dst) == dest and not failed_once:
+            failed_once = True
+            raise OSError("simulated EXDEV with credential-marker")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", _fail_final_swap)
+    with pytest.raises(CheckoutError):
+        provider.checkout(url, second_sha, dest)
+
+    assert (dest / "README.md").read_text() == "partial clone fixture: replacement\n"
+    assert [path for path in dest.parent.iterdir() if path != dest] == []
+    assert _git(["rev-parse", second_sha], cwd=bare).stdout.strip() == second_sha

@@ -41,6 +41,17 @@ def _fake_run_factory(rev_parse_output: str, status_output: str = "") -> object:
     return _fake_run
 
 
+def _assert_error_is_safe(exc_info: pytest.ExceptionInfo[BaseException], secret: str) -> None:
+    rendered = "".join(traceback.format_exception(exc_info.type, exc_info.value, exc_info.tb))
+    current: BaseException | None = exc_info.value
+    while current is not None:
+        assert secret not in str(current)
+        assert secret not in repr(current)
+        assert secret not in repr(current.args)
+        current = current.__cause__ or current.__context__
+    assert secret not in rendered
+
+
 def test_checkout_clones_to_temp_and_replaces_into_dest(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -448,22 +459,60 @@ def test_final_replace_failure_restores_original_dest(
     real_replace = _os.replace
     failed_once = {"done": False}
 
+    secret = "replacement-secret-marker"
+
     def _flaky_replace(src: str | Path, dst: str | Path) -> None:
         # Fail only the first clone->dest swap; allow the backup->dest restore.
         if Path(dst) == dest and not failed_once["done"]:
             failed_once["done"] = True
-            raise OSError("simulated replace failure")
+            raise OSError(f"simulated replace failure: {secret}")
         real_replace(src, dst)
 
     monkeypatch.setattr(_os, "replace", _flaky_replace)
 
     provider = GitWorkspaceProvider()
 
-    with pytest.raises((CheckoutError, OSError)):
+    with pytest.raises(CheckoutError) as exc_info:
         provider.checkout(URL, COMMIT, dest)
 
     assert dest.exists()
     assert (dest / "keep.txt").read_text() == "original"
+    assert [p for p in dest.parent.iterdir() if p != dest] == []
+    _assert_error_is_safe(exc_info, secret)
+
+
+def test_final_replace_and_restore_failure_retains_recoverable_backup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import os as _os
+
+    dest = tmp_path / "custom" / "acme" / "odoo"
+    dest.mkdir(parents=True)
+    (dest / "keep.txt").write_text("original")
+    fake_run = _fake_run_factory(rev_parse_output=OTHER_COMMIT, status_output="")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    real_replace = _os.replace
+    secret = "restore-secret-marker"
+
+    def _fail_swap_and_restore(src: str | Path, dst: str | Path) -> None:
+        if Path(dst) == dest:
+            raise OSError(f"simulated restore failure: {secret}")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(_os, "replace", _fail_swap_and_restore)
+
+    with pytest.raises(CheckoutError) as exc_info:
+        GitWorkspaceProvider().checkout(URL, COMMIT, dest)
+
+    backups = list(dest.parent.glob("*/odoo/keep.txt"))
+    assert not dest.exists()
+    assert [backup.read_text() for backup in backups] == ["original"]
+    assert (
+        str(exc_info.value)
+        == "checkout replacement failed and prior checkout could not be restored"
+    )
+    _assert_error_is_safe(exc_info, secret)
 
 
 def test_adapter_satisfies_workspace_provider_protocol() -> None:
@@ -547,6 +596,43 @@ class TestScan:
             provider.scan([root])
 
         assert SECRET_URL not in str(excinfo.value)
+
+    def test_scan_oserror_is_typed_and_sanitized(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        root = tmp_path / "custom"
+        repo_dir = root / "custom-x" / "odoo-partner"
+        repo_dir.mkdir(parents=True)
+        (repo_dir / ".git").mkdir()
+        secret = "scan-secret-marker"
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            raise OSError(f"scan failed for {SECRET_URL}: {secret}")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(ScanError) as excinfo:
+            GitWorkspaceProvider().scan([root])
+
+        _assert_error_is_safe(excinfo, secret)
+
+    def test_promote_oserror_is_typed_and_sanitized(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        source = tmp_path / "custom" / "custom-x" / "odoo-partner"
+        source.mkdir(parents=True)
+        dest = tmp_path / "worktrees" / "custom-x" / "odoo-partner"
+        secret = "promotion-secret-marker"
+
+        def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+            raise OSError(f"promotion failed for {SECRET_URL}: {secret}")
+
+        monkeypatch.setattr(subprocess, "run", _fake_run)
+
+        with pytest.raises(PromotionError) as excinfo:
+            GitWorkspaceProvider().promote(source, dest, "unlock/custom-x/odoo-partner")
+
+        _assert_error_is_safe(excinfo, secret)
 
 
 class TestPromote:

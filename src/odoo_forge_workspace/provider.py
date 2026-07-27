@@ -221,13 +221,25 @@ class GitWorkspaceProvider:
             backup_path = temp_dir / dest.name
             os.replace(dest, backup_path)
 
+        replacement_error: CheckoutError | None = None
         try:
             os.replace(clone_path, dest)
-        except BaseException:
+        except OSError:
+            restore_failed = False
             if backup_path is not None:
-                os.replace(backup_path, dest)
+                try:
+                    os.replace(backup_path, dest)
+                except OSError:
+                    restore_failed = True
             shutil.rmtree(clone_path, ignore_errors=True)
-            raise
+            if temp_dir is not None and not restore_failed:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            message = "checkout replacement failed"
+            if restore_failed:
+                message += " and prior checkout could not be restored"
+            replacement_error = CheckoutError(message)
+        if replacement_error is not None:
+            raise replacement_error
 
         if temp_dir is not None:
             shutil.rmtree(temp_dir, ignore_errors=True)
@@ -247,6 +259,7 @@ class GitWorkspaceProvider:
         env_overlay: Mapping[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         timeout_error: WorkspaceError | None = None
+        execution_error: WorkspaceError | None = None
         env = {**_non_interactive_env(), **(env_overlay or {})}
         try:
             result = subprocess.run(
@@ -257,14 +270,16 @@ class GitWorkspaceProvider:
                 timeout=self._timeout,
                 env=env,
             )
-        except FileNotFoundError as exc:
-            raise error_cls(f"git executable not found: {exc}") from exc
+        except FileNotFoundError:
+            execution_error = error_cls("git executable not found")
         except subprocess.TimeoutExpired:
             # Never splat argv/url into the message — the clone URL may embed
             # `user:token@` credentials. A safe subcommand label is enough.
             timeout_error = error_cls(
                 f"git {_git_subcommand(argv)} timed out after {self._timeout}s"
             )
+        except OSError:
+            execution_error = error_cls(f"git {_git_subcommand(argv)} failed to execute")
         else:
             if result.returncode != 0:
                 # Git stderr is untrusted and may repeat credential-bearing remotes.
@@ -274,6 +289,9 @@ class GitWorkspaceProvider:
 
             return result
 
+        if execution_error is not None:
+            raise execution_error
+        assert timeout_error is not None
         raise timeout_error from None
 
 
