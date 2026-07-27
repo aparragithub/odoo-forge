@@ -1,5 +1,7 @@
 import subprocess
 import traceback
+from collections.abc import Mapping
+from itertools import permutations
 from typing import cast
 
 import pytest
@@ -28,13 +30,86 @@ class _FakeCompletedProcess:
 
 
 def _assert_safe_error(error: BaseException, *extra_secrets: str) -> None:
-    public_values = [str(error), *map(str, vars(error).values())]
-    rendered = "".join(traceback.format_exception(error))
-    for secret in (*SECRETS, *extra_secrets):
-        assert all(secret not in value for value in public_values)
-        assert secret not in rendered
+    secrets = (*SECRETS, *extra_secrets)
+    seen: set[int] = set()
+
+    def assert_safe_text(text: str, location: str) -> None:
+        for secret in secrets:
+            assert secret not in text, f"secret found in {location}"
+
+    def inspect(value: object, location: str) -> None:
+        identity = id(value)
+        if identity in seen:
+            return
+        seen.add(identity)
+
+        for label, renderer in (("str", str), ("repr", repr)):
+            try:
+                rendered = renderer(value)
+            except Exception:
+                continue
+            assert_safe_text(rendered, f"{location}.{label}")
+
+        if isinstance(value, BaseException):
+            for rendered in traceback.format_exception(type(value), value, value.__traceback__):
+                assert_safe_text(rendered, f"{location}.traceback")
+            inspect(value.args, f"{location}.args")
+            inspect(value.__cause__, f"{location}.__cause__")
+            inspect(value.__context__, f"{location}.__context__")
+
+        if isinstance(value, Mapping):
+            for index, (key, item) in enumerate(value.items()):
+                inspect(key, f"{location}.key[{index}]")
+                inspect(item, f"{location}.value[{index}]")
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            for index, item in enumerate(value):
+                inspect(item, f"{location}[{index}]")
+
+        attributes = getattr(value, "__dict__", None)
+        if isinstance(attributes, dict):
+            for name, attribute in attributes.items():
+                if not name.startswith("_"):
+                    inspect(attribute, f"{location}.{name}")
+
+    inspect(error, "error")
     assert error.__cause__ is None
     assert error.__context__ is None
+
+
+class _DiagnosticNode:
+    def __init__(self) -> None:
+        self.child: _DiagnosticNode | None = None
+        self.detail = "safe diagnostic"
+
+
+def test_safe_error_helper_walks_nested_public_attributes_with_cycle_protection() -> None:
+    error = ResolutionError("safe")
+    diagnostic = _DiagnosticNode()
+    diagnostic.child = diagnostic
+    error.diagnostic = diagnostic  # type: ignore[attr-defined]
+
+    _assert_safe_error(error, "secret-not-present")
+
+
+def test_safe_error_helper_rejects_secrets_in_nested_public_attributes() -> None:
+    secret = "nested-attribute-secret-marker"
+    error = ResolutionError("safe")
+    diagnostic = _DiagnosticNode()
+    diagnostic.detail = secret
+    error.diagnostic = diagnostic  # type: ignore[attr-defined]
+
+    with pytest.raises(AssertionError):
+        _assert_safe_error(error, secret)
+
+
+def test_safe_error_helper_rejects_secrets_in_nested_exception_surface() -> None:
+    secret = "nested-secret-marker"
+    error = ResolutionError("safe")
+    error.__cause__ = RuntimeError(secret)
+    error.__context__ = RuntimeError(secret)
+
+    with pytest.raises(AssertionError):
+        _assert_safe_error(error, secret)
 
 
 def test_bare_sha_passthrough_no_subprocess_call(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -68,7 +143,7 @@ def test_branch_ref_resolves_via_ls_remote(monkeypatch: pytest.MonkeyPatch) -> N
     result = provider.resolve_ref(URL, "main")
 
     assert result == sha
-    assert captured_argv == ["git", "ls-remote", URL, "main"]
+    assert captured_argv == ["git", "ls-remote", "--", URL, "main"]
 
 
 def test_peeled_tag_preferred_over_lightweight(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -530,3 +605,141 @@ def test_ls_remote_classification_matrix_preserves_safe_public_projection(
     _assert_safe_error(exc_info.value)
     assert isinstance(exc_info.value, (RefNotFoundError, AuthenticationError, NetworkError))
     assert exc_info.value.url == "https://example.com/private/repo.git"
+
+
+@pytest.mark.parametrize("order", list(permutations(range(4))))
+def test_ref_precedence_is_independent_of_ls_remote_output_order(
+    monkeypatch: pytest.MonkeyPatch, order: tuple[int, ...]
+) -> None:
+    candidates = (
+        ("1" * 40, "refs/heads/release"),
+        ("2" * 40, "refs/tags/release^{}"),
+        ("3" * 40, "refs/tags/release"),
+        ("4" * 40, "refs/heads/other"),
+    )
+    stdout = "\n".join(
+        f"{sha}\t{refname}" for index in order for sha, refname in (candidates[index],)
+    )
+
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _FakeCompletedProcess(0, stdout=stdout),
+    )
+
+    assert GitSourceProvider().resolve_ref(URL, "release") == "1" * 40
+
+
+@pytest.mark.parametrize("order", list(permutations(range(3))))
+def test_peeled_tag_precedence_is_independent_when_branch_is_absent(
+    monkeypatch: pytest.MonkeyPatch, order: tuple[int, ...]
+) -> None:
+    candidates = (
+        ("8" * 40, "refs/tags/release^{}"),
+        ("9" * 40, "refs/tags/release"),
+        ("a" * 40, "refs/heads/unrelated"),
+    )
+    stdout = "\n".join(
+        f"{sha}\t{refname}" for index in order for sha, refname in (candidates[index],)
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _FakeCompletedProcess(0, stdout=stdout),
+    )
+
+    assert GitSourceProvider().resolve_ref(URL, "release") == "8" * 40
+
+
+@pytest.mark.parametrize("order", list(permutations(range(2))))
+def test_lightweight_tag_precedence_is_independent_when_higher_candidates_are_absent(
+    monkeypatch: pytest.MonkeyPatch, order: tuple[int, ...]
+) -> None:
+    candidates = (
+        ("b" * 40, "refs/tags/release"),
+        ("c" * 40, "refs/heads/unrelated"),
+    )
+    stdout = "\n".join(
+        f"{sha}\t{refname}" for index in order for sha, refname in (candidates[index],)
+    )
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _FakeCompletedProcess(0, stdout=stdout),
+    )
+
+    assert GitSourceProvider().resolve_ref(URL, "release") == "b" * 40
+
+
+def test_ref_precedence_falls_back_to_first_returned_sha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_sha = "5" * 40
+    stdout = f"{first_sha}\trefs/heads/unrelated\n{'6' * 40}\trefs/tags/other\n"
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _FakeCompletedProcess(0, stdout=stdout),
+    )
+
+    assert GitSourceProvider().resolve_ref(URL, "release") == first_sha
+
+
+@pytest.mark.parametrize(
+    ("remote", "ref"),
+    [
+        ("/tmp/local bare remote.git", "main"),
+        ("-hostile-local-remote", "--hostile-ref"),
+    ],
+)
+def test_local_and_hostile_positionals_are_after_git_option_terminator(
+    monkeypatch: pytest.MonkeyPatch, remote: str, ref: str
+) -> None:
+    captured_argv: list[str] = []
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        captured_argv.extend(argv)
+        return _FakeCompletedProcess(0, stdout=f"{'7' * 40}\trefs/heads/main\n")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    GitSourceProvider().resolve_ref(remote, ref)
+
+    assert captured_argv == ["git", "ls-remote", "--", remote, ref]
+
+
+def test_oserror_is_typed_and_recursively_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "oserror-secret-marker"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> None:
+        raise OSError(f"failed for {SECRET_URL}: {secret}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(ResolutionError) as exc_info:
+        GitSourceProvider().resolve_ref(SECRET_URL, "main")
+
+    _assert_safe_error(exc_info.value, secret)
+    assert str(exc_info.value) == "git ls-remote failed to execute"
+
+
+def test_unknown_exit_is_typed_and_recursively_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "unknown-exit-secret-marker"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        return _FakeCompletedProcess(
+            17,
+            stderr=f"fatal: failed for {SECRET_URL}: {secret}",
+        )
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(NetworkError) as exc_info:
+        GitSourceProvider().resolve_ref(SECRET_URL, "main")
+
+    _assert_safe_error(exc_info.value, secret)
+    assert exc_info.value.detail == "git ls-remote failed with exit code 17"
