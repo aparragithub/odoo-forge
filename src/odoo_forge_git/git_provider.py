@@ -97,7 +97,7 @@ class GitSourceProvider:
         deferred_error: ResolutionError | None = None
         try:
             result = subprocess.run(
-                ["git", "ls-remote", url, ref],
+                ["git", "ls-remote", "--", url, ref],
                 capture_output=True,
                 text=True,
                 check=False,
@@ -106,8 +106,8 @@ class GitSourceProvider:
             )
         except FileNotFoundError:
             deferred_error = ResolutionError("git executable not found")
-        except OSError as exc:
-            deferred_error = ResolutionError(f"failed to execute git: {exc}")
+        except OSError:
+            deferred_error = ResolutionError("git ls-remote failed to execute")
         except subprocess.TimeoutExpired:
             deferred_error = NetworkError(
                 public_url,
