@@ -253,6 +253,19 @@ def test_pull_prefetches_digest_and_returns_local_handle(
     assert calls == [["docker", "pull", ref]]
 
 
+def test_pull_rejects_mutable_tag_at_provider_seam(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("mutable tags must be rejected before Docker"),
+    )
+
+    with pytest.raises(MalformedImageReferenceError):
+        GhcrImageRegistryProvider().pull(ImageDigestRef("ghcr.io/acme/app:latest"))
+
+
 def test_pull_maps_failure_to_typed_error(monkeypatch: pytest.MonkeyPatch) -> None:
     def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
         return _FakeCompletedProcess(1, stderr="manifest unknown")
@@ -457,6 +470,48 @@ def test_resolve_digest_maps_not_found_failure_to_typed_error(
 
     with pytest.raises(RegistryImageNotFoundError):
         GhcrImageRegistryProvider().resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
+
+
+@pytest.mark.parametrize(
+    "inspect_stdout",
+    [
+        "not json",
+        '{"manifest": {}}',
+        '{"manifest":{"digest":"sha256:not-a-digest"}}',
+    ],
+)
+def test_resolve_digest_rejects_malformed_inspect_output(
+    inspect_stdout: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *args, **kwargs: _FakeCompletedProcess(0, stdout=inspect_stdout),
+    )
+
+    with pytest.raises(RegistryUnavailableError) as exc_info:
+        GhcrImageRegistryProvider().resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
+
+    assert "inspect" in str(exc_info.value).lower()
+    _assert_public_exception_is_safe(exc_info.value)
+
+
+def test_daemon_oserror_is_projected_to_sanitized_typed_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "daemon-secret-marker"
+
+    def _fake_run(argv: list[str], **kwargs: object) -> _FakeCompletedProcess:
+        raise OSError(f"daemon socket failed for {SECRET_REF}: {secret}")
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RegistryUnavailableError) as exc_info:
+        GhcrImageRegistryProvider().resolve_digest(ImageRef("ghcr.io/acme/app:latest"))
+
+    assert "docker" in str(exc_info.value).lower()
+    assert secret not in str(exc_info.value)
+    _assert_public_exception_is_safe(exc_info.value)
 
 
 def test_resolve_digest_rejects_malformed_reference_before_subprocess(
