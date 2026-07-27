@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "Pure Pydantic domain + CLI for composing decentralized Odoo project manifests"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
     "cryptography>=43.0",
     "pydantic>=2.7",
