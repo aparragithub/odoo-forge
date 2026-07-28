@@ -1,0 +1,51 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "en-US"
+
+reviews:
+  # Solo-maintainer repo: CodeRabbit is the second reviewer, so maximum signal.
+  profile: "assertive"
+  # With required PR reviews enabled on main, a "changes requested" review
+  # blocks the merge until resolved — this makes CodeRabbit a real gate.
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+  path_filters:
+    - "!openspec/changes/archive/**"
+    - "!uv.lock"
+    - "!**/project.lock"
+    - "!dist/**"
+  path_instructions:
+    - path: "src/odoo_forge/**"
+      instructions: |
+        This package is the pure domain core of a hexagonal architecture.
+        Flag any import of adapter packages (odoo_forge_cli, odoo_forge_git,
+        odoo_forge_workspace, odoo_forge_docker, odoo_forge_postgres_docker,
+        odoo_forge_registry, odoo_forge_catalog, odoo_forge_pipeline_github),
+        and any direct use of subprocess, sockets, filesystem side effects or
+        network I/O. The core may only depend on its own ports and Pydantic
+        models. Prefer explicit Pydantic v2 idioms.
+    - path: "src/odoo_forge_{git,docker,postgres_docker,registry}/**"
+      instructions: |
+        These adapters inject credentials into spawned subprocesses. Treat any
+        path where a secret could reach process argv, environment dumps, log
+        lines, or exception messages as a blocking finding. Verify subprocess
+        arguments are built from validated values and that error handling
+        never interpolates credential material into raised messages.
+    - path: "tests/**"
+      instructions: |
+        Tests must assert observable behavior, not implementation details.
+        Flag tests that reach into private attributes or mock the unit under
+        test. Integration-marked tests must stay deselected by default.
+    - path: ".github/workflows/**"
+      instructions: |
+        All actions must stay pinned to full commit SHAs (tag as trailing
+        comment). Event payload (PR body, titles, branch names) must reach
+        run: scripts through env, never inline ${{ }} interpolation. Jobs
+        must declare least-privilege permissions.
+
+chat:
+  auto_reply: true
