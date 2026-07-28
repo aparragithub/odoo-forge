@@ -57,6 +57,6 @@ uv run forge project  --manifest project.yaml   # re-materializes to the lock
 
 ## Pinning instead of tracking
 
-To freeze a layer regardless of upstream movement, put the commit SHA (or a
-tag) directly in `ref`. `lock` still records it, but now re-locking cannot
-move it.
+To freeze a layer regardless of upstream movement, put the commit SHA directly
+in `ref`. A tag is still a movable ref and may resolve to a different commit
+when you re-lock.
