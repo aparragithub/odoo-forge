@@ -9,6 +9,15 @@ may change between minor releases.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-07-27
+
+First public release on PyPI. `pip install odoo-forge` provides the `forge`
+CLI: manifest validation and locking, Git-backed workspace projection, the
+local Odoo + PostgreSQL Docker backend, GHCR image operations, and SOPS/age
+Enterprise credential handling.
+
+Everything below this line was developed before that first release.
+
 ### Breaking
 
 - **Removed `GitRepo.requires_edition`.** Per-repo edition gating is gone.
