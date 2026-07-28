@@ -139,6 +139,7 @@ uv run lint-imports               # architecture contracts
 | --- | --- |
 | [`ROADMAP.md`](ROADMAP.md) | What works today, what is built but not wired, and what comes next |
 | [`docs/comparison.md`](docs/comparison.md) | How odoo-forge compares to doodba, hand-rolled compose and Odoo.sh — including when not to use it |
+| [`docs/recipes/`](docs/recipes/README.md) | Task-oriented guides: add an addon layer, override with your fork, Enterprise credentials |
 | [`docs/00-master-index.md`](docs/00-master-index.md) | Index of all maintenance documentation |
 | [`docs/diagrams/odoo-forge-current-implementation-guide.md`](docs/diagrams/odoo-forge-current-implementation-guide.md) | The exact boundary of what is implemented today |
 | [`docs/01-repository-map.md`](docs/01-repository-map.md) | Repository structure |
