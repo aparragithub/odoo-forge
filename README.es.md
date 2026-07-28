@@ -6,7 +6,7 @@
 
 **Plataforma declarativa para componer proyectos Odoo: manifests por capas, overrides resueltos y backends de ejecución desacoplados.**
 
-[English](README.md) · [Documentación](docs/00-master-index.md) · [Roadmap](docs/specs/platform/portfolio.json)
+[English](README.md) · [Documentación](docs/00-master-index.md) · [Roadmap](ROADMAP.md)
 
 ---
 

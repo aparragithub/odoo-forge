@@ -6,7 +6,7 @@
 
 **A declarative platform for composing Odoo projects: layered manifests, resolved overrides, and pluggable execution backends.**
 
-[Español](README.es.md) · [Documentation](docs/00-master-index.md) · [Roadmap](docs/specs/platform/portfolio.json)
+[Español](README.es.md) · [Documentation](docs/00-master-index.md) · [Roadmap](ROADMAP.md)
 
 ---
 
