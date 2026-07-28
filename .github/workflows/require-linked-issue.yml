@@ -1,0 +1,61 @@
+name: Require linked issue
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  require-linked-issue:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Dependabot PRs never reference an issue; a skipped job still satisfies
+    # a required status check.
+    if: github.actor != 'dependabot[bot]'
+    steps:
+      - name: Check PR references an open issue
+        env:
+          # Event payload always goes through env, never inline interpolation
+          # in the script, so a crafted PR body cannot inject shell commands.
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          for label in $PR_LABELS; do
+            if [ "$label" = "no-issue" ]; then
+              echo "PASS: 'no-issue' label applied by a maintainer."
+              exit 0
+            fi
+          done
+
+          refs=$(printf '%s' "$PR_BODY" \
+            | grep -oiE '(clos(e|es|ed)|fix(es|ed)?|resolv(e|es|ed))[[:space:]]+#[0-9]+' \
+            | grep -oE '[0-9]+' | sort -u || true)
+
+          if [ -z "$refs" ]; then
+            echo "FAIL: the PR body has no closing reference (e.g. 'Closes #123')."
+            echo "Link an open issue with Closes/Fixes/Resolves #N, or ask a"
+            echo "maintainer to apply the 'no-issue' label."
+            exit 1
+          fi
+
+          for n in $refs; do
+            info=$(gh api "repos/$GH_REPO/issues/$n" \
+              --jq 'if .pull_request then "pr" else .state end' 2>/dev/null || echo "missing")
+            echo "Reference #$n → $info"
+            if [ "$info" = "open" ]; then
+              echo "PASS: #$n is an open issue."
+              exit 0
+            fi
+          done
+
+          echo "FAIL: no reference points at an OPEN issue in this repository."
+          exit 1
