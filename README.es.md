@@ -135,6 +135,7 @@ uv run lint-imports               # contratos de arquitectura
 
 | Punto de entrada | Qué cubre |
 | --- | --- |
+| [`ROADMAP.md`](ROADMAP.md) | Qué funciona hoy, qué está construido sin conectar, y qué viene después |
 | [`docs/00-master-index.md`](docs/00-master-index.md) | Índice de toda la documentación de mantenimiento |
 | [`docs/diagrams/odoo-forge-current-implementation-guide.md`](docs/diagrams/odoo-forge-current-implementation-guide.md) | El límite exacto de lo implementado hoy |
 | [`docs/01-repository-map.md`](docs/01-repository-map.md) | Estructura del repositorio |

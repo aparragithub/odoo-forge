@@ -135,6 +135,7 @@ uv run lint-imports               # architecture contracts
 
 | Entry point | What it covers |
 | --- | --- |
+| [`ROADMAP.md`](ROADMAP.md) | What works today, what is built but not wired, and what comes next |
 | [`docs/00-master-index.md`](docs/00-master-index.md) | Index of all maintenance documentation |
 | [`docs/diagrams/odoo-forge-current-implementation-guide.md`](docs/diagrams/odoo-forge-current-implementation-guide.md) | The exact boundary of what is implemented today |
 | [`docs/01-repository-map.md`](docs/01-repository-map.md) | Repository structure |
