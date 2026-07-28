@@ -8,14 +8,15 @@ on:
       - 'tests/**'
       - 'pyproject.toml'
       - '.github/workflows/**'
+  # No path filter on pull_request: `lint-and-test` is a required status check
+  # on main, and a required check that never runs blocks the PR forever.
   pull_request:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'tests/**'
-      - 'pyproject.toml'
-      - '.github/workflows/**'
   workflow_dispatch:
+
+# The job only reads the repo; never grant the default write token.
+permissions:
+  contents: read
 
 jobs:
   lint-and-test:
