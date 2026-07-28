@@ -162,7 +162,7 @@ Development is spec-driven. Specifications live under [`openspec/specs/`](opensp
 
 ## Contributing
 
-Issues and pull requests are welcome. Every change lands through a pull request; nothing is pushed straight to `main`. Before opening a PR, please make sure `ruff`, `mypy`, `pytest` and `lint-imports` all pass.
+Issues and pull requests are welcome — start with [CONTRIBUTING.md](CONTRIBUTING.md) and the [`good-first-issue`](https://github.com/aparragithub/odoo-forge/issues?q=is%3Aissue+is%3Aopen+label%3Agood-first-issue) label. Every change lands through a pull request tied to an open issue; nothing is pushed straight to `main`.
 
 ## License
 
