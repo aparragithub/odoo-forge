@@ -6,12 +6,37 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
+authors = [
+    { name = "Angel Parra", email = "607418+aparragithub@users.noreply.github.com" },
+]
+keywords = ["odoo", "erp", "docker", "deployment", "manifest", "devops"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Installation/Setup",
+    "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
+]
 dependencies = [
     "cryptography>=43.0",
     "pydantic>=2.7",
     "pyyaml>=6.0",
     "typer>=0.12",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aparragithub/odoo-forge"
+Repository = "https://github.com/aparragithub/odoo-forge"
+Documentation = "https://github.com/aparragithub/odoo-forge/blob/main/docs/00-master-index.md"
+Changelog = "https://github.com/aparragithub/odoo-forge/blob/main/CHANGELOG.md"
+Issues = "https://github.com/aparragithub/odoo-forge/issues"
 
 [project.scripts]
 forge = "odoo_forge_cli.main:app"
