@@ -19,6 +19,30 @@ The file is encrypted with [SOPS](https://github.com/getsops/sops) using an
 [age](https://github.com/FiloSottile/age) key. It is safe to commit: only
 holders of a matching age private key can decrypt it.
 
+## Create your own credential file
+
+The repository never ships a usable credential — the example files are
+local-only and gitignored. Every machine (and every team) brings its own:
+
+```bash
+# 1. Generate your age key pair (once per person/machine)
+age-keygen -o ~/.config/sops/age/keys.txt
+# note the printed public key: age1...
+
+# 2. Create the encrypted file next to your project.yaml
+sops --encrypt --age age1YOUR_PUBLIC_KEY \
+  --input-type yaml --output-type yaml \
+  /dev/stdin > credentials.sops.yaml <<'EOF'
+enterprise/source-git: YOUR_ENTERPRISE_GIT_TOKEN
+EOF
+```
+
+`enterprise/source-git` is the conventional entry `forge` looks up: the
+secret used to authenticate the clone of your private Odoo Enterprise
+repository. Use **your own** access token — never share or reuse someone
+else's, and keep `credentials.sops.yaml` out of version control unless every
+listed age recipient is entitled to that credential.
+
 ## Check your machine
 
 ```bash
