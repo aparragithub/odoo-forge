@@ -51,13 +51,18 @@ La fuente estructural y canónica para estado de producto, dependencias, evidenc
 Requiere Python 3.11+, [uv](https://docs.astral.sh/uv/) y un daemon de Docker activo para los comandos de backend.
 
 ```bash
+uv tool install odoo-forge   # o: pipx install odoo-forge / pip install odoo-forge
+forge --help
+```
+
+Para trabajar sobre odoo-forge en sí, instalalo desde el código fuente:
+
+```bash
 git clone https://github.com/aparragithub/odoo-forge.git
 cd odoo-forge
 uv sync
 uv run forge --help
 ```
-
-Todavía no está publicado en PyPI — se instala desde el código fuente.
 
 Un manifest mínimo se ve así:
 
