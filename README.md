@@ -46,6 +46,8 @@ The canonical, structural source of truth for product state, dependencies, evide
 
 ## Quickstart
 
+![forge validate, project and run bringing up a local Odoo stack](docs/assets/quickstart.gif)
+
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and a running Docker daemon for backend commands.
 
 ```bash

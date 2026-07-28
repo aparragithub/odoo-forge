@@ -46,6 +46,8 @@ La fuente estructural y canónica para estado de producto, dependencias, evidenc
 
 ## Inicio rápido
 
+![forge validate, project y run levantando un stack local de Odoo](docs/assets/quickstart.gif)
+
 Requiere Python 3.11+, [uv](https://docs.astral.sh/uv/) y un daemon de Docker activo para los comandos de backend.
 
 ```bash
