@@ -26,11 +26,12 @@ Tagged but never published: PyPI rejected the `odoo-forge` distribution name.
 Install `0.1.1` instead — it carries the same surface under the accepted
 distribution name.
 
-First public release: the `forge` CLI with manifest validation and locking,
+Initial release contents: the `forge` CLI with manifest validation and locking,
 Git-backed workspace projection, the local Odoo + PostgreSQL Docker backend,
-GHCR image operations, and SOPS/age Enterprise credential handling.
+GHCR image operations, and SOPS/age Enterprise credential handling. All of it
+reached PyPI in `0.1.1`.
 
-Everything below this line was developed before that first release.
+Everything below this line was developed before the `0.1.0` cut.
 
 ### Breaking
 
