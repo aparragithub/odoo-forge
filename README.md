@@ -51,9 +51,12 @@ The canonical, structural source of truth for product state, dependencies, evide
 Requires Python 3.11+, [uv](https://docs.astral.sh/uv/), and a running Docker daemon for backend commands.
 
 ```bash
-uv tool install odoo-forge   # or: pipx install odoo-forge / pip install odoo-forge
+uv tool install odoo-forge-toolkit   # or: pipx install odoo-forge-toolkit / pip install odoo-forge-toolkit
 forge --help
 ```
+
+The PyPI distribution is named `odoo-forge-toolkit`; the command it installs is
+`forge` and the import packages keep the `odoo_forge*` names.
 
 To work on odoo-forge itself, install from source instead:
 

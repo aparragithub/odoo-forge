@@ -51,9 +51,12 @@ La fuente estructural y canónica para estado de producto, dependencias, evidenc
 Requiere Python 3.11+, [uv](https://docs.astral.sh/uv/) y un daemon de Docker activo para los comandos de backend.
 
 ```bash
-uv tool install odoo-forge   # o: pipx install odoo-forge / pip install odoo-forge
+uv tool install odoo-forge-toolkit   # o: pipx install odoo-forge-toolkit / pip install odoo-forge-toolkit
 forge --help
 ```
+
+La distribución en PyPI se llama `odoo-forge-toolkit`; el comando que instala es
+`forge` y los paquetes de importación conservan los nombres `odoo_forge*`.
 
 Para trabajar sobre odoo-forge en sí, instalalo desde el código fuente:
 
