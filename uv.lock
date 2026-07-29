@@ -599,8 +599,8 @@ wheels = [
 ]
 
 [[package]]
-name = "odoo-forge"
-version = "0.1.0"
+name = "odoo-forge-toolkit"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
