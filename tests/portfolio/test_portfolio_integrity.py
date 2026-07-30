@@ -154,9 +154,7 @@ def test_dangling_gap_reference_red_catches_bad_ac_gap(live_plan: dict[str, Any]
         for a in it.get("acceptance", []) or []
         if isinstance(a, dict) and a.get("gaps")
     )
-    acceptance_entry = next(
-        a for a in item["acceptance"] if isinstance(a, dict) and a.get("gaps")
-    )
+    acceptance_entry = next(a for a in item["acceptance"] if isinstance(a, dict) and a.get("gaps"))
     acceptance_entry["gaps"] = ["G-NOPE"]
     violations = [str(v) for v in validate.validate_plan(mutated)]
     assert violations != []
@@ -167,9 +165,7 @@ def test_one_directional_alias_mapping_red_catches_alias_backref(
     live_plan: dict[str, Any],
 ) -> None:
     mutated = copy.deepcopy(live_plan)
-    alias_key, targets = next(
-        iter(mutated["meta"]["historical_alias_map"].items())
-    )
+    alias_key, targets = next(iter(mutated["meta"]["historical_alias_map"].items()))
     target_id = targets[0]
     target_item = next(it for it in mutated["items"] if it["id"] == target_id)
     target_item["historical_aliases"] = [
@@ -177,9 +173,7 @@ def test_one_directional_alias_mapping_red_catches_alias_backref(
     ]
     violations = [str(v) for v in validate.validate_plan(mutated)]
     assert violations != []
-    assert any(
-        "alias-backref" in v and target_id in v and alias_key in v for v in violations
-    )
+    assert any("alias-backref" in v and target_id in v and alias_key in v for v in violations)
 
 
 def test_hard_dependency_edges_red_catches_deleted_edge(live_plan: dict[str, Any]) -> None:
