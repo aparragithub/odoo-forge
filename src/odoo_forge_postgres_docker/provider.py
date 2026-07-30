@@ -280,6 +280,20 @@ class DockerPostgresqlDatabaseProvider:
             argv.extend(
                 item for pair in merged_labels.items() for item in ("--label", "=".join(pair))
             )
+            argv.extend(
+                (
+                    "--health-cmd",
+                    "pg_isready -U postgres",
+                    "--health-interval",
+                    "1s",
+                    "--health-timeout",
+                    "5s",
+                    "--health-retries",
+                    "30",
+                    "--health-start-period",
+                    "5s",
+                )
+            )
             argv.extend(("postgres:16",))
             try:
                 self._run(argv)

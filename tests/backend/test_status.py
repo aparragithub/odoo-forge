@@ -163,6 +163,18 @@ class TestParseStatusPostgresNullHealth:
         assert status.postgres.state == "no_healthcheck"
 
 
+def test_postgres_healthy_health_maps_to_ready_status() -> None:
+    containers = [
+        _container(role="odoo", running=True, health_status="healthy"),
+        _container(role="postgres", running=True, health_status="healthy"),
+    ]
+
+    status = parse_status(containers)
+
+    assert status.postgres.state == "healthy"
+    assert status.postgres.ready is True
+
+
 class TestParseStatusMissingRoleInArray:
     def test_only_odoo_present_postgres_falls_through_to_exited_not_odoo_status(self) -> None:
         # `docker inspect` array with only ONE role's container present (the

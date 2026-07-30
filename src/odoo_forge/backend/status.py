@@ -116,8 +116,9 @@ def _role_status(role: ContainerRole, container: dict[str, Any] | None) -> RoleS
     only runs for a running container: Odoo's `.State.Health.Status` maps
     directly (`starting`/`unhealthy`/`healthy`); a null/absent health on a
     running Odoo container is unexpected and maps to `unknown` (not-ready).
-    Postgres ships no HEALTHCHECK, so null/absent health on a running
-    Postgres container maps to `no_healthcheck` (running, not permanently
+    Provisioned Postgres containers expose a bounded `pg_isready` healthcheck,
+    while legacy or externally managed containers may still have null/absent
+    health. The latter maps to `no_healthcheck` (running, not permanently
     not-ready).
     """
     if container is None:

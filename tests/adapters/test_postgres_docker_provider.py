@@ -770,6 +770,39 @@ def test_provision_creates_only_receipted_container_then_proves_bounded_readines
     assert ("docker", "exec", "database-42", "pg_isready", "-U", "postgres") in calls
 
 
+def test_provision_adds_bounded_pg_isready_healthcheck_before_image() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(DatabaseSpec(name="database-42"), CredentialHandle("opaque"))
+
+    run_call = next(call for call in calls if call[:2] == ("docker", "run"))
+    image_index = run_call.index("postgres:16")
+    expected_healthcheck = (
+        "--health-cmd",
+        "pg_isready -U postgres",
+        "--health-interval",
+        "1s",
+        "--health-timeout",
+        "5s",
+        "--health-retries",
+        "30",
+        "--health-start-period",
+        "5s",
+    )
+
+    assert run_call[image_index - len(expected_healthcheck) : image_index] == expected_healthcheck
+    assert all(run_call.count(token) == 1 for token in expected_healthcheck[::2])
+    assert ("docker", "exec", "database-42", "pg_isready", "-U", "postgres") in calls
+
+
 def test_provision_reserves_before_docker_then_binds_and_activates(tmp_path: Path) -> None:
     authority = LocalOwnershipAuthority(tmp_path / "authority")
     calls: list[tuple[str, ...]] = []
