@@ -16,7 +16,12 @@ jobs:
     timeout-minutes: 5
     # Dependabot PRs never reference an issue; a skipped job still satisfies
     # a required status check.
-    if: github.actor != 'dependabot[bot]'
+    #
+    # Gate on the PR AUTHOR, not `github.actor`. `github.actor` is whoever
+    # triggered the event, so an `edited` event fired by another bot editing a
+    # Dependabot PR body (CodeRabbit inserting its review summary, for one) ran
+    # this job as that bot, found no `Closes #N`, and failed the required check.
+    if: github.event.pull_request.user.login != 'dependabot[bot]'
     steps:
       - name: Check PR references an open issue
         env:
