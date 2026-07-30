@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from odoo_forge.backend.status import InstanceStatus, parse_status
 from odoo_forge.credentials import CredentialHandle
 from odoo_forge.data_artifacts import (
     ArtifactComponentKind,
@@ -81,6 +82,21 @@ def _config_env(name: str) -> list[str]:
     result = _docker(["inspect", "-f", "{{json .Config.Env}}", name])
     env: list[str] = json.loads(result.stdout)
     return env
+
+
+def _wait_for_healthy_inspect(name: str) -> list[dict[str, object]]:
+    deadline = time.monotonic() + 60.0
+    while True:
+        result = _docker(["inspect", name])
+        if result.returncode == 0:
+            payload: list[dict[str, object]] = json.loads(result.stdout)
+            state = payload[0].get("State", {})
+            health = state.get("Health", {}) if isinstance(state, dict) else {}
+            if isinstance(health, dict) and health.get("Status") == "healthy":
+                return payload
+        if time.monotonic() >= deadline:
+            pytest.fail("Docker healthcheck did not become healthy within 60 seconds")
+        time.sleep(0.25)
 
 
 def _peer_psql(host: str, password: str) -> subprocess.CompletedProcess[str]:
@@ -195,6 +211,32 @@ def test_provision_reconcile_foreign_survival_and_cleanup_against_real_docker() 
         if foreign_created:
             result = _docker(["rm", "-f", foreign_name])
             assert result.returncode == 0, result.stderr
+
+
+def test_provisioned_postgres_healthcheck_is_parsed_as_ready() -> None:
+    _require_real_docker()
+    name = f"healthcheck-{uuid.uuid4().hex[:12]}"
+    provider = DockerPostgresqlDatabaseProvider(
+        readiness_timeout=30.0, credential_target=lambda _descriptor: _credential_target("existing")
+    )
+    creation: DatabaseCreation | None = None
+
+    try:
+        creation = provider.provision(
+            DatabaseSpec(name=name, labels={"com.odoo-forge.role": "postgres"}),
+            CredentialHandle("opaque"),
+        )
+        inspect_json = _wait_for_healthy_inspect(name)
+
+        status = parse_status(inspect_json)
+
+        assert isinstance(status, InstanceStatus)
+        assert status.postgres.state == "healthy"
+        assert status.postgres.ready is True
+    finally:
+        if creation is not None:
+            assert provider.cleanup(creation.receipt).residual_failures == ()
+            assert not _container_exists(name)
 
 
 def test_runtime_attestation_requires_a_live_ready_docker_container() -> None:
