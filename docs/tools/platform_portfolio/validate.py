@@ -52,6 +52,17 @@ ITEM_KINDS = {
     "workflow",
     "sdd_change",
 }
+# openspec/specs/platform-subproject-governance/spec.md:31 declares six legal
+# item statuses. Only `proposed` and `achieved` have enforced invariants below;
+# the other four are legal but intentionally unchecked here (follow-up work).
+ITEM_STATUSES = {
+    "proposed",
+    "validated",
+    "active",
+    "partially delivered",
+    "achieved",
+    "superseded",
+}
 SCOPE_RE = re.compile(r"^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$")
 
 
@@ -183,7 +194,7 @@ def validate_plan(d: dict) -> list[Violation]:
                 add("CRITICAL", "status-achieved-open-gap", f"{it['id']}")
             if not it.get("evidence_date"):
                 add("CRITICAL", "status-achieved-no-evidence-date", f"{it['id']}")
-        else:
+        elif status not in ITEM_STATUSES:
             add("CRITICAL", "status-unknown", f"{it['id']}:{status}")
 
     # transfers: destination, origin, dotted-scope grammar, evidence

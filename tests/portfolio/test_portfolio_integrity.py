@@ -246,6 +246,32 @@ def test_status_invariants_accept_proposed_with_only_item_level_gap(
     assert not any("status-" in v and proposed_item["id"] in v for v in violations)
 
 
+def test_status_invariants_red_catches_unknown_status(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    item = mutated["items"][0]
+    item["status"] = "not-a-real-status"
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert any(
+        "status-unknown" in v and item["id"] in v and "not-a-real-status" in v for v in violations
+    )
+
+
+def test_status_invariants_accept_legal_governance_statuses(live_plan: dict[str, Any]) -> None:
+    """`status-unknown` must not fire for any status the governance spec declares legal.
+
+    openspec/specs/platform-subproject-governance/spec.md:31 declares six legal
+    statuses. This change only implements invariants for `proposed` and
+    `achieved`; the other four are legal but intentionally unchecked here
+    (follow-up work), so they must not trip the catch-all.
+    """
+    mutated = copy.deepcopy(live_plan)
+    item = mutated["items"][0]
+    for status in ("validated", "active", "partially delivered", "superseded"):
+        item["status"] = status
+        violations = [str(v) for v in validate.validate_plan(mutated)]
+        assert not any("status-unknown" in v and item["id"] in v for v in violations)
+
+
 def test_status_invariants_hold(live_plan: dict[str, Any]) -> None:
     violations = [str(v) for v in validate.validate_plan(live_plan)]
     assert not any("status-" in v for v in violations)
