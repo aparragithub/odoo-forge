@@ -49,6 +49,19 @@ else
   actual:   $result"
 fi
 
+# --- absent and empty roots are skipped without reordering later roots -------
+mkdir -p "$MNT_ROOT/custom/empty"
+export FORGE_ADDONS_PATH_ORDER="$MNT_ROOT/custom/missing,$MNT_ROOT/custom/empty,$MNT_ROOT/community,$MNT_ROOT/custom/oca"
+result="$(build_addons_path)"
+expected="$MNT_ROOT/community/base_repo,$MNT_ROOT/custom/oca/oca_repo,/opt/odoo/addons"
+if [[ "$result" == "$expected" ]]; then
+    pass "missing and empty roots are skipped while remaining roots retain their order"
+else
+    fail "missing or empty root handling changed the effective order
+  expected: $expected
+  actual:   $result"
+fi
+
 # --- unset env: falls back to the fixed default order -----------------------
 unset FORGE_ADDONS_PATH_ORDER
 result="$(build_addons_path)"
