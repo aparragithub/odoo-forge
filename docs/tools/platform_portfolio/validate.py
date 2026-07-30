@@ -169,6 +169,22 @@ def validate_plan(d: dict) -> list[Violation]:
             for r in it.get(rel, []) or []:
                 if r not in items and r not in alias_map:
                     add("CRITICAL", "bad-lineage", f"{it['id']}.{rel}:{r}")
+        status = it.get("status")
+        has_open_gap = bool(it.get("gaps")) or any(
+            a.get("gaps") for a in it.get("acceptance", []) or [] if isinstance(a, dict)
+        )
+        if status == "proposed":
+            if not has_open_gap:
+                add("CRITICAL", "status-proposed-no-gap", f"{it['id']}")
+            if it.get("evidence_date"):
+                add("CRITICAL", "status-proposed-evidence-date", f"{it['id']}")
+        elif status == "achieved":
+            if has_open_gap:
+                add("CRITICAL", "status-achieved-open-gap", f"{it['id']}")
+            if not it.get("evidence_date"):
+                add("CRITICAL", "status-achieved-no-evidence-date", f"{it['id']}")
+        else:
+            add("CRITICAL", "status-unknown", f"{it['id']}:{status}")
 
     # transfers: destination, origin, dotted-scope grammar, evidence
     for t in d["transfers"]:

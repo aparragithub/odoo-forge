@@ -108,42 +108,6 @@ EXPECTED_HARD_EDGES: frozenset[tuple[str, str, str]] = frozenset(
 )
 
 
-def _has_open_gap(item: dict[str, Any]) -> bool:
-    """Report whether an item carries an open gap in either place the schema
-    allows one.
-
-    The validator reads gaps from both the item itself and from each acceptance
-    entry, so a check that looks at only one of the two is wrong in both
-    directions: an achieved item could retain an item-level gap undetected, and
-    a proposed item whose only gap is item-level would be flagged as an
-    offender even though it is valid.
-    """
-    if item.get("gaps"):
-        return True
-    return any(a.get("gaps") for a in item.get("acceptance", []) or [] if isinstance(a, dict))
-
-
-def _status_invariant_offenders(plan: dict[str, Any]) -> list[str]:
-    """Return one readable string per item whose status contradicts its open
-    gaps or evidence_date, or an empty list if none.
-    """
-    offenders: list[str] = []
-    for item in plan["items"]:
-        status = item.get("status")
-        has_open_gap = _has_open_gap(item)
-        if status == "proposed":
-            if not has_open_gap:
-                offenders.append(f"{item['id']}: proposed with no open gap")
-            if item.get("evidence_date"):
-                offenders.append(f"{item['id']}: proposed but claims an evidence_date")
-        if status == "achieved":
-            if has_open_gap:
-                offenders.append(f"{item['id']}: achieved but has an open gap")
-            if not item.get("evidence_date"):
-                offenders.append(f"{item['id']}: achieved but evidence_date is null")
-    return offenders
-
-
 def test_live_plan_is_clean_at_every_severity_red_catches_bad_kind(
     live_plan: dict[str, Any],
 ) -> None:
@@ -219,8 +183,10 @@ def test_status_invariants_red_catches_blanked_evidence_date(
     mutated = copy.deepcopy(live_plan)
     achieved_item = next(it for it in mutated["items"] if it.get("status") == "achieved")
     achieved_item["evidence_date"] = None
-    offenders = _status_invariant_offenders(mutated)
-    assert any(achieved_item["id"] in offender for offender in offenders)
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert any(
+        "status-achieved-no-evidence-date" in v and achieved_item["id"] in v for v in violations
+    )
 
 
 def test_status_invariants_red_catches_proposed_claiming_evidence_date(
@@ -229,8 +195,10 @@ def test_status_invariants_red_catches_proposed_claiming_evidence_date(
     mutated = copy.deepcopy(live_plan)
     proposed_item = next(it for it in mutated["items"] if it.get("status") == "proposed")
     proposed_item["evidence_date"] = "2026-07-30"
-    offenders = _status_invariant_offenders(mutated)
-    assert any(proposed_item["id"] in offender for offender in offenders)
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert any(
+        "status-proposed-evidence-date" in v and proposed_item["id"] in v for v in violations
+    )
 
 
 def test_status_invariants_red_catches_emptied_proposed_gaps(
@@ -241,8 +209,8 @@ def test_status_invariants_red_catches_emptied_proposed_gaps(
     for entry in proposed_item.get("acceptance", []) or []:
         if isinstance(entry, dict):
             entry["gaps"] = []
-    offenders = _status_invariant_offenders(mutated)
-    assert any(proposed_item["id"] in offender for offender in offenders)
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert any("status-proposed-no-gap" in v and proposed_item["id"] in v for v in violations)
 
 
 def test_status_invariants_red_catches_achieved_with_item_level_gap(
@@ -250,14 +218,14 @@ def test_status_invariants_red_catches_achieved_with_item_level_gap(
 ) -> None:
     """An achieved item must not retain an open gap recorded on the item itself.
 
-    The validator reads item-level gaps, so a helper that inspected only
+    The validator reads item-level gaps, so a check that inspected only
     acceptance gaps would let this through.
     """
     mutated = copy.deepcopy(live_plan)
     achieved_item = next(it for it in mutated["items"] if it.get("status") == "achieved")
     achieved_item["gaps"] = ["G0"]
-    offenders = _status_invariant_offenders(mutated)
-    assert any(achieved_item["id"] in offender for offender in offenders)
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert any("status-achieved-open-gap" in v and achieved_item["id"] in v for v in violations)
 
 
 def test_status_invariants_accept_proposed_with_only_item_level_gap(
@@ -274,9 +242,10 @@ def test_status_invariants_accept_proposed_with_only_item_level_gap(
         if isinstance(entry, dict):
             entry["gaps"] = []
     proposed_item["gaps"] = ["G0"]
-    offenders = _status_invariant_offenders(mutated)
-    assert not any(proposed_item["id"] in offender for offender in offenders)
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert not any("status-" in v and proposed_item["id"] in v for v in violations)
 
 
 def test_status_invariants_hold(live_plan: dict[str, Any]) -> None:
-    assert _status_invariant_offenders(live_plan) == []
+    violations = [str(v) for v in validate.validate_plan(live_plan)]
+    assert not any("status-" in v for v in violations)
