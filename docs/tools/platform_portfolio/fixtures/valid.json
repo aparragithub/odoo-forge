@@ -13,7 +13,7 @@
       "title": "Example outcome",
       "owner_role": "Architecture",
       "status": "proposed",
-      "evidence_date": "2026-07-10",
+      "evidence_date": null,
       "acceptance": [
         {"id": "AC-EXAMPLE", "status": "proposed", "evidence": [], "gaps": ["G0"]}
       ],

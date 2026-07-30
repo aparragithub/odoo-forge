@@ -59,7 +59,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "docs/tools/platform_portfolio"]
 addopts = "-m 'not integration' --cov=odoo_forge --cov-report=term-missing"
 markers = [
     "integration: real-daemon-only backend tests (PG socket-vs-TCP race, ephemeral-port assignment, health timing); deselected by default, run explicitly with `-m integration`",
@@ -102,6 +102,10 @@ plugins = ["pydantic.mypy"]
 init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
+
+[[tool.mypy.overrides]]
+module = ["validate"]
+ignore_missing_imports = true
 
 [tool.importlinter]
 root_packages = ["odoo_forge", "odoo_forge_cli", "odoo_forge_git", "odoo_forge_workspace", "odoo_forge_docker", "odoo_forge_registry", "odoo_forge_postgres_docker", "odoo_forge_catalog", "odoo_forge_pipeline_github"]
