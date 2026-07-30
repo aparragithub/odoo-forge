@@ -27,4 +27,26 @@ _LIVE_PLAN_PATH = _REPO_ROOT / "docs" / "specs" / "platform" / "portfolio.json"
 
 @pytest.fixture(scope="session")
 def live_plan() -> dict[str, Any]:
-    return cast(dict[str, Any], json.loads(_LIVE_PLAN_PATH.read_text(encoding="utf-8")))
+    return _load_live_plan(_LIVE_PLAN_PATH)
+
+
+def _load_live_plan(path: Path) -> dict[str, Any]:
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        pytest.fail(f"live_plan: missing portfolio.json ({path})", pytrace=False)
+
+    try:
+        value = json.loads(contents)
+    except json.JSONDecodeError as exc:
+        pytest.fail(
+            f"live_plan: malformed portfolio.json ({path}: line {exc.lineno}, column {exc.colno})",
+            pytrace=False,
+        )
+
+    if not isinstance(value, dict):
+        pytest.fail(
+            f"live_plan: malformed portfolio.json ({path}: expected an object)", pytrace=False
+        )
+
+    return cast(dict[str, Any], value)
