@@ -51,9 +51,11 @@ Established against `portfolio.json` and the source tree, not inferred from pros
 - **Governance gap.** `SP-4` lists the control-plane transport/stack choice as an open decision,
   but no corresponding record exists in `portfolio.json` `decisions[]`. This route closes it as
   `DEC-CP-STACK`.
-- **No deterministic validator exists.** `platform-subproject-governance` requires that every
-  plan reference resolve "under the deterministic validator". No such validator exists in `src/`,
-  `tests/`, or as a script; no test references the portfolio at all.
+- **Deterministic validator is enforced by the default test gate.** `platform-subproject-governance`
+  requires that every plan reference resolve "under the deterministic validator". This is now
+  satisfied: `docs/tools/platform_portfolio/validate.py` is wired into `uv run pytest` via
+  `testpaths`, and `tests/portfolio/` asserts all-severity live cleanliness, hard-edge graph
+  preservation, and status invariants against `docs/specs/platform/portfolio.json`.
 - **No HTTP surface exists.** Runtime dependencies are `cryptography`, `pydantic`, `pyyaml`,
   `typer`. The sole entry point is the `forge` CLI. `openspec/changes/` has no active change.
 - Existing `decompositions[]` declare `changed_line_forecast.hard_gate: 400`. `SP-4` carries seven
