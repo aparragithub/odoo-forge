@@ -1,6 +1,6 @@
 """Assertions the existing validator (validate.py) genuinely lacks.
 
-These three checks close the gap between what
+These five checks close the gap between what
 `docs/tools/platform_portfolio/validate.py` verifies today and what the live
 plan (`docs/specs/platform/portfolio.json`) must guarantee:
 
@@ -12,6 +12,10 @@ plan (`docs/specs/platform/portfolio.json`) must guarantee:
 3. Status invariants — `proposed` items must carry an open gap and not claim
    delivery; `achieved` items must have no open gaps and a real
    `evidence_date` (the field is `null`, not absent, on proposed items).
+4. Decision evidence integrity — every decision evidence ID must resolve in
+   `meta.evidence_catalog`.
+5. Decomposition input integrity — every decomposition input ID must resolve
+   in the complete item/decomposition ID namespace.
 
 Update workflow: a legitimate hard-edge change to `portfolio.json` MUST edit
 `EXPECTED_HARD_EDGES` in the same PR. The failure message of
@@ -104,8 +108,44 @@ EXPECTED_HARD_EDGES: frozenset[tuple[str, str, str]] = frozenset(
         ("G73", "CAP-RESOURCE-OWNERSHIP", "WF-DATA-COPY"),
         ("G74", "CAP-TENANCY", "SP-REMOTE-DEPLOYMENT"),
         ("G75", "CAP-TENANCY", "SP-ENVIRONMENT-REQUESTS"),
+        ("G76", "SP-CONTROL-PLANE-AUTHORITY", "CHG-OPS-UI-READONLY"),
     }
 )
+
+EXPECTED_ROUTE_DECOMPOSITIONS = frozenset(
+    {
+        "CHG-PORTFOLIO-VALIDATOR",
+        "CHG-ADOPT-UI-ROUTE",
+        "CHG-PROVIDER-CATALOG",
+        "CHG-SP4A-INSTANCE-REGISTRY",
+        "CHG-SP4B-REGISTRY-POSTGRES",
+        "CHG-SP4C-CONTROL-PLANE-EDGE",
+        "CHG-OPS-UI-READONLY",
+    }
+)
+EXPECTED_ROUTE_DECISIONS = frozenset({"DEC-CP-STACK", "DEC-UI-PARTIAL", "DEC-UI-STACK"})
+
+
+def _unresolved_decision_evidence(plan: dict[str, Any]) -> list[tuple[str, str]]:
+    evidence_catalog = set(plan["meta"]["evidence_catalog"])
+    return [
+        (decision["id"], evidence_id)
+        for decision in plan["decisions"]
+        for evidence_id in decision.get("evidence", [])
+        if evidence_id not in evidence_catalog
+    ]
+
+
+def _unresolved_decomposition_inputs(plan: dict[str, Any]) -> list[tuple[str, str]]:
+    item_or_decomposition_ids = {item["id"] for item in plan["items"]} | {
+        decomposition["id"] for decomposition in plan.get("decompositions", [])
+    }
+    return [
+        (decomposition["id"], input_id)
+        for decomposition in plan.get("decompositions", [])
+        for input_id in decomposition.get("inputs", [])
+        if input_id not in item_or_decomposition_ids
+    ]
 
 
 def test_live_plan_is_clean_at_every_severity_red_catches_bad_kind(
@@ -175,6 +215,103 @@ def test_hard_dependency_edges_are_preserved(live_plan: dict[str, Any]) -> None:
     actual = {(e["id"], e["from"], e["to"]) for e in live_plan["edges"] if e["type"] == "hard"}
     assert sorted(EXPECTED_HARD_EDGES - actual) == []  # removed or downgraded to soft
     assert sorted(actual - EXPECTED_HARD_EDGES) == []  # undeclared new hard edge
+
+
+def test_operations_ui_route_has_exact_decompositions_and_decisions(
+    live_plan: dict[str, Any],
+) -> None:
+    route_decompositions = {
+        entry["id"]
+        for entry in live_plan["decompositions"]
+        if entry["id"].startswith("CHG-")
+        and entry["id"] not in {"CHG-FIRST-DATABASE-ADAPTER", "CHG-FIRST-REMOTE-ADAPTER"}
+        and entry["id"] != "CHG-FIRST-IDENTITY-ADAPTER"
+    }
+    route_decisions = {
+        entry["id"] for entry in live_plan["decisions"] if "S83" in entry.get("evidence", [])
+    }
+
+    assert route_decompositions == EXPECTED_ROUTE_DECOMPOSITIONS
+    assert route_decisions == EXPECTED_ROUTE_DECISIONS
+
+
+def test_decision_evidence_integrity_red_catches_missing_catalog_entry(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-CP-STACK")
+    decision["evidence"] = ["S-MISSING"]
+
+    assert _unresolved_decision_evidence(mutated) == [("DEC-CP-STACK", "S-MISSING")]
+
+
+def test_all_decision_evidence_references_resolve(live_plan: dict[str, Any]) -> None:
+    assert _unresolved_decision_evidence(live_plan) == []
+
+
+def test_decomposition_input_integrity_red_catches_missing_namespace_entry(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decomposition = next(
+        entry for entry in mutated["decompositions"] if entry["id"] == "CHG-OPS-UI-READONLY"
+    )
+    decomposition["inputs"] = ["CHG-NOT-REAL"]
+
+    assert _unresolved_decomposition_inputs(mutated) == [("CHG-OPS-UI-READONLY", "CHG-NOT-REAL")]
+
+
+def test_all_decomposition_inputs_resolve_in_item_or_decomposition_namespace(
+    live_plan: dict[str, Any],
+) -> None:
+    assert _unresolved_decomposition_inputs(live_plan) == []
+
+
+def test_operations_ui_readonly_slice_has_exact_lineage_and_edge(
+    live_plan: dict[str, Any],
+) -> None:
+    slice_item = next(item for item in live_plan["items"] if item["id"] == "CHG-OPS-UI-READONLY")
+    hard_edges = [
+        edge
+        for edge in live_plan["edges"]
+        if edge["from"] == slice_item["id"] or edge["to"] == slice_item["id"]
+        if edge["type"] == "hard"
+    ]
+
+    assert slice_item["kind"] == "sdd_change"
+    assert slice_item["predecessors"] == ["SP-OPERATIONS-UI"]
+    assert [acceptance["id"] for acceptance in slice_item["acceptance"]] == [
+        "AC-CHG-OPS-UI-READONLY-READY"
+    ]
+    assert len(hard_edges) == 1
+    assert hard_edges[0]["id"] == "G76"
+    assert hard_edges[0]["from"] == "SP-CONTROL-PLANE-AUTHORITY"
+    assert hard_edges[0]["handoff_ids"] == ["AC-SP-CONTROL-PLANE-AUTHORITY-READY"]
+
+
+def test_operations_ui_route_preserves_parent_governance(live_plan: dict[str, Any]) -> None:
+    parent = next(item for item in live_plan["items"] if item["id"] == "SP-OPERATIONS-UI")
+    parent_edges = {
+        edge["id"]: (edge["from"], edge["to"], edge["type"], edge["handoff_ids"])
+        for edge in live_plan["edges"]
+        if edge["to"] == parent["id"] and edge["id"] in {"G46", "G65"}
+    }
+
+    assert parent["status"] == "proposed"
+    assert parent_edges == {
+        "G46": (
+            "SP-CONTROL-PLANE-AUTHORITY",
+            "SP-OPERATIONS-UI",
+            "hard",
+            ["AC-SP-CONTROL-PLANE-AUTHORITY-READY"],
+        ),
+        "G65": (
+            "SP-PLATFORM-ACCESS",
+            "SP-OPERATIONS-UI",
+            "hard",
+            ["AC-SP-PLATFORM-ACCESS-READY"],
+        ),
+    }
 
 
 def test_status_invariants_red_catches_blanked_evidence_date(
