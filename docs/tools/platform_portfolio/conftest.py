@@ -12,11 +12,13 @@ All other documentation checks performed by ``validate_documentation`` (link
 resolution, ownership markers, current-target labels, etc.) still run
 unmodified — only the renderer invocation is stubbed.
 
-``run_fixed_renderer`` and ``subprocess.run`` are bound as default arguments
-at definition time, not looked up by name at call time, so they are NOT
-patchable from outside the module. Patching
-``validate.validate_documentation`` at the module-attribute level is the only
-external seam available without editing the validator.
+``run_fixed_renderer`` captures ``subprocess.run`` in its ``run_process``
+default at definition time, so module-attribute patching does not replace the
+function already bound there. The bound renderer default can still be replaced
+explicitly through ``validate.run_fixed_renderer.__defaults__`` when a test
+needs a fail-fast sentinel. Patching
+``validate.validate_documentation`` at the module-attribute level remains the
+supported external seam without editing the validator.
 
 Durability note: this stub covers any future test that reaches Docker via
 ``validate_repository`` or ``validate_documentation``. A future test that

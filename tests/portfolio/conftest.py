@@ -33,20 +33,26 @@ def live_plan() -> dict[str, Any]:
 def _load_live_plan(path: Path) -> dict[str, Any]:
     try:
         contents = path.read_text(encoding="utf-8")
+        value = json.loads(contents)
     except FileNotFoundError:
         pytest.fail(f"live_plan: missing portfolio.json ({path})", pytrace=False)
-
-    try:
-        value = json.loads(contents)
-    except json.JSONDecodeError as exc:
+        return {}
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        location = (
+            f"line {exc.lineno}, column {exc.colno}"
+            if isinstance(exc, json.JSONDecodeError)
+            else "invalid UTF-8"
+        )
         pytest.fail(
-            f"live_plan: malformed portfolio.json ({path}: line {exc.lineno}, column {exc.colno})",
+            f"live_plan: malformed portfolio.json ({path}: {location})",
             pytrace=False,
         )
+        return {}
 
     if not isinstance(value, dict):
         pytest.fail(
             f"live_plan: malformed portfolio.json ({path}: expected an object)", pytrace=False
         )
+        return {}
 
     return cast(dict[str, Any], value)

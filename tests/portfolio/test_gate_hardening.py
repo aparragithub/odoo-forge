@@ -20,6 +20,8 @@ def test_fixture_documentation_uses_stable_validator_symbols() -> None:
     for symbol in ("validate_repository", "validate_documentation", "run_fixed_renderer"):
         assert f"``{symbol}``" in documentation
     assert "validate.py:" not in documentation
+    assert "validate.run_fixed_renderer.__defaults__" in documentation
+    assert "not patchable from outside" not in documentation
 
 
 def test_validate_repository_intercepts_renderer_without_docker(
@@ -36,6 +38,10 @@ def test_validate_repository_intercepts_renderer_without_docker(
         raise AssertionError("Docker-backed renderer was invoked")
 
     monkeypatch.setattr(validate, "RendererResult", record_renderer_result)
+    # This internal default mutation is the fail-fast guard for the empirical
+    # RED proof: if the module-global stub is removed, the test must fail
+    # instead of invoking Docker. The observable assertion remains the real
+    # validate_repository path below.
     monkeypatch.setattr(validate.run_fixed_renderer, "__defaults__", (fail_if_renderer_runs,))
     gate_conftest._install_renderer_stub(monkeypatch)
 
@@ -50,15 +56,19 @@ def test_validate_repository_intercepts_renderer_without_docker(
         (None, "live_plan: missing portfolio.json"),
         ("{not-json", "live_plan: malformed portfolio.json"),
         ("[]", "live_plan: malformed portfolio.json"),
+        (b"\xff", "live_plan: malformed portfolio.json"),
     ],
-    ids=("missing", "malformed-json", "malformed-structure"),
+    ids=("missing", "malformed-json", "malformed-structure", "invalid-utf8"),
 )
 def test_load_live_plan_reports_one_controlled_failure(
-    tmp_path: Path, contents: str | None, message_prefix: str
+    tmp_path: Path, contents: str | bytes | None, message_prefix: str
 ) -> None:
     path = tmp_path / "portfolio.json"
     if contents is not None:
-        path.write_text(contents, encoding="utf-8")
+        if isinstance(contents, bytes):
+            path.write_bytes(contents)
+        else:
+            path.write_text(contents, encoding="utf-8")
 
     with pytest.raises(pytest.fail.Exception) as failure:
         _load_live_plan(path)
