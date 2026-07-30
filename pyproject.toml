@@ -54,7 +54,7 @@ dev = [
     "pytest-cov>=5.0",
     "import-linter>=2.0",
     "mypy>=1.10",
-    "ruff>=0.5",
+    "ruff>=0.16.0",
     "types-PyYAML>=6.0",
 ]
 
@@ -78,6 +78,13 @@ skip_covered = false
 target-version = "py311"
 line-length = 100
 src = ["src", "tests"]
+
+[tool.ruff.format]
+# ruff 0.16 formats Python code blocks inside Markdown. Most of the affected
+# files are archived design documents under openspec/changes/archive/ — dated
+# records of past decisions, which a formatter released afterwards is no reason
+# to rewrite. Linting is unaffected: format.exclude applies to formatting only.
+exclude = ["*.md"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4"]
