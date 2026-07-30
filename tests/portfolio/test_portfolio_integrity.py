@@ -118,8 +118,11 @@ def _status_invariant_offenders(plan: dict[str, Any]) -> list[str]:
         acceptance = item.get("acceptance", []) or []
         gap_lists = [a.get("gaps", []) for a in acceptance if isinstance(a, dict)]
         all_gaps_empty = all(not gaps for gaps in gap_lists) if gap_lists else True
-        if status == "proposed" and all_gaps_empty:
-            offenders.append(f"{item['id']}: proposed with no open acceptance gap")
+        if status == "proposed":
+            if all_gaps_empty:
+                offenders.append(f"{item['id']}: proposed with no open acceptance gap")
+            if item.get("evidence_date"):
+                offenders.append(f"{item['id']}: proposed but claims an evidence_date")
         if status == "achieved":
             if not all_gaps_empty:
                 offenders.append(f"{item['id']}: achieved but has open acceptance gaps")
@@ -141,6 +144,42 @@ def test_live_plan_is_clean_at_every_severity_red_catches_bad_kind(
 
 def test_live_plan_is_clean_at_every_severity(live_plan: dict[str, Any]) -> None:
     assert [str(v) for v in validate.validate_plan(live_plan)] == []
+
+
+def test_dangling_gap_reference_red_catches_bad_ac_gap(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    item = next(
+        it
+        for it in mutated["items"]
+        for a in it.get("acceptance", []) or []
+        if isinstance(a, dict) and a.get("gaps")
+    )
+    acceptance_entry = next(
+        a for a in item["acceptance"] if isinstance(a, dict) and a.get("gaps")
+    )
+    acceptance_entry["gaps"] = ["G-NOPE"]
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert violations != []
+    assert any("bad-ac-gap" in v and item["id"] in v and "G-NOPE" in v for v in violations)
+
+
+def test_one_directional_alias_mapping_red_catches_alias_backref(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    alias_key, targets = next(
+        iter(mutated["meta"]["historical_alias_map"].items())
+    )
+    target_id = targets[0]
+    target_item = next(it for it in mutated["items"] if it["id"] == target_id)
+    target_item["historical_aliases"] = [
+        a for a in target_item.get("historical_aliases", []) if a != alias_key
+    ]
+    violations = [str(v) for v in validate.validate_plan(mutated)]
+    assert violations != []
+    assert any(
+        "alias-backref" in v and target_id in v and alias_key in v for v in violations
+    )
 
 
 def test_hard_dependency_edges_red_catches_deleted_edge(live_plan: dict[str, Any]) -> None:
@@ -175,6 +214,16 @@ def test_status_invariants_red_catches_blanked_evidence_date(
     achieved_item["evidence_date"] = None
     offenders = _status_invariant_offenders(mutated)
     assert any(achieved_item["id"] in offender for offender in offenders)
+
+
+def test_status_invariants_red_catches_proposed_claiming_evidence_date(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    proposed_item = next(it for it in mutated["items"] if it.get("status") == "proposed")
+    proposed_item["evidence_date"] = "2026-07-30"
+    offenders = _status_invariant_offenders(mutated)
+    assert any(proposed_item["id"] in offender for offender in offenders)
 
 
 def test_status_invariants_red_catches_emptied_proposed_gaps(
