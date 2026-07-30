@@ -3,7 +3,7 @@
 **Layer:** Planning · **Status:** design (not authority) · **Date:** 2026-07-29
 
 > **This document is a design, not authority.** The normative planning record is
-> [`docs/specs/platform/portfolio.json`](specs/platform/portfolio.json). Where the two disagree,
+> [`docs/specs/platform/portfolio.json`](platform/portfolio.json). Where the two disagree,
 > the portfolio wins. This map becomes authoritative only by being adopted into the portfolio's
 > `decompositions[]`, `decisions[]`, and `items[]` — which is declared here as `CHG-0`.
 
@@ -101,13 +101,13 @@ Each new package follows the repository's existing triple: an entry in `root_pac
 
 | # | Change | Package | Inputs | Key outputs | Forecast |
 |---|---|---|---|---|---|
-| 00 | `CHG-PORTFOLIO-VALIDATOR` | — | — | `tests/portfolio/test_portfolio_integrity.py` | ~200 |
+| 00 | `CHG-PORTFOLIO-VALIDATOR` | — | — | `tests/portfolio/test_portfolio_integrity.py` (references, status invariants, graph preservation) | ~260 |
 | 0 | `CHG-ADOPT-UI-ROUTE` | — | `portfolio.json` | 3 decisions, 7 decompositions, UI slice item | ~250 |
 | 1 | `CHG-PROVIDER-CATALOG` | `odoo_forge/provider_catalog/` | `DP` (decided) | approved-adapter catalog spec + types | ~300 |
 | 2 | `CHG-SP4A-INSTANCE-REGISTRY` | `odoo_forge/instance_registry/`, `ports/` | `CAP-TENANCY`, `CAP-RESOURCE-OWNERSHIP` | `InstanceRegistry` port + domain types | ~330 |
 | 3 | `CHG-SP4B-REGISTRY-POSTGRES` | `odoo_forge_instances_postgres` | `CHG-2`, `DEC-CP-STACK` | persistence adapter + conformance tests | ~350 |
 | 4 | `CHG-SP4C-CONTROL-PLANE-EDGE` | `odoo_forge_server` | `CHG-1`, `CHG-3`, `DEC-CP-STACK` | read-only API, composition root, on-read reconciliation | ~380 |
-| 5 | `CHG-OPS-UI-READONLY` | *(none new)* | `CHG-4`, `DEC-UI-PARTIAL`, `DEC-UI-STACK` | templates + view logic inside `odoo_forge_server` | ~300 |
+| 5 | `CHG-OPS-UI-READONLY` | *(none new)* | `CHG-4`, `DEC-UI-PARTIAL`, `DEC-UI-STACK` | templates + view logic inside `odoo_forge_server`, plus loopback-bind and production-mode-rejection tests | ~340 |
 
 All forecasts sit under the `hard_gate: 400`. Verification for every change: `C37`–`C41`
 (`pytest`, `lint-imports`, `mypy`, `ruff`, `uv build`). Rollback per change follows the existing
@@ -150,13 +150,23 @@ a build step, and a second artifact to version.
 ### `DEC-UI-PARTIAL` and its written cost
 
 A UI without RBAC over a control plane that lists instances exposes tenant and instance topology,
-even read-only. `CHG-5`'s acceptance criteria must therefore fix, in writing:
+even read-only. `CHG-5`'s acceptance criteria must therefore fix:
 
 - bind to localhost only;
 - single operator;
 - explicit prohibition on being archived as production-ready.
 
-If that is not recorded, in three months nobody remembers why that surface has no login.
+Recording those three as prose is **not sufficient**. Prose does not stop a later operator from
+binding the surface to `0.0.0.0` while still satisfying every sentence in this document. So each
+constraint ships as an executable check inside `CHG-5`:
+
+- a test asserting the server refuses to start on any non-loopback bind address;
+- a test asserting that production-mode configuration is rejected rather than merely discouraged;
+- the acceptance entry carrying a permanent gap, so `SP-OPERATIONS-UI` can never reach `achieved`
+  on the strength of this slice alone.
+
+This is the same discipline the purity gate already applies: a criterion that only exists in prose
+is a criterion nobody enforces.
 
 ## Governance mechanics
 
@@ -192,6 +202,19 @@ and claims no delivery; `achieved` has empty gaps and a non-empty `evidence_date
 first makes `CHG-0`'s own `C37 pytest` prove something rather than pass vacuously, and it is
 reusable for every later portfolio edit.
 
+Reference resolution alone does **not** prove the guarantee this route makes. A portfolio could
+delete or downgrade `G46` and `G65` while every remaining reference still resolves perfectly — and
+the *"G65 is not relaxed"* claim above would silently become false. The validator therefore also
+asserts **graph preservation**:
+
+- IDs are unique within `items`, `edges`, `decisions`, and `decompositions`.
+- Both hard edges into `SP-OPERATIONS-UI` (`G46` from `SP-CONTROL-PLANE-AUTHORITY`, `G65` from
+  `SP-PLATFORM-ACCESS`) exist and still carry `type: "hard"`.
+- No edge is silently downgraded from `hard` to `soft`: the set of hard edges is asserted against
+  an explicit expected set, so weakening one fails the test rather than passing quietly.
+
+Without these, the graph-integrity argument in *Governance mechanics* rests on prose alone.
+
 The `portfolio-state` spec's *"MUST NOT modify any file under `src/` or `tests/`"* requirement is
 scoped to that archived refresh, not a universal rule. Keeping `CHG-00` and `CHG-0` separate
 nonetheless leaves each diff single-purpose.
@@ -208,9 +231,11 @@ nonetheless leaves each diff single-purpose.
 ### Why reconciliation is not deferred
 
 A state dashboard showing stale state is worse than no dashboard — it reports dead instances as
-live. The founding constraint is already written (design line 227: *"ask the backend — never a
-parallel registry file that can drift"*). **On-read** reconciliation only, with no periodic job,
-keeps this cheap: the local Docker backend already exposes `status`.
+live. The founding constraint is already written in
+[`2026-07-05-modular-odoo-platform-design.md`](2026-07-05-modular-odoo-platform-design.md),
+§6.2 *State model: no database in the CLI* — *"To know which instances run, ask the backend"*.
+**On-read** reconciliation only, with no periodic job, keeps this cheap: the local Docker backend
+already exposes `status`.
 
 ## Testing
 
