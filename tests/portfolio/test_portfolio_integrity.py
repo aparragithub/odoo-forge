@@ -955,12 +955,17 @@ def test_sp4b_command_catalog_mints_c42_to_c46_with_exact_strings(
 
 def test_sp4b_item_scaffold_decomposition_is_exact(live_plan: dict[str, Any]) -> None:
     """Pin this change's own decomposition record (spec R7), including
-    start_boundary/finish_boundary/rollback (corrects W5).
+    start_boundary/finish_boundary/rollback and changed_line_forecast.
 
-    `changed_line_forecast` is intentionally not asserted here: the
-    validator's `forecast-sum`/`forecast-gate` checks already pin its
-    arithmetic against the live plan, so an extra literal copy here would
-    guard nothing the validator does not already guard.
+    The forecast is pinned by value, not left to the validator. The
+    validator's `forecast-sum` only checks internal arithmetic, and
+    `forecast-gate` compares the record's total against a `hard_gate`
+    stored in that same record -- so raising `hard_gate` to 10000 or
+    deleting it outright defeats the gate while both checks stay silent.
+    Redistributing `additions`/`deletions`, rescaling every total
+    consistently, or replacing a file `path` are equally silent. An
+    arithmetic check passes for any internally consistent rewrite, so it
+    never substitutes for pinning the individual field values.
     """
     decomposition = next(
         entry for entry in live_plan["decompositions"] if entry["id"] == "CHG-SP4B-ITEM-SCAFFOLD"
@@ -983,6 +988,24 @@ def test_sp4b_item_scaffold_decomposition_is_exact(live_plan: dict[str, Any]) ->
     assert decomposition["immediate_parent"] is None
     assert decomposition["status"] == "ready_for_proposal"
     assert decomposition["blocking_decision_ids"] == []
+    assert decomposition["changed_line_forecast"] == {
+        "files": [
+            {
+                "path": "docs/specs/platform/portfolio.json",
+                "additions": 134,
+                "deletions": 0,
+                "total": 134,
+            },
+            {
+                "path": "tests/portfolio/test_portfolio_integrity.py",
+                "additions": 107,
+                "deletions": 0,
+                "total": 107,
+            },
+        ],
+        "total": 241,
+        "hard_gate": 400,
+    }
 
 
 def _stale_authority_offenders(specs_root: Path) -> list[str]:
