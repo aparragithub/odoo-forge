@@ -161,6 +161,37 @@ class TestValidator(unittest.TestCase):
         )
         self.assertIn("edge-cycle", _codes(validate.validate_plan(broken)))
 
+    def test_detects_duplicate_acceptance_id_within_one_item(self):
+        broken = copy.deepcopy(self.valid)
+        broken["items"][0]["acceptance"].append(
+            {"id": "AC-EXAMPLE", "status": "proposed", "evidence": [], "gaps": ["G0"]}
+        )
+        self.assertIn("dup-acceptance-id", _codes(validate.validate_plan(broken)))
+
+    def test_detects_duplicate_acceptance_id_across_items(self):
+        broken = copy.deepcopy(self.valid)
+        broken["items"].append(
+            {
+                "id": "SP-OTHER",
+                "kind": "sp",
+                "title": "Other outcome",
+                "owner_role": "Architecture",
+                "status": "proposed",
+                "evidence_date": None,
+                "acceptance": [
+                    {"id": "AC-EXAMPLE", "status": "proposed", "evidence": [], "gaps": ["G0"]}
+                ],
+                "decision_ids": [],
+                "predecessors": [],
+                "successors": [],
+            }
+        )
+        self.assertIn("dup-acceptance-id", _codes(validate.validate_plan(broken)))
+
+    def test_live_plan_has_no_duplicate_acceptance_ids(self):
+        plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
+        self.assertNotIn("dup-acceptance-id", _codes(validate.validate_plan(plan)))
+
 
 class TestRepositoryValidation(unittest.TestCase):
     def _repository(self):

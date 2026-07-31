@@ -146,7 +146,10 @@ def validate_plan(d: dict) -> list[Violation]:
     acceptance = set()
     for it in d["items"]:
         for a in it.get("acceptance", []) or []:
-            acceptance.add(a["id"] if isinstance(a, dict) else a)
+            aid = a["id"] if isinstance(a, dict) else a
+            if aid in acceptance:
+                add("CRITICAL", "dup-acceptance-id", f"{it['id']}:{aid}")
+            acceptance.add(aid)
 
     # unique ids per collection
     for coll in ("items", "decisions", "transitions", "transfers", "edges", "decompositions"):
