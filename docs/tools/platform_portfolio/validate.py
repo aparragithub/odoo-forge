@@ -332,6 +332,22 @@ def validate_plan(d: dict) -> list[Violation]:
     return v
 
 
+def _stale_authority_offenders(specs_root: Path) -> list[str]:
+    """Return authoritative spec files still referencing the stale plan path.
+
+    Boundary is exactly `openspec/specs/**/spec.md` (#3816): the root is a
+    parameter and callers keep passing the real repository root, so this
+    hardening never widens the scan to tool source.
+    """
+    if not specs_root.is_dir():
+        raise FileNotFoundError(f"authoritative spec root is missing: {specs_root}")
+    return sorted(
+        str(path.relative_to(specs_root.parents[1]))
+        for path in specs_root.glob("**/spec.md")
+        if "portfolio-plan.json" in path.read_text(encoding="utf-8")
+    )
+
+
 def file_sha256(path: Path) -> str:
     """Return the stable byte digest used for protected-history checks."""
     return hashlib.sha256(path.read_bytes()).hexdigest()

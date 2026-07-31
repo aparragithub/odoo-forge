@@ -36,6 +36,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 import validate
 
 EXPECTED_HARD_EDGES: frozenset[tuple[str, str, str]] = frozenset(
@@ -815,12 +817,25 @@ def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any
 
 def test_no_stale_authority_path_in_authoritative_specs(live_plan: dict[str, Any]) -> None:
     specs_root = Path(__file__).resolve().parents[2] / "openspec" / "specs"
-    offenders = sorted(
-        str(path.relative_to(specs_root.parents[1]))
-        for path in specs_root.glob("**/spec.md")
-        if "portfolio-plan.json" in path.read_text(encoding="utf-8")
-    )
+    offenders = validate._stale_authority_offenders(specs_root)
     assert offenders == [], (
         f"stale authority path 'portfolio-plan.json' found in: {offenders}; "
         f"the live authority is {live_plan['meta']['live_location']}"
     )
+
+
+def test_stale_authority_offenders_raises_on_missing_specs_root(tmp_path: Path) -> None:
+    absent = tmp_path / "openspec" / "specs"
+    with pytest.raises(FileNotFoundError):
+        validate._stale_authority_offenders(absent)
+
+
+def test_stale_authority_offenders_flags_a_synthetic_positive_control(tmp_path: Path) -> None:
+    specs_root = tmp_path / "openspec" / "specs"
+    spec = specs_root / "cap" / "spec.md"
+    spec.parent.mkdir(parents=True)
+    spec.write_text("legacy authority: portfolio-plan.json\n", encoding="utf-8")
+
+    offenders = validate._stale_authority_offenders(specs_root)
+
+    assert offenders == ["openspec/specs/cap/spec.md"]
