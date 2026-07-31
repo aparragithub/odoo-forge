@@ -192,6 +192,28 @@ class TestValidator(unittest.TestCase):
         plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
         self.assertNotIn("dup-acceptance-id", _codes(validate.validate_plan(plan)))
 
+    def test_rejects_invalid_decomposition_output_paths(self):
+        for bad in ("/abs.py", "docs\\x.py", "a/../b.py", "./x.py", "a//b.py", ""):
+            with self.subTest(bad=bad):
+                broken = copy.deepcopy(self.valid)
+                broken["decompositions"][0]["outputs"] = [bad]
+                self.assertIn(
+                    "decomp-output-path",
+                    _codes(validate.validate_plan(broken)),
+                    f"expected decomp-output-path for output={bad!r}",
+                )
+
+    def test_accepts_valid_decomposition_output_paths(self):
+        for good in ("src/example.py", "src/pkg/"):
+            with self.subTest(good=good):
+                clean = copy.deepcopy(self.valid)
+                clean["decompositions"][0]["outputs"] = [good]
+                self.assertNotIn("decomp-output-path", _codes(validate.validate_plan(clean)))
+
+    def test_live_plan_has_no_invalid_decomposition_output_paths(self):
+        plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
+        self.assertNotIn("decomp-output-path", _codes(validate.validate_plan(plan)))
+
 
 class TestRepositoryValidation(unittest.TestCase):
     def _repository(self):

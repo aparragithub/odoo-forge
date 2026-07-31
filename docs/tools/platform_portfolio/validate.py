@@ -255,6 +255,17 @@ def validate_plan(d: dict) -> list[Violation]:
         for c in x.get("verification_commands", []):
             if c not in commands:
                 add("CRITICAL", "decomp-cmd", f"{x['id']}:{c}")
+        for out in x.get("outputs", []) or []:
+            seg = out.split("/") if isinstance(out, str) else [None]
+            if (
+                not isinstance(out, str)
+                or not out
+                or "\\" in out
+                or out.startswith("/")
+                or any(s in ("", ".", "..") for s in seg[:-1])
+                or seg[-1] in (".", "..")
+            ):
+                add("CRITICAL", "decomp-output-path", f"{x['id']}:{out}")
         f = x.get("changed_line_forecast", {})
         total = 0
         for fl in f.get("files", []):
