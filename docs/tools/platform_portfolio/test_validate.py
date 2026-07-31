@@ -193,7 +193,16 @@ class TestValidator(unittest.TestCase):
         self.assertNotIn("dup-acceptance-id", _codes(validate.validate_plan(plan)))
 
     def test_rejects_invalid_decomposition_output_paths(self):
-        for bad in ("/abs.py", "docs\\x.py", "a/../b.py", "./x.py", "a//b.py", "", "C:/escape.py"):
+        for bad in (
+            "/abs.py",
+            "docs\\x.py",
+            "a/../b.py",
+            "./x.py",
+            "a//b.py",
+            "",
+            "C:/escape.py",
+            "C:escape.py",
+        ):
             with self.subTest(bad=bad):
                 broken = copy.deepcopy(self.valid)
                 broken["decompositions"][0]["outputs"] = [bad]
