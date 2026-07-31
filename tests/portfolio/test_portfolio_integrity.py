@@ -127,6 +127,7 @@ EXPECTED_ROUTE_DECOMPOSITIONS = frozenset(
         "CHG-OPS-UI-READONLY",
         "CHG-PORTFOLIO-AUTHORITY-PATH",
         "CHG-SP4B-VALIDATOR-GROUNDWORK",
+        "CHG-SP4B-ITEM-SCAFFOLD",
     }
 )
 EXPECTED_ROUTE_DECISIONS = frozenset({"DEC-CP-STACK", "DEC-UI-PARTIAL", "DEC-UI-STACK"})
@@ -161,6 +162,7 @@ EXPECTED_DECOMPOSITION_IDS = (
     "CHG-OPS-UI-READONLY",
     "CHG-PORTFOLIO-AUTHORITY-PATH",
     "CHG-SP4B-VALIDATOR-GROUNDWORK",
+    "CHG-SP4B-ITEM-SCAFFOLD",
 )
 
 EXPECTED_UNRELATED_DECISION_DIGESTS = {
@@ -814,6 +816,111 @@ def test_dec_cp_stack_preserves_existing_decision_identity_and_gate(
 def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any]) -> None:
     assert live_plan["meta"]["evidence_catalog"]["S84"] == "Engram #3727"
     assert live_plan["meta"]["evidence_catalog"]["S85"] == "Engram #3734"
+
+
+EXPECTED_SP4B_SCAFFOLD_CHAIN: tuple[
+    tuple[str, str, str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], ...
+] = (
+    ("CHG-SP4B-REDECOMPOSE", "SP4B PostgreSQL Registry Recomposition", "Architecture", "AC-CHG-SP4B-REDECOMPOSE-READY", (), (), ("CHG-SP4B-REGISTRY-POSTGRES",)),  # noqa: E501
+    ("CHG-SP4B-REGISTRY-POSTGRES", "SP4B Registry PostgreSQL Schema and Migration", "Data Platform", "AC-SP4B-REGISTRY-POSTGRES-READY", ("DEC-CP-STACK",), ("CHG-SP4B-REDECOMPOSE",), ("CHG-SP4B-ERRORS-PACKAGE",)),  # noqa: E501
+    ("CHG-SP4B-ERRORS-PACKAGE", "SP4B Registry Errors and Package", "Data Platform", "AC-SP4B-ERRORS-PACKAGE-READY", ("DEC-CP-STACK",), ("CHG-SP4B-REGISTRY-POSTGRES",), ("CHG-SP4B-ADAPTER",)),  # noqa: E501
+    ("CHG-SP4B-ADAPTER", "SP4B PostgreSQL Registry Adapter", "Data Platform", "AC-SP4B-ADAPTER-READY", ("DEC-CP-STACK",), ("CHG-SP4B-ERRORS-PACKAGE",), ("CHG-SP4B-CONFORMANCE-FAKES",)),  # noqa: E501
+    ("CHG-SP4B-CONFORMANCE-FAKES", "SP4B Registry Conformance and Fakes", "Data Platform", "AC-SP4B-CONFORMANCE-FAKES-READY", ("DEC-CP-STACK",), ("CHG-SP4B-ADAPTER",), ("CHG-SP4B-POSTGRES-HARNESS",)),  # noqa: E501
+    ("CHG-SP4B-POSTGRES-HARNESS", "SP4B PostgreSQL Test Harness", "Data Platform", "AC-SP4B-POSTGRES-HARNESS-READY", ("DEC-CP-STACK",), ("CHG-SP4B-CONFORMANCE-FAKES",), ("CHG-SP4B-REAL-ACCEPTANCE",)),  # noqa: E501
+    ("CHG-SP4B-REAL-ACCEPTANCE", "SP4B Real PostgreSQL Acceptance", "Data Platform", "AC-SP4B-REAL-ACCEPTANCE-READY", ("DEC-CP-STACK",), ("CHG-SP4B-POSTGRES-HARNESS",), ()),  # noqa: E501
+)
+
+
+def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
+    live_plan: dict[str, Any],
+) -> None:
+    items = {item["id"]: item for item in live_plan["items"]}
+    for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item_id, _title, owner_role, _acceptance_id, _decision_ids, _predecessors, _successors = (
+            entry
+        )
+        item = items[item_id]
+        assert item["kind"] == "sdd_change"
+        assert item["owner_role"] == owner_role
+        assert item["status"] == "proposed"
+        assert item["evidence_date"] is None
+
+
+def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> None:
+    items = {item["id"]: item for item in live_plan["items"]}
+    acceptance_ids = [entry[3] for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN]
+    for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item_id, _title, _owner_role, acceptance_id, *_rest = entry
+        item = items[item_id]
+        assert [a["id"] for a in item["acceptance"]] == [acceptance_id]
+    assert "CHG-" in acceptance_ids[0]
+    assert all("CHG-" not in aid for aid in acceptance_ids[1:])
+    assert len(set(acceptance_ids)) == len(acceptance_ids)
+
+
+def test_sp4b_scaffold_chain_lineage_is_exact_and_record7_terminal(
+    live_plan: dict[str, Any],
+) -> None:
+    items = {item["id"]: item for item in live_plan["items"]}
+    for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item_id, _title, _owner_role, _acceptance_id, _decision_ids, predecessors, successors = (
+            entry
+        )
+        item = items[item_id]
+        assert tuple(item["predecessors"]) == predecessors
+        assert tuple(item["successors"]) == successors
+
+    terminal = items["CHG-SP4B-REAL-ACCEPTANCE"]
+    assert terminal["successors"] == []
+
+    all_lineage_refs = {
+        ref
+        for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN
+        for ref in (*entry[5], *entry[6])
+    }
+    assert "CHG-SP4C-CONTROL-PLANE-EDGE" not in all_lineage_refs
+
+
+EXPECTED_SP4B_COMMAND_CATALOG: dict[str, str] = {
+    "C42": "uv run pytest tests/portfolio/test_portfolio_integrity.py",
+    "C43": "uv run pytest docs/tools/platform_portfolio/test_validate.py",
+    "C44": "python docs/tools/platform_portfolio/validate.py --root .",
+    "C45": "uv run pytest tests/odoo_forge_instances_postgres -m 'not integration and not real_docker'",  # noqa: E501
+    "C46": (
+        "uv run pytest -m 'integration and real_docker' "
+        "tests/odoo_forge_instances_postgres/test_real_postgres_integration.py"
+    ),
+}
+
+
+def test_sp4b_command_catalog_mints_c42_to_c46_with_exact_strings(
+    live_plan: dict[str, Any],
+) -> None:
+    catalog = live_plan["meta"]["command_catalog"]
+    for key, expected_command in EXPECTED_SP4B_COMMAND_CATALOG.items():
+        assert catalog[key] == expected_command
+    assert set(catalog) - {"C37", "C38", "C39", "C40", "C41"} == set(
+        EXPECTED_SP4B_COMMAND_CATALOG
+    )
+
+
+def test_sp4b_item_scaffold_decomposition_is_exact(live_plan: dict[str, Any]) -> None:
+    decomposition = next(
+        entry for entry in live_plan["decompositions"] if entry["id"] == "CHG-SP4B-ITEM-SCAFFOLD"
+    )
+    assert decomposition["owner"] == "Architecture"
+    assert decomposition["type"] == "implementation_change"
+    assert decomposition["inputs"] == []
+    assert decomposition["outputs"] == [
+        "docs/specs/platform/portfolio.json",
+        "tests/portfolio/test_portfolio_integrity.py",
+    ]
+    assert decomposition["acceptance_ids"] == ["AC-CHG-SP4B-ITEM-SCAFFOLD-READY"]
+    assert decomposition["dependencies"] == ["CHG-SP4B-VALIDATOR-GROUNDWORK"]
+    assert decomposition["verification_commands"] == ["C42", "C43", "C44"]
+    assert decomposition["immediate_parent"] is None
+    assert decomposition["status"] == "ready_for_proposal"
+    assert decomposition["blocking_decision_ids"] == []
 
 
 def _stale_authority_offenders(specs_root: Path) -> list[str]:
