@@ -214,6 +214,51 @@ class TestValidator(unittest.TestCase):
         plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
         self.assertNotIn("decomp-output-path", _codes(validate.validate_plan(plan)))
 
+    def _decomposition(self, **overrides):
+        base = {
+            "id": "CHG-B",
+            "owner": "Engineering",
+            "type": "sdd_change",
+            "inputs": [],
+            "outputs": ["src/b.py"],
+            "acceptance_ids": [],
+            "dependencies": [],
+            "immediate_parent": None,
+            "verification_commands": [],
+            "changed_line_forecast": {},
+            "status": "planned",
+            "blocking_decision_ids": [],
+        }
+        base.update(overrides)
+        return base
+
+    def test_detects_dependency_cycle_between_two_decompositions(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["dependencies"] = ["CHG-B"]
+        broken["decompositions"].append(
+            self._decomposition(id="CHG-B", dependencies=["CHG-EXAMPLE"])
+        )
+        self.assertIn("decomp-cycle", _codes(validate.validate_plan(broken)))
+
+    def test_detects_self_referential_immediate_parent_cycle(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["immediate_parent"] = "CHG-EXAMPLE"
+        self.assertIn("decomp-cycle", _codes(validate.validate_plan(broken)))
+
+    def test_detects_mixed_three_node_decomposition_cycle(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["dependencies"] = ["CHG-B"]
+        broken["decompositions"].append(self._decomposition(id="CHG-B", immediate_parent="CHG-C"))
+        broken["decompositions"].append(
+            self._decomposition(id="CHG-C", dependencies=["CHG-EXAMPLE"])
+        )
+        self.assertIn("decomp-cycle", _codes(validate.validate_plan(broken)))
+
+    def test_valid_fixture_and_live_plan_stay_silent_for_decomp_cycle(self):
+        self.assertNotIn("decomp-cycle", _codes(validate.validate_plan(self.valid)))
+        plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
+        self.assertNotIn("decomp-cycle", _codes(validate.validate_plan(plan)))
+
 
 class TestRepositoryValidation(unittest.TestCase):
     def _repository(self):

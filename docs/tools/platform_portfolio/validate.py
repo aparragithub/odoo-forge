@@ -284,6 +284,34 @@ def validate_plan(d: dict) -> list[Violation]:
         if blockers and len(resolved) == len(blockers):
             add("CRITICAL", "decomp-stale-block", f"{x['id']}:{','.join(blockers)} all decided")
 
+    dadj = {
+        x["id"]: [
+            t
+            for t in list(x.get("dependencies", []))
+            + ([x["immediate_parent"]] if x.get("immediate_parent") is not None else [])
+            if t in decomp
+        ]
+        for x in d.get("decompositions", [])
+    }
+    dcolor: dict[str, int] = {}
+    for start in dadj:
+        if dcolor.get(start) is not None:
+            continue
+        dcolor[start] = 1
+        stack = [(start, 0)]
+        while stack:
+            u, i = stack.pop()
+            if i >= len(dadj[u]):
+                dcolor[u] = 2
+                continue
+            stack.append((u, i + 1))
+            w = dadj[u][i]
+            if dcolor.get(w) == 1:
+                add("BLOCKER", "decomp-cycle", f"{u}->{w}")
+            elif dcolor.get(w) is None:
+                dcolor[w] = 1
+                stack.append((w, 0))
+
     # historical alias map: bidirectional consistency
     for k, targets in alias_map.items():
         if not re.fullmatch(r"SP-\d+", k):
