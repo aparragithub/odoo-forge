@@ -270,6 +270,29 @@ class TestValidator(unittest.TestCase):
         self.assertIn("forecast-gate", codes)
         self.assertNotIn("forecast-sum", codes)
 
+    def test_forecast_exactly_at_the_hard_gate_is_accepted(self):
+        """Pin the boundary: the gate rejects `total > hard_gate`, never `==`.
+
+        Without this, flipping `>` to `>=` would pass every other test.
+        """
+        for total, expected in ((399, False), (400, False), (401, True)):
+            with self.subTest(total=total):
+                plan = copy.deepcopy(self.valid)
+                plan["decompositions"][0]["changed_line_forecast"] = {
+                    "files": [
+                        {
+                            "path": "src/example.py",
+                            "additions": total,
+                            "deletions": 0,
+                            "total": total,
+                        }
+                    ],
+                    "total": total,
+                    "hard_gate": 400,
+                }
+                fired = "forecast-gate" in _codes(validate.validate_plan(plan))
+                self.assertEqual(fired, expected)
+
     def test_forecast_without_hard_gate_fires_nothing(self):
         clean = copy.deepcopy(self.valid)
         clean["decompositions"][0]["changed_line_forecast"] = {
