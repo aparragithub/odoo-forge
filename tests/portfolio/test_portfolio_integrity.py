@@ -37,7 +37,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 import validate
 
 EXPECTED_HARD_EDGES: frozenset[tuple[str, str, str]] = frozenset(
