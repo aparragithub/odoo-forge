@@ -3,7 +3,7 @@
 
 Pure Python standard library. No third-party packages, no network, no build.
 
-It replaces LLM sampling as the structural gate for ``portfolio-plan.json``.
+It replaces LLM sampling as the structural gate for ``portfolio.json``.
 The plan describes the *portfolio* — outcomes, capabilities, ports, adapters,
 integrations, workflows, future SDD changes, decisions, and the traceability
 (transitions, transfers, dependency edges) that ties old numeric subprojects to
@@ -13,7 +13,7 @@ scope grammar, and an acyclic dependency graph.
 
 Usage:
     python docs/tools/platform_portfolio/validate.py --root .
-    python docs/tools/platform_portfolio/validate.py --plan path/to/portfolio-plan.json
+    python docs/tools/platform_portfolio/validate.py --plan path/to/portfolio.json
 
 Exit codes:
     0  no CRITICAL or BLOCKER violations
@@ -146,7 +146,10 @@ def validate_plan(d: dict) -> list[Violation]:
     acceptance = set()
     for it in d["items"]:
         for a in it.get("acceptance", []) or []:
-            acceptance.add(a["id"] if isinstance(a, dict) else a)
+            aid = a["id"] if isinstance(a, dict) else a
+            if aid in acceptance:
+                add("CRITICAL", "dup-acceptance-id", f"{it['id']}:{aid}")
+            acceptance.add(aid)
 
     # unique ids per collection
     for coll in ("items", "decisions", "transitions", "transfers", "edges", "decompositions"):
@@ -252,6 +255,20 @@ def validate_plan(d: dict) -> list[Violation]:
         for c in x.get("verification_commands", []):
             if c not in commands:
                 add("CRITICAL", "decomp-cmd", f"{x['id']}:{c}")
+        for out in x.get("outputs", []) or []:
+            seg = out.split("/") if isinstance(out, str) else [None]
+            if (
+                not isinstance(out, str)
+                or not out
+                or "\\" in out
+                or out.startswith("/")
+                # `C:/x` has no backslash and no leading slash, but is still
+                # drive-rooted and therefore not a relative repository path.
+                or re.match(r"^[A-Za-z]:", out) is not None
+                or any(s in ("", ".", "..") for s in seg[:-1])
+                or seg[-1] in (".", "..")
+            ):
+                add("CRITICAL", "decomp-output-path", f"{x['id']}:{out}")
         f = x.get("changed_line_forecast", {})
         total = 0
         for fl in f.get("files", []):
@@ -260,6 +277,9 @@ def validate_plan(d: dict) -> list[Violation]:
             total += fl.get("total", 0)
         if f and f.get("total") != total:
             add("CRITICAL", "forecast-sum", f"{x['id']} {f.get('total')}!={total}")
+        gate = f.get("hard_gate")
+        if gate is not None and f.get("total", 0) > gate:
+            add("CRITICAL", "forecast-gate", f"{x['id']} {f.get('total')}>{gate}")
         blockers = x.get("blocking_decision_ids", [])
         for bd in blockers:
             if bd not in decisions:
@@ -269,6 +289,34 @@ def validate_plan(d: dict) -> list[Violation]:
         resolved = [bd for bd in blockers if decisions.get(bd, {}).get("status") == "decided"]
         if blockers and len(resolved) == len(blockers):
             add("CRITICAL", "decomp-stale-block", f"{x['id']}:{','.join(blockers)} all decided")
+
+    dadj = {
+        x["id"]: [
+            t
+            for t in list(x.get("dependencies", []))
+            + ([x["immediate_parent"]] if x.get("immediate_parent") is not None else [])
+            if t in decomp
+        ]
+        for x in d.get("decompositions", [])
+    }
+    dcolor: dict[str, int] = {}
+    for start in dadj:
+        if dcolor.get(start) is not None:
+            continue
+        dcolor[start] = 1
+        stack = [(start, 0)]
+        while stack:
+            u, i = stack.pop()
+            if i >= len(dadj[u]):
+                dcolor[u] = 2
+                continue
+            stack.append((u, i + 1))
+            w = dadj[u][i]
+            if dcolor.get(w) == 1:
+                add("BLOCKER", "decomp-cycle", f"{u}->{w}")
+            elif dcolor.get(w) is None:
+                dcolor[w] = 1
+                stack.append((w, 0))
 
     # historical alias map: bidirectional consistency
     for k, targets in alias_map.items():
@@ -640,7 +688,7 @@ def _load(path: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the platform portfolio plan.")
     parser.add_argument("--root", default=".", help="repository root (default: .)")
-    parser.add_argument("--plan", default=None, help="explicit path to portfolio-plan.json")
+    parser.add_argument("--plan", default=None, help="explicit path to portfolio.json")
     args = parser.parse_args(argv)
 
     plan_path = args.plan or f"{args.root.rstrip('/')}/{DEFAULT_PLAN}"

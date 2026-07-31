@@ -161,6 +161,174 @@ class TestValidator(unittest.TestCase):
         )
         self.assertIn("edge-cycle", _codes(validate.validate_plan(broken)))
 
+    def test_detects_duplicate_acceptance_id_within_one_item(self):
+        broken = copy.deepcopy(self.valid)
+        broken["items"][0]["acceptance"].append(
+            {"id": "AC-EXAMPLE", "status": "proposed", "evidence": [], "gaps": ["G0"]}
+        )
+        self.assertIn("dup-acceptance-id", _codes(validate.validate_plan(broken)))
+
+    def test_detects_duplicate_acceptance_id_across_items(self):
+        broken = copy.deepcopy(self.valid)
+        broken["items"].append(
+            {
+                "id": "SP-OTHER",
+                "kind": "sp",
+                "title": "Other outcome",
+                "owner_role": "Architecture",
+                "status": "proposed",
+                "evidence_date": None,
+                "acceptance": [
+                    {"id": "AC-EXAMPLE", "status": "proposed", "evidence": [], "gaps": ["G0"]}
+                ],
+                "decision_ids": [],
+                "predecessors": [],
+                "successors": [],
+            }
+        )
+        self.assertIn("dup-acceptance-id", _codes(validate.validate_plan(broken)))
+
+    def test_live_plan_has_no_duplicate_acceptance_ids(self):
+        plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
+        self.assertNotIn("dup-acceptance-id", _codes(validate.validate_plan(plan)))
+
+    def test_rejects_invalid_decomposition_output_paths(self):
+        for bad in (
+            "/abs.py",
+            "docs\\x.py",
+            "a/../b.py",
+            "./x.py",
+            "a//b.py",
+            "",
+            "C:/escape.py",
+            "C:escape.py",
+        ):
+            with self.subTest(bad=bad):
+                broken = copy.deepcopy(self.valid)
+                broken["decompositions"][0]["outputs"] = [bad]
+                self.assertIn(
+                    "decomp-output-path",
+                    _codes(validate.validate_plan(broken)),
+                    f"expected decomp-output-path for output={bad!r}",
+                )
+
+    def test_accepts_valid_decomposition_output_paths(self):
+        for good in ("src/example.py", "src/pkg/"):
+            with self.subTest(good=good):
+                clean = copy.deepcopy(self.valid)
+                clean["decompositions"][0]["outputs"] = [good]
+                self.assertNotIn("decomp-output-path", _codes(validate.validate_plan(clean)))
+
+    def test_live_plan_has_no_invalid_decomposition_output_paths(self):
+        plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
+        self.assertNotIn("decomp-output-path", _codes(validate.validate_plan(plan)))
+
+    def _decomposition(self, **overrides):
+        base = {
+            "id": "CHG-B",
+            "owner": "Engineering",
+            "type": "sdd_change",
+            "inputs": [],
+            "outputs": ["src/b.py"],
+            "acceptance_ids": [],
+            "dependencies": [],
+            "immediate_parent": None,
+            "verification_commands": [],
+            "changed_line_forecast": {},
+            "status": "planned",
+            "blocking_decision_ids": [],
+        }
+        base.update(overrides)
+        return base
+
+    def test_detects_dependency_cycle_between_two_decompositions(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["dependencies"] = ["CHG-B"]
+        broken["decompositions"].append(
+            self._decomposition(id="CHG-B", dependencies=["CHG-EXAMPLE"])
+        )
+        self.assertIn("decomp-cycle", _codes(validate.validate_plan(broken)))
+
+    def test_detects_self_referential_immediate_parent_cycle(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["immediate_parent"] = "CHG-EXAMPLE"
+        self.assertIn("decomp-cycle", _codes(validate.validate_plan(broken)))
+
+    def test_detects_mixed_three_node_decomposition_cycle(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["dependencies"] = ["CHG-B"]
+        broken["decompositions"].append(self._decomposition(id="CHG-B", immediate_parent="CHG-C"))
+        broken["decompositions"].append(
+            self._decomposition(id="CHG-C", dependencies=["CHG-EXAMPLE"])
+        )
+        self.assertIn("decomp-cycle", _codes(validate.validate_plan(broken)))
+
+    def test_valid_fixture_and_live_plan_stay_silent_for_decomp_cycle(self):
+        self.assertNotIn("decomp-cycle", _codes(validate.validate_plan(self.valid)))
+        plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
+        self.assertNotIn("decomp-cycle", _codes(validate.validate_plan(plan)))
+
+    def test_over_budget_forecast_fires_forecast_gate_not_forecast_sum(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["changed_line_forecast"] = {
+            "files": [{"path": "src/example.py", "additions": 500, "deletions": 0, "total": 500}],
+            "total": 500,
+            "hard_gate": 400,
+        }
+        codes = _codes(validate.validate_plan(broken))
+        self.assertIn("forecast-gate", codes)
+        self.assertNotIn("forecast-sum", codes)
+
+    def test_forecast_exactly_at_the_hard_gate_is_accepted(self):
+        """Pin the boundary: the gate rejects `total > hard_gate`, never `==`.
+
+        Without this, flipping `>` to `>=` would pass every other test.
+        """
+        for total, expected in ((399, False), (400, False), (401, True)):
+            with self.subTest(total=total):
+                plan = copy.deepcopy(self.valid)
+                plan["decompositions"][0]["changed_line_forecast"] = {
+                    "files": [
+                        {
+                            "path": "src/example.py",
+                            "additions": total,
+                            "deletions": 0,
+                            "total": total,
+                        }
+                    ],
+                    "total": total,
+                    "hard_gate": 400,
+                }
+                fired = "forecast-gate" in _codes(validate.validate_plan(plan))
+                self.assertEqual(fired, expected)
+
+    def test_forecast_without_hard_gate_fires_nothing(self):
+        clean = copy.deepcopy(self.valid)
+        clean["decompositions"][0]["changed_line_forecast"] = {
+            "files": [{"path": "src/example.py", "additions": 500, "deletions": 0, "total": 500}],
+            "total": 500,
+        }
+        codes = _codes(validate.validate_plan(clean))
+        self.assertNotIn("forecast-gate", codes)
+        self.assertNotIn("forecast-sum", codes)
+
+    # --- Coverage-only tests for pre-existing behavior (zero validate.py diff) ---
+
+    def test_detects_duplicate_item_id(self):
+        broken = copy.deepcopy(self.valid)
+        broken["items"].append(copy.deepcopy(broken["items"][0]))
+        self.assertIn("dup-id", _codes(validate.validate_plan(broken)))
+
+    def test_detects_unresolved_verification_command_reference(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["verification_commands"] = ["C-DOES-NOT-EXIST"]
+        self.assertIn("decomp-cmd", _codes(validate.validate_plan(broken)))
+
+    def test_detects_desynced_forecast_sum(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["changed_line_forecast"]["total"] = 999
+        self.assertIn("forecast-sum", _codes(validate.validate_plan(broken)))
+
 
 class TestRepositoryValidation(unittest.TestCase):
     def _repository(self):
@@ -753,6 +921,15 @@ class TestVerificationClosureRed(unittest.TestCase):
         with self.assertRaises(SystemExit):
             validate.main(["--closure-receipt", "caller-controlled.json"])
         self.assertFalse(hasattr(validate, "validate_live_parent_report"))
+
+    def test_plan_option_help_names_the_live_authority(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit):
+            validate.main(["--help"])
+        rendered = " ".join(buffer.getvalue().split())
+        self.assertIn("--plan", rendered)
+        self.assertNotIn("portfolio-plan.json", rendered)
+        self.assertIn("portfolio.json", rendered)
 
 
 if __name__ == "__main__":
