@@ -259,6 +259,27 @@ class TestValidator(unittest.TestCase):
         plan = json.loads(LIVE_PLAN.read_text(encoding="utf-8"))
         self.assertNotIn("decomp-cycle", _codes(validate.validate_plan(plan)))
 
+    def test_over_budget_forecast_fires_forecast_gate_not_forecast_sum(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["changed_line_forecast"] = {
+            "files": [{"path": "src/example.py", "additions": 500, "deletions": 0, "total": 500}],
+            "total": 500,
+            "hard_gate": 400,
+        }
+        codes = _codes(validate.validate_plan(broken))
+        self.assertIn("forecast-gate", codes)
+        self.assertNotIn("forecast-sum", codes)
+
+    def test_forecast_without_hard_gate_fires_nothing(self):
+        clean = copy.deepcopy(self.valid)
+        clean["decompositions"][0]["changed_line_forecast"] = {
+            "files": [{"path": "src/example.py", "additions": 500, "deletions": 0, "total": 500}],
+            "total": 500,
+        }
+        codes = _codes(validate.validate_plan(clean))
+        self.assertNotIn("forecast-gate", codes)
+        self.assertNotIn("forecast-sum", codes)
+
 
 class TestRepositoryValidation(unittest.TestCase):
     def _repository(self):

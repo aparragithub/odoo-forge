@@ -274,6 +274,9 @@ def validate_plan(d: dict) -> list[Violation]:
             total += fl.get("total", 0)
         if f and f.get("total") != total:
             add("CRITICAL", "forecast-sum", f"{x['id']} {f.get('total')}!={total}")
+        gate = f.get("hard_gate")
+        if gate is not None and f.get("total", 0) > gate:
+            add("CRITICAL", "forecast-gate", f"{x['id']} {f.get('total')}>{gate}")
         blockers = x.get("blocking_decision_ids", [])
         for bd in blockers:
             if bd not in decisions:
