@@ -6,12 +6,12 @@
 
 ### Requirement: Normative Planning Authority
 
-`portfolio-plan.json` MUST be the normative planning authority and exhaustively enumerate `meta`, `items`, `decisions`, `transitions`, `transfers`, `edges`, and `decompositions` (future SDD changes). Grouped narrative is non-normative. Any docs-tree metadata mirror becomes authoritative only through ordinary SDD migration, not through embedded slice ceremony.
+`docs/specs/platform/portfolio.json` MUST be the normative planning authority and exhaustively enumerate `meta`, `items`, `decisions`, `transitions`, `transfers`, `edges`, and `decompositions` (future SDD changes). Grouped narrative is non-normative. Any docs-tree metadata mirror becomes authoritative only through ordinary SDD migration, not through embedded slice ceremony.
 
 #### Scenario: Reject narrative reconstruction
 - GIVEN a consumer infers planning records from narrative prose
 - WHEN planning data is loaded
-- THEN it MUST reject that reconstruction and read `portfolio-plan.json`
+- THEN it MUST reject that reconstruction and read `docs/specs/platform/portfolio.json`
 
 ### Requirement: Oversized Hybrid Artifact Parity
 
@@ -20,7 +20,7 @@ When a machine-readable artifact exceeds an Engram observation limit, hybrid per
 #### Scenario: Reconstruct oversized planning data
 - GIVEN the manifest and every listed raw chunk
 - WHEN chunk content is concatenated exactly in manifest order and encoded as UTF-8
-- THEN its bytes and SHA-256 MUST equal `portfolio-plan.json`
+- THEN its bytes and SHA-256 MUST equal `docs/specs/platform/portfolio.json`
 
 ### Requirement: Taxonomy and Evidence
 

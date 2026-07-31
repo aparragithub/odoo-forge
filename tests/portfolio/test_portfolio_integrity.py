@@ -33,6 +33,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from pathlib import Path
 from typing import Any
 
 import validate
@@ -123,6 +124,7 @@ EXPECTED_ROUTE_DECOMPOSITIONS = frozenset(
         "CHG-SP4B-REGISTRY-POSTGRES",
         "CHG-SP4C-CONTROL-PLANE-EDGE",
         "CHG-OPS-UI-READONLY",
+        "CHG-PORTFOLIO-AUTHORITY-PATH",
     }
 )
 EXPECTED_ROUTE_DECISIONS = frozenset({"DEC-CP-STACK", "DEC-UI-PARTIAL", "DEC-UI-STACK"})
@@ -155,6 +157,7 @@ EXPECTED_DECOMPOSITION_IDS = (
     "CHG-SP4B-REGISTRY-POSTGRES",
     "CHG-SP4C-CONTROL-PLANE-EDGE",
     "CHG-OPS-UI-READONLY",
+    "CHG-PORTFOLIO-AUTHORITY-PATH",
 )
 
 EXPECTED_UNRELATED_DECISION_DIGESTS = {
@@ -808,3 +811,16 @@ def test_dec_cp_stack_preserves_existing_decision_identity_and_gate(
 def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any]) -> None:
     assert live_plan["meta"]["evidence_catalog"]["S84"] == "Engram #3727"
     assert live_plan["meta"]["evidence_catalog"]["S85"] == "Engram #3734"
+
+
+def test_no_stale_authority_path_in_authoritative_specs(live_plan: dict[str, Any]) -> None:
+    specs_root = Path(__file__).resolve().parents[2] / "openspec" / "specs"
+    offenders = sorted(
+        str(path.relative_to(specs_root.parents[1]))
+        for path in specs_root.glob("**/spec.md")
+        if "portfolio-plan.json" in path.read_text(encoding="utf-8")
+    )
+    assert offenders == [], (
+        f"stale authority path 'portfolio-plan.json' found in: {offenders}; "
+        f"the live authority is {live_plan['meta']['live_location']}"
+    )
