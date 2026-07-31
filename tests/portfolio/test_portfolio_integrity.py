@@ -127,6 +127,7 @@ EXPECTED_ROUTE_DECOMPOSITIONS = frozenset(
         "CHG-SP4C-CONTROL-PLANE-EDGE",
         "CHG-OPS-UI-READONLY",
         "CHG-PORTFOLIO-AUTHORITY-PATH",
+        "CHG-SP4B-VALIDATOR-GROUNDWORK",
     }
 )
 EXPECTED_ROUTE_DECISIONS = frozenset({"DEC-CP-STACK", "DEC-UI-PARTIAL", "DEC-UI-STACK"})
@@ -160,6 +161,7 @@ EXPECTED_DECOMPOSITION_IDS = (
     "CHG-SP4C-CONTROL-PLANE-EDGE",
     "CHG-OPS-UI-READONLY",
     "CHG-PORTFOLIO-AUTHORITY-PATH",
+    "CHG-SP4B-VALIDATOR-GROUNDWORK",
 )
 
 EXPECTED_UNRELATED_DECISION_DIGESTS = {
@@ -839,3 +841,19 @@ def test_stale_authority_offenders_flags_a_synthetic_positive_control(tmp_path: 
     offenders = validate._stale_authority_offenders(specs_root)
 
     assert offenders == ["openspec/specs/cap/spec.md"]
+
+
+def test_live_plan_is_byte_stable_under_canonical_reserialization() -> None:
+    """Permanent hard-abort gate: any portfolio.json mutation MUST preserve this.
+
+    The live plan's exact on-disk bytes must equal
+    json.dumps(d, ensure_ascii=True, separators=(",", ":")).encode("utf-8") —
+    no indent, no sort_keys (which would reorder every record), no trailing
+    newline. This invariant is asserted before every mutation of the file and
+    shipped here permanently so it survives every future edit.
+    """
+    path = Path(__file__).resolve().parents[2] / "docs" / "specs" / "platform" / "portfolio.json"
+    raw = path.read_bytes()
+    d = json.loads(raw.decode("utf-8"))
+
+    assert json.dumps(d, ensure_ascii=True, separators=(",", ":")).encode("utf-8") == raw
