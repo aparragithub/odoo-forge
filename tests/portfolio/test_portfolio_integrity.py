@@ -33,6 +33,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections import Counter
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -128,6 +129,9 @@ EXPECTED_ROUTE_DECOMPOSITIONS = frozenset(
         "CHG-PORTFOLIO-AUTHORITY-PATH",
         "CHG-SP4B-VALIDATOR-GROUNDWORK",
         "CHG-SP4B-ITEM-SCAFFOLD",
+        "CHG-SP4B-DECOMPOSITION-ADOPTION",
+        "CHG-SP4B-ERRORS-PACKAGE",
+        "CHG-SP4B-ADAPTER",
     }
 )
 EXPECTED_ROUTE_DECISIONS = frozenset({"DEC-CP-STACK", "DEC-UI-PARTIAL", "DEC-UI-STACK"})
@@ -163,6 +167,9 @@ EXPECTED_DECOMPOSITION_IDS = (
     "CHG-PORTFOLIO-AUTHORITY-PATH",
     "CHG-SP4B-VALIDATOR-GROUNDWORK",
     "CHG-SP4B-ITEM-SCAFFOLD",
+    "CHG-SP4B-DECOMPOSITION-ADOPTION",
+    "CHG-SP4B-ERRORS-PACKAGE",
+    "CHG-SP4B-ADAPTER",
 )
 
 EXPECTED_UNRELATED_DECISION_DIGESTS = {
@@ -203,26 +210,49 @@ EXPECTED_SP4_CONTRACTS = {
         "dependencies": ["CHG-SP4A-INSTANCE-REGISTRY"],
         "immediate_parent": "CHG-SP4A-INSTANCE-REGISTRY",
         "outputs": [
-            "src/odoo_forge_instances_postgres/",
-            "tests/odoo_forge_instances_postgres/",
+            "src/odoo_forge_instances_postgres/migrate.py",
+            "src/odoo_forge_instances_postgres/migrations/__init__.py",
+            "src/odoo_forge_instances_postgres/migrations/0001_instance_registry.sql",
+            "tests/odoo_forge_instances_postgres/test_migrate.py",
+            "tests/odoo_forge_instances_postgres/test_migration_process.py",
         ],
         "changed_line_forecast": {
             "files": [
                 {
-                    "additions": 200,
+                    "additions": 82,
                     "deletions": 0,
-                    "path": "src/odoo_forge_instances_postgres/",
-                    "total": 200,
+                    "path": "src/odoo_forge_instances_postgres/migrate.py",
+                    "total": 82,
                 },
                 {
-                    "additions": 150,
+                    "additions": 2,
                     "deletions": 0,
-                    "path": "tests/odoo_forge_instances_postgres/",
-                    "total": 150,
+                    "path": "src/odoo_forge_instances_postgres/migrations/__init__.py",
+                    "total": 2,
+                },
+                {
+                    "additions": 24,
+                    "deletions": 0,
+                    "path": (
+                        "src/odoo_forge_instances_postgres/migrations/0001_instance_registry.sql"
+                    ),
+                    "total": 24,
+                },
+                {
+                    "additions": 142,
+                    "deletions": 0,
+                    "path": "tests/odoo_forge_instances_postgres/test_migrate.py",
+                    "total": 142,
+                },
+                {
+                    "additions": 50,
+                    "deletions": 0,
+                    "path": "tests/odoo_forge_instances_postgres/test_migration_process.py",
+                    "total": 50,
                 },
             ],
             "hard_gate": 400,
-            "total": 350,
+            "total": 300,
         },
     },
     "CHG-SP4C-CONTROL-PLANE-EDGE": {
@@ -924,14 +954,36 @@ def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
         assert tuple(item["decision_ids"]) == expected.decision_ids
 
 
-def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> None:
-    """Pin the acceptance-id CHG- infix asymmetry against the live plan (spec R2).
+SP4B_GOVERNANCE_ITEM_IDS: frozenset[str] = frozenset(
+    {"CHG-SP4B-REDECOMPOSE", "CHG-SP4B-DECOMPOSITION-ADOPTION"}
+)
+SP4B_LEAF_ITEM_IDS: frozenset[str] = frozenset(
+    {
+        "CHG-SP4B-REGISTRY-POSTGRES",
+        "CHG-SP4B-ERRORS-PACKAGE",
+        "CHG-SP4B-ADAPTER",
+        "CHG-SP4B-CONFORMANCE-FAKES",
+        "CHG-SP4B-POSTGRES-HARNESS",
+        "CHG-SP4B-REAL-ACCEPTANCE",
+    }
+)
 
-    Record 1's acceptance id keeps the `CHG-` infix; records 2-7's drop it.
-    This asymmetry is deliberate and pinned, never normalized (design D4).
-    `acceptance_ids` is built from `live_plan`, not from the expectation
-    constant, so the infix/uniqueness checks below actually exercise the
-    live data instead of comparing hand-written literals to themselves.
+
+def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> None:
+    """Pin the acceptance-id `CHG-` infix classification against the live plan
+    (spec R2, corrected by design X2).
+
+    A governance-change record's acceptance id carries the `CHG-` infix; a
+    leaf/scaffold record's does not. This used to be enforced positionally
+    (index 0 only) and broke the moment an 8th `ScaffoldRecord` (this
+    change's own item, `CHG-SP4B-DECOMPOSITION-ADOPTION`) was appended at
+    index 7 while also carrying `CHG-`. The rule is now id-classified: it
+    checks membership in `SP4B_GOVERNANCE_ITEM_IDS` /
+    `SP4B_LEAF_ITEM_IDS`, never array position, so appending further
+    records never breaks it. `acceptance_ids` is built from `live_plan`,
+    not from the expectation constant, so the checks below actually
+    exercise the live data instead of comparing hand-written literals to
+    themselves.
     """
     items = {item["id"]: item for item in live_plan["items"]}
     acceptance_ids: list[str] = []
@@ -940,8 +992,13 @@ def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> No
         live_acceptance_ids = [a["id"] for a in item["acceptance"]]
         assert live_acceptance_ids == [expected.acceptance_id]
         acceptance_ids.extend(live_acceptance_ids)
-    assert "CHG-" in acceptance_ids[0]
-    assert all("CHG-" not in aid for aid in acceptance_ids[1:])
+    own_acceptance_id = items["CHG-SP4B-DECOMPOSITION-ADOPTION"]["acceptance"][0]["id"]
+    acceptance_ids.append(own_acceptance_id)
+
+    for item_id in SP4B_GOVERNANCE_ITEM_IDS:
+        assert "CHG-" in items[item_id]["acceptance"][0]["id"]
+    for item_id in SP4B_LEAF_ITEM_IDS:
+        assert "CHG-" not in items[item_id]["acceptance"][0]["id"]
     assert len(set(acceptance_ids)) == len(acceptance_ids)
 
 
@@ -1071,6 +1128,321 @@ def test_sp4b_item_scaffold_decomposition_is_exact(live_plan: dict[str, Any]) ->
     }
 
 
+class ForecastFile(NamedTuple):
+    path: str
+    additions: int
+    deletions: int
+    total: int
+
+
+class LeafContract(NamedTuple):
+    """One expected SP4B leaf decomposition record, by value.
+
+    Accessed by field name only -- no positional unpacking anywhere, the
+    same discipline as `ScaffoldRecord` above (a positional form silently
+    dropped columns on the previous link).
+    """
+
+    decomposition_id: str
+    owner: str
+    record_type: str
+    inputs: tuple[str, ...]
+    outputs: tuple[str, ...]
+    acceptance_ids: tuple[str, ...]
+    start_boundary: str
+    finish_boundary: str
+    dependencies: tuple[str, ...]
+    verification_commands: tuple[str, ...]
+    rollback: str
+    immediate_parent: str
+    forecast_files: tuple[ForecastFile, ...]
+    forecast_total: int
+    hard_gate: int
+    status: str
+    blocking_decision_ids: tuple[str, ...]
+
+
+EXPECTED_SP4B_LEAF_CONTRACTS: tuple[LeafContract, ...] = (
+    LeafContract(
+        decomposition_id="CHG-SP4B-REGISTRY-POSTGRES",
+        owner="Data Platform",
+        record_type="implementation_change",
+        inputs=("CHG-SP4A-INSTANCE-REGISTRY",),
+        outputs=(
+            "src/odoo_forge_instances_postgres/migrate.py",
+            "src/odoo_forge_instances_postgres/migrations/__init__.py",
+            "src/odoo_forge_instances_postgres/migrations/0001_instance_registry.sql",
+            "tests/odoo_forge_instances_postgres/test_migrate.py",
+            "tests/odoo_forge_instances_postgres/test_migration_process.py",
+        ),
+        acceptance_ids=("AC-SP4B-REGISTRY-POSTGRES-READY",),
+        start_boundary="start:CHG-SP4B-REGISTRY-POSTGRES",
+        finish_boundary="finish:CHG-SP4B-REGISTRY-POSTGRES",
+        dependencies=("CHG-SP4A-INSTANCE-REGISTRY",),
+        verification_commands=("C37", "C38", "C39", "C40", "C41", "C45"),
+        rollback=(
+            "revert the migration module, SQL migration, and their tests; "
+            "source rollback drops no migrated database"
+        ),
+        immediate_parent="CHG-SP4A-INSTANCE-REGISTRY",
+        forecast_files=(
+            ForecastFile("src/odoo_forge_instances_postgres/migrate.py", 82, 0, 82),
+            ForecastFile("src/odoo_forge_instances_postgres/migrations/__init__.py", 2, 0, 2),
+            ForecastFile(
+                "src/odoo_forge_instances_postgres/migrations/0001_instance_registry.sql",
+                24,
+                0,
+                24,
+            ),
+            ForecastFile("tests/odoo_forge_instances_postgres/test_migrate.py", 142, 0, 142),
+            ForecastFile(
+                "tests/odoo_forge_instances_postgres/test_migration_process.py", 50, 0, 50
+            ),
+        ),
+        forecast_total=300,
+        hard_gate=400,
+        status="ready_for_proposal",
+        blocking_decision_ids=(),
+    ),
+    LeafContract(
+        decomposition_id="CHG-SP4B-ERRORS-PACKAGE",
+        owner="Data Platform",
+        record_type="implementation_change",
+        inputs=("CHG-SP4B-REGISTRY-POSTGRES",),
+        outputs=(
+            "src/odoo_forge_instances_postgres/__init__.py",
+            "src/odoo_forge_instances_postgres/errors.py",
+            "pyproject.toml",
+            "uv.lock",
+            ".github/workflows/release.yml",
+            "tests/odoo_forge_instances_postgres/test_errors.py",
+            "tests/odoo_forge_instances_postgres/test_package.py",
+        ),
+        acceptance_ids=("AC-SP4B-ERRORS-PACKAGE-READY",),
+        start_boundary="start:CHG-SP4B-ERRORS-PACKAGE",
+        finish_boundary="finish:CHG-SP4B-ERRORS-PACKAGE",
+        dependencies=("CHG-SP4B-REGISTRY-POSTGRES",),
+        verification_commands=("C37", "C38", "C39", "C40", "C41", "C45"),
+        rollback=(
+            "revert the errors package, packaging metadata, and their tests; "
+            "no migrated database state is affected"
+        ),
+        immediate_parent="CHG-SP4B-REGISTRY-POSTGRES",
+        forecast_files=(
+            ForecastFile("src/odoo_forge_instances_postgres/__init__.py", 12, 0, 12),
+            ForecastFile("src/odoo_forge_instances_postgres/errors.py", 58, 0, 58),
+            ForecastFile("pyproject.toml", 22, 0, 22),
+            ForecastFile("uv.lock", 115, 0, 115),
+            ForecastFile(".github/workflows/release.yml", 8, 0, 8),
+            ForecastFile("tests/odoo_forge_instances_postgres/test_errors.py", 95, 0, 95),
+            ForecastFile("tests/odoo_forge_instances_postgres/test_package.py", 30, 0, 30),
+        ),
+        forecast_total=340,
+        hard_gate=400,
+        status="ready_for_proposal",
+        blocking_decision_ids=(),
+    ),
+    LeafContract(
+        decomposition_id="CHG-SP4B-ADAPTER",
+        owner="Data Platform",
+        record_type="implementation_change",
+        inputs=("CHG-SP4B-ERRORS-PACKAGE",),
+        outputs=(
+            "src/odoo_forge_instances_postgres/adapter.py",
+            "tests/odoo_forge_instances_postgres/test_adapter.py",
+        ),
+        acceptance_ids=("AC-SP4B-ADAPTER-READY",),
+        start_boundary="start:CHG-SP4B-ADAPTER",
+        finish_boundary="finish:CHG-SP4B-ADAPTER",
+        dependencies=("CHG-SP4B-ERRORS-PACKAGE",),
+        verification_commands=("C37", "C38", "C39", "C40", "C41", "C45"),
+        rollback="revert the adapter module and its tests; no migrated database state is affected",
+        immediate_parent="CHG-SP4B-ERRORS-PACKAGE",
+        forecast_files=(
+            ForecastFile("src/odoo_forge_instances_postgres/adapter.py", 160, 0, 160),
+            ForecastFile("tests/odoo_forge_instances_postgres/test_adapter.py", 160, 0, 160),
+        ),
+        forecast_total=320,
+        hard_gate=400,
+        status="ready_for_proposal",
+        blocking_decision_ids=(),
+    ),
+)
+
+DECOMPOSITION_KEY_ORDER: tuple[str, ...] = (
+    "id",
+    "owner",
+    "type",
+    "inputs",
+    "outputs",
+    "acceptance_ids",
+    "start_boundary",
+    "finish_boundary",
+    "dependencies",
+    "verification_commands",
+    "rollback",
+    "immediate_parent",
+    "changed_line_forecast",
+    "status",
+    "blocking_decision_ids",
+)
+FORECAST_KEY_ORDER: tuple[str, ...] = ("files", "total", "hard_gate")
+
+
+def _sp4b_leaf_chain_ids(plan: dict[str, Any]) -> tuple[str, ...]:
+    """Walk the SP4B leaf chain from leaf 1 via `immediate_parent`, live.
+
+    Deliberately NOT derived from `EXPECTED_SP4B_LEAF_CONTRACTS`: if it were,
+    the both-ways equality in `test_sp4b_leaf_contract_table_ids_match_live_leaf_ids`
+    would be a tautology (an unpinned 4th leaf would never be noticed). The
+    `CHG-SP4B-` prefix filter excludes `CHG-SP4C-CONTROL-PLANE-EDGE`, which
+    still names leaf 1 as its `immediate_parent` in slice A (SP4C rewire is
+    slice B) and would otherwise collide as a second child of leaf 1.
+    """
+    decompositions = {entry["id"]: entry for entry in plan["decompositions"]}
+    chain = ["CHG-SP4B-REGISTRY-POSTGRES"]
+    current = chain[0]
+    while True:
+        candidates = [
+            entry_id
+            for entry_id, entry in decompositions.items()
+            if entry.get("immediate_parent") == current
+            and entry_id.startswith("CHG-SP4B-")
+            and entry_id != current
+        ]
+        assert len(candidates) <= 1, f"ambiguous SP4B chain successor(s) of {current}: {candidates}"
+        if not candidates:
+            break
+        current = candidates[0]
+        chain.append(current)
+    return tuple(chain)
+
+
+def _sp4b_leaf_contract_from_live(plan: dict[str, Any], decomposition_id: str) -> LeafContract:
+    entry = next(e for e in plan["decompositions"] if e["id"] == decomposition_id)
+    forecast = entry["changed_line_forecast"]
+    return LeafContract(
+        decomposition_id=entry["id"],
+        owner=entry["owner"],
+        record_type=entry["type"],
+        inputs=tuple(entry["inputs"]),
+        outputs=tuple(entry["outputs"]),
+        acceptance_ids=tuple(entry["acceptance_ids"]),
+        start_boundary=entry["start_boundary"],
+        finish_boundary=entry["finish_boundary"],
+        dependencies=tuple(entry["dependencies"]),
+        verification_commands=tuple(entry["verification_commands"]),
+        rollback=entry["rollback"],
+        immediate_parent=entry["immediate_parent"],
+        forecast_files=tuple(
+            ForecastFile(f["path"], f["additions"], f["deletions"], f["total"])
+            for f in forecast["files"]
+        ),
+        forecast_total=forecast["total"],
+        hard_gate=forecast["hard_gate"],
+        status=entry["status"],
+        blocking_decision_ids=tuple(entry["blocking_decision_ids"]),
+    )
+
+
+def test_sp4b_leaf_contract_table_ids_match_live_leaf_ids(live_plan: dict[str, Any]) -> None:
+    """T3 (both-ways id-set equality, spec: EXPECTED_SP4_CONTRACTS stays at two
+    entries / leaf contracts live in a separate table).
+
+    `SP4B_LEAF_IDS` is derived from the live chain (`_sp4b_leaf_chain_ids`),
+    not from `EXPECTED_SP4B_LEAF_CONTRACTS`, so a 4th leaf appended without a
+    table row fails this, and a table row for a leaf no longer reachable
+    from the chain also fails this.
+    """
+    table_ids = {row.decomposition_id for row in EXPECTED_SP4B_LEAF_CONTRACTS}
+    live_ids = set(_sp4b_leaf_chain_ids(live_plan))
+    assert table_ids == live_ids
+    assert len(EXPECTED_SP4B_LEAF_CONTRACTS) == 3
+
+
+def test_sp4b_leaf_contracts_match_live_plan_by_value(live_plan: dict[str, Any]) -> None:
+    """T3 by-value half: every SP4B leaf field, pinned exactly.
+
+    A single `NamedTuple == NamedTuple` equality per leaf pins every field
+    at once, including per-file `additions`/`deletions`/`path` and the
+    `hard_gate`/`total` pair -- so redistributed additions/deletions, an
+    inflated or deleted `hard_gate`, a swapped forecast path, or a
+    consistent rescale of every total are all caught (spec W6 a-e), none of
+    which the validator's `forecast-sum`/`file-total`/`forecast-gate`
+    catches (those only check internal arithmetic, not the pinned values).
+    """
+    for expected in EXPECTED_SP4B_LEAF_CONTRACTS:
+        actual = _sp4b_leaf_contract_from_live(live_plan, expected.decomposition_id)
+        assert actual == expected
+
+
+def test_sp4b_leaf_contract_red_catches_hard_gate_deleted(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    entry = next(e for e in mutated["decompositions"] if e["id"] == "CHG-SP4B-ADAPTER")
+    del entry["changed_line_forecast"]["hard_gate"]
+
+    with pytest.raises(KeyError):
+        _sp4b_leaf_contract_from_live(mutated, "CHG-SP4B-ADAPTER")
+
+
+def test_sp4b_leaf_chain_is_linear_and_rooted(live_plan: dict[str, Any]) -> None:
+    """T4 (spec: Six-Leaf Chain Shape, slice-A subset)."""
+    chain = _sp4b_leaf_chain_ids(live_plan)
+    assert chain == ("CHG-SP4B-REGISTRY-POSTGRES", "CHG-SP4B-ERRORS-PACKAGE", "CHG-SP4B-ADAPTER")
+    decompositions = {e["id"]: e for e in live_plan["decompositions"]}
+    assert (
+        decompositions["CHG-SP4B-REGISTRY-POSTGRES"]["immediate_parent"]
+        == "CHG-SP4A-INSTANCE-REGISTRY"
+    )
+
+
+def test_sp4b_leaf_chain_red_catches_shared_parent(live_plan: dict[str, Any]) -> None:
+    """A leaf re-parented onto an already-claimed parent is ambiguous fan-out;
+    catches both 'predecessor skipped' and 'two leaves share a parent'.
+    """
+    mutated = copy.deepcopy(live_plan)
+    leaf3 = next(e for e in mutated["decompositions"] if e["id"] == "CHG-SP4B-ADAPTER")
+    leaf3["immediate_parent"] = "CHG-SP4B-REGISTRY-POSTGRES"  # leaf 2's parent too
+
+    with pytest.raises(AssertionError):
+        _sp4b_leaf_chain_ids(mutated)
+
+
+def test_sp4b_leaf_output_paths_are_exclusive(live_plan: dict[str, Any]) -> None:
+    """T5 (spec: Output Path Exclusivity); the validator's `decomp-output-path`
+    only checks shape, never cross-leaf duplication.
+    """
+    leaf_ids = set(_sp4b_leaf_chain_ids(live_plan))
+    paths = [p for e in live_plan["decompositions"] if e["id"] in leaf_ids for p in e["outputs"]]
+    duplicates = [p for p, n in Counter(paths).items() if n > 1]
+    assert duplicates == []
+
+
+def test_sp4b_leaf_forecast_arithmetic_holds(live_plan: dict[str, Any]) -> None:
+    """T6 (spec: Forecast arithmetic holds per leaf)."""
+    for leaf_id in _sp4b_leaf_chain_ids(live_plan):
+        entry = next(e for e in live_plan["decompositions"] if e["id"] == leaf_id)
+        forecast = entry["changed_line_forecast"]
+        for f in forecast["files"]:
+            assert f["total"] == f["additions"] + f["deletions"]
+        assert forecast["total"] == sum(f["total"] for f in forecast["files"])
+        assert forecast["hard_gate"] == 400
+        assert forecast["total"] <= forecast["hard_gate"]
+
+
+def test_sp4b_leaf_key_order_is_exact(live_plan: dict[str, Any]) -> None:
+    """T11 (spec: Decomposition Key Order Is Enforced).
+
+    Neither the byte-stability test (round-trips whatever order was
+    authored) nor `_canonical_record_digest` (`sort_keys=True`, order-blind)
+    pins key order. This is the only test that does.
+    """
+    for leaf_id in _sp4b_leaf_chain_ids(live_plan):
+        entry = next(e for e in live_plan["decompositions"] if e["id"] == leaf_id)
+        assert list(entry.keys()) == list(DECOMPOSITION_KEY_ORDER)
+        assert list(entry["changed_line_forecast"].keys()) == list(FORECAST_KEY_ORDER)
+
+
 def _stale_authority_offenders(specs_root: Path) -> list[str]:
     """Return authoritative spec files still referencing the stale plan path.
 
@@ -1115,6 +1487,16 @@ def test_stale_authority_offenders_flags_a_synthetic_positive_control(tmp_path: 
     offenders = _stale_authority_offenders(specs_root)
 
     assert offenders == ["openspec/specs/cap/spec.md"]
+
+
+def test_live_plan_decomposition_ids_are_exact(live_plan: dict[str, Any]) -> None:
+    """T1 (spec: SP4B Six-Leaf Decomposition / slice A id extension).
+
+    Built from `live_plan`, not from the constant it is compared against
+    being re-derived: a dropped, renamed, reordered, or undeclared extra
+    decomposition id fails this before any other slice-A assertion runs.
+    """
+    assert tuple(entry["id"] for entry in live_plan["decompositions"]) == EXPECTED_DECOMPOSITION_IDS
 
 
 def test_live_plan_is_byte_stable_under_canonical_reserialization() -> None:
