@@ -816,9 +816,29 @@ def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any
     assert live_plan["meta"]["evidence_catalog"]["S85"] == "Engram #3734"
 
 
+def _stale_authority_offenders(specs_root: Path) -> list[str]:
+    """Return authoritative spec files still referencing the stale plan path.
+
+    Boundary is exactly `openspec/specs/**/spec.md` (#3816): the root is a
+    parameter and callers keep passing the real repository root, so this
+    hardening never widens the scan to tool source.
+
+    `Path.glob` on a missing directory yields an empty iterator without
+    raising, which let the guard below pass vacuously if the tree was ever
+    renamed or moved. Fail loudly instead.
+    """
+    if not specs_root.is_dir():
+        raise FileNotFoundError(f"authoritative spec root is missing: {specs_root}")
+    return sorted(
+        str(path.relative_to(specs_root.parents[1]))
+        for path in specs_root.glob("**/spec.md")
+        if "portfolio-plan.json" in path.read_text(encoding="utf-8")
+    )
+
+
 def test_no_stale_authority_path_in_authoritative_specs(live_plan: dict[str, Any]) -> None:
     specs_root = Path(__file__).resolve().parents[2] / "openspec" / "specs"
-    offenders = validate._stale_authority_offenders(specs_root)
+    offenders = _stale_authority_offenders(specs_root)
     assert offenders == [], (
         f"stale authority path 'portfolio-plan.json' found in: {offenders}; "
         f"the live authority is {live_plan['meta']['live_location']}"
@@ -828,7 +848,7 @@ def test_no_stale_authority_path_in_authoritative_specs(live_plan: dict[str, Any
 def test_stale_authority_offenders_raises_on_missing_specs_root(tmp_path: Path) -> None:
     absent = tmp_path / "openspec" / "specs"
     with pytest.raises(FileNotFoundError):
-        validate._stale_authority_offenders(absent)
+        _stale_authority_offenders(absent)
 
 
 def test_stale_authority_offenders_flags_a_synthetic_positive_control(tmp_path: Path) -> None:
@@ -837,7 +857,7 @@ def test_stale_authority_offenders_flags_a_synthetic_positive_control(tmp_path: 
     spec.parent.mkdir(parents=True)
     spec.write_text("legacy authority: portfolio-plan.json\n", encoding="utf-8")
 
-    offenders = validate._stale_authority_offenders(specs_root)
+    offenders = _stale_authority_offenders(specs_root)
 
     assert offenders == ["openspec/specs/cap/spec.md"]
 
