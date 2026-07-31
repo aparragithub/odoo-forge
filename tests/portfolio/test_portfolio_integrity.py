@@ -34,7 +34,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 import validate
@@ -818,16 +818,88 @@ def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any
     assert live_plan["meta"]["evidence_catalog"]["S85"] == "Engram #3734"
 
 
-EXPECTED_SP4B_SCAFFOLD_CHAIN: tuple[
-    tuple[str, str, str, str, tuple[str, ...], tuple[str, ...], tuple[str, ...]], ...
-] = (
-    ("CHG-SP4B-REDECOMPOSE", "SP4B PostgreSQL Registry Recomposition", "Architecture", "AC-CHG-SP4B-REDECOMPOSE-READY", (), (), ("CHG-SP4B-REGISTRY-POSTGRES",)),  # noqa: E501
-    ("CHG-SP4B-REGISTRY-POSTGRES", "SP4B Registry PostgreSQL Schema and Migration", "Data Platform", "AC-SP4B-REGISTRY-POSTGRES-READY", ("DEC-CP-STACK",), ("CHG-SP4B-REDECOMPOSE",), ("CHG-SP4B-ERRORS-PACKAGE",)),  # noqa: E501
-    ("CHG-SP4B-ERRORS-PACKAGE", "SP4B Registry Errors and Package", "Data Platform", "AC-SP4B-ERRORS-PACKAGE-READY", ("DEC-CP-STACK",), ("CHG-SP4B-REGISTRY-POSTGRES",), ("CHG-SP4B-ADAPTER",)),  # noqa: E501
-    ("CHG-SP4B-ADAPTER", "SP4B PostgreSQL Registry Adapter", "Data Platform", "AC-SP4B-ADAPTER-READY", ("DEC-CP-STACK",), ("CHG-SP4B-ERRORS-PACKAGE",), ("CHG-SP4B-CONFORMANCE-FAKES",)),  # noqa: E501
-    ("CHG-SP4B-CONFORMANCE-FAKES", "SP4B Registry Conformance and Fakes", "Data Platform", "AC-SP4B-CONFORMANCE-FAKES-READY", ("DEC-CP-STACK",), ("CHG-SP4B-ADAPTER",), ("CHG-SP4B-POSTGRES-HARNESS",)),  # noqa: E501
-    ("CHG-SP4B-POSTGRES-HARNESS", "SP4B PostgreSQL Test Harness", "Data Platform", "AC-SP4B-POSTGRES-HARNESS-READY", ("DEC-CP-STACK",), ("CHG-SP4B-CONFORMANCE-FAKES",), ("CHG-SP4B-REAL-ACCEPTANCE",)),  # noqa: E501
-    ("CHG-SP4B-REAL-ACCEPTANCE", "SP4B Real PostgreSQL Acceptance", "Data Platform", "AC-SP4B-REAL-ACCEPTANCE-READY", ("DEC-CP-STACK",), ("CHG-SP4B-POSTGRES-HARNESS",), ()),  # noqa: E501
+class ScaffoldRecord(NamedTuple):
+    """One expected SP4B scaffold item record.
+
+    Named fields rather than a positional tuple: the earlier seven-field
+    positional form was unpacked with throwaway names, and two of those
+    columns (`title`, `decision_ids`) silently went unasserted while still
+    looking covered. Named access makes an unused expectation visible.
+    """
+
+    item_id: str
+    title: str
+    owner_role: str
+    acceptance_id: str
+    decision_ids: tuple[str, ...]
+    predecessors: tuple[str, ...]
+    successors: tuple[str, ...]
+
+
+EXPECTED_SP4B_SCAFFOLD_CHAIN: tuple[ScaffoldRecord, ...] = (
+    ScaffoldRecord(
+        "CHG-SP4B-REDECOMPOSE",
+        "SP4B PostgreSQL Registry Recomposition",
+        "Architecture",
+        "AC-CHG-SP4B-REDECOMPOSE-READY",
+        (),
+        (),
+        ("CHG-SP4B-REGISTRY-POSTGRES",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-REGISTRY-POSTGRES",
+        "SP4B Registry PostgreSQL Schema and Migration",
+        "Data Platform",
+        "AC-SP4B-REGISTRY-POSTGRES-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-REDECOMPOSE",),
+        ("CHG-SP4B-ERRORS-PACKAGE",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-ERRORS-PACKAGE",
+        "SP4B Registry Errors and Package",
+        "Data Platform",
+        "AC-SP4B-ERRORS-PACKAGE-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-REGISTRY-POSTGRES",),
+        ("CHG-SP4B-ADAPTER",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-ADAPTER",
+        "SP4B PostgreSQL Registry Adapter",
+        "Data Platform",
+        "AC-SP4B-ADAPTER-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-ERRORS-PACKAGE",),
+        ("CHG-SP4B-CONFORMANCE-FAKES",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-CONFORMANCE-FAKES",
+        "SP4B Registry Conformance and Fakes",
+        "Data Platform",
+        "AC-SP4B-CONFORMANCE-FAKES-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-ADAPTER",),
+        ("CHG-SP4B-POSTGRES-HARNESS",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-POSTGRES-HARNESS",
+        "SP4B PostgreSQL Test Harness",
+        "Data Platform",
+        "AC-SP4B-POSTGRES-HARNESS-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-CONFORMANCE-FAKES",),
+        ("CHG-SP4B-REAL-ACCEPTANCE",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-REAL-ACCEPTANCE",
+        "SP4B Real PostgreSQL Acceptance",
+        "Data Platform",
+        "AC-SP4B-REAL-ACCEPTANCE-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-POSTGRES-HARNESS",),
+        (),
+    ),
 )
 
 
@@ -842,17 +914,14 @@ def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
     survived both this suite and the validator.
     """
     items = {item["id"]: item for item in live_plan["items"]}
-    for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
-        item_id, title, owner_role, _acceptance_id, decision_ids, _predecessors, _successors = (
-            entry
-        )
-        item = items[item_id]
+    for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item = items[expected.item_id]
         assert item["kind"] == "sdd_change"
-        assert item["owner_role"] == owner_role
+        assert item["owner_role"] == expected.owner_role
         assert item["status"] == "proposed"
         assert item["evidence_date"] is None
-        assert item["title"] == title
-        assert tuple(item["decision_ids"]) == decision_ids
+        assert item["title"] == expected.title
+        assert tuple(item["decision_ids"]) == expected.decision_ids
 
 
 def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> None:
@@ -866,13 +935,10 @@ def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> No
     """
     items = {item["id"]: item for item in live_plan["items"]}
     acceptance_ids: list[str] = []
-    for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
-        item_id, _title, _owner_role, acceptance_id, _decision_ids, _predecessors, _successors = (
-            entry
-        )
-        item = items[item_id]
+    for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item = items[expected.item_id]
         live_acceptance_ids = [a["id"] for a in item["acceptance"]]
-        assert live_acceptance_ids == [acceptance_id]
+        assert live_acceptance_ids == [expected.acceptance_id]
         acceptance_ids.extend(live_acceptance_ids)
     assert "CHG-" in acceptance_ids[0]
     assert all("CHG-" not in aid for aid in acceptance_ids[1:])
@@ -895,18 +961,15 @@ def test_sp4b_scaffold_chain_lineage_is_exact_and_record7_terminal(
     the own item (corrects W2).
     """
     items = {item["id"]: item for item in live_plan["items"]}
-    for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
-        item_id, _title, _owner_role, _acceptance_id, _decision_ids, predecessors, successors = (
-            entry
-        )
-        item = items[item_id]
-        assert tuple(item["predecessors"]) == predecessors
-        assert tuple(item["successors"]) == successors
+    for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item = items[expected.item_id]
+        assert tuple(item["predecessors"]) == expected.predecessors
+        assert tuple(item["successors"]) == expected.successors
 
     terminal = items["CHG-SP4B-REAL-ACCEPTANCE"]
     assert terminal["successors"] == []
 
-    scaffold_and_own_ids = {entry[0] for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN} | {
+    scaffold_and_own_ids = {expected.item_id for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN} | {
         "CHG-SP4B-ITEM-SCAFFOLD"
     }
     all_lineage_refs = {
