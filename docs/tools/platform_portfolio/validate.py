@@ -3,7 +3,7 @@
 
 Pure Python standard library. No third-party packages, no network, no build.
 
-It replaces LLM sampling as the structural gate for ``portfolio-plan.json``.
+It replaces LLM sampling as the structural gate for ``portfolio.json``.
 The plan describes the *portfolio* — outcomes, capabilities, ports, adapters,
 integrations, workflows, future SDD changes, decisions, and the traceability
 (transitions, transfers, dependency edges) that ties old numeric subprojects to
@@ -13,7 +13,7 @@ scope grammar, and an acyclic dependency graph.
 
 Usage:
     python docs/tools/platform_portfolio/validate.py --root .
-    python docs/tools/platform_portfolio/validate.py --plan path/to/portfolio-plan.json
+    python docs/tools/platform_portfolio/validate.py --plan path/to/portfolio.json
 
 Exit codes:
     0  no CRITICAL or BLOCKER violations
@@ -701,7 +701,7 @@ def _load(path: str) -> dict:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate the platform portfolio plan.")
     parser.add_argument("--root", default=".", help="repository root (default: .)")
-    parser.add_argument("--plan", default=None, help="explicit path to portfolio-plan.json")
+    parser.add_argument("--plan", default=None, help="explicit path to portfolio.json")
     args = parser.parse_args(argv)
 
     plan_path = args.plan or f"{args.root.rstrip('/')}/{DEFAULT_PLAN}"

@@ -890,6 +890,15 @@ class TestVerificationClosureRed(unittest.TestCase):
             validate.main(["--closure-receipt", "caller-controlled.json"])
         self.assertFalse(hasattr(validate, "validate_live_parent_report"))
 
+    def test_plan_option_help_names_the_live_authority(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit):
+            validate.main(["--help"])
+        rendered = " ".join(buffer.getvalue().split())
+        self.assertIn("--plan", rendered)
+        self.assertNotIn("portfolio-plan.json", rendered)
+        self.assertIn("portfolio.json", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
