@@ -834,9 +834,16 @@ EXPECTED_SP4B_SCAFFOLD_CHAIN: tuple[
 def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
     live_plan: dict[str, Any],
 ) -> None:
+    """Pin kind/owner_role/status/evidence_date/title/decision_ids for all seven
+    scaffold records (spec R1; corrects W4).
+
+    `title` and `decision_ids` were previously unpacked from
+    `EXPECTED_SP4B_SCAFFOLD_CHAIN` and asserted nowhere: mutating either
+    survived both this suite and the validator.
+    """
     items = {item["id"]: item for item in live_plan["items"]}
     for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
-        item_id, _title, owner_role, _acceptance_id, _decision_ids, _predecessors, _successors = (
+        item_id, title, owner_role, _acceptance_id, decision_ids, _predecessors, _successors = (
             entry
         )
         item = items[item_id]
@@ -844,15 +851,29 @@ def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
         assert item["owner_role"] == owner_role
         assert item["status"] == "proposed"
         assert item["evidence_date"] is None
+        assert item["title"] == title
+        assert tuple(item["decision_ids"]) == decision_ids
 
 
 def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> None:
+    """Pin the acceptance-id CHG- infix asymmetry against the live plan (spec R2).
+
+    Record 1's acceptance id keeps the `CHG-` infix; records 2-7's drop it.
+    This asymmetry is deliberate and pinned, never normalized (design D4).
+    `acceptance_ids` is built from `live_plan`, not from the expectation
+    constant, so the infix/uniqueness checks below actually exercise the
+    live data instead of comparing hand-written literals to themselves.
+    """
     items = {item["id"]: item for item in live_plan["items"]}
-    acceptance_ids = [entry[3] for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN]
+    acceptance_ids: list[str] = []
     for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
-        item_id, _title, _owner_role, acceptance_id, *_rest = entry
+        item_id, _title, _owner_role, acceptance_id, _decision_ids, _predecessors, _successors = (
+            entry
+        )
         item = items[item_id]
-        assert [a["id"] for a in item["acceptance"]] == [acceptance_id]
+        live_acceptance_ids = [a["id"] for a in item["acceptance"]]
+        assert live_acceptance_ids == [acceptance_id]
+        acceptance_ids.extend(live_acceptance_ids)
     assert "CHG-" in acceptance_ids[0]
     assert all("CHG-" not in aid for aid in acceptance_ids[1:])
     assert len(set(acceptance_ids)) == len(acceptance_ids)
@@ -861,6 +882,18 @@ def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> No
 def test_sp4b_scaffold_chain_lineage_is_exact_and_record7_terminal(
     live_plan: dict[str, Any],
 ) -> None:
+    """Pin the linear predecessor/successor chain across records 1-6 (spec R5)
+    and record 7's terminal successors list (spec R3).
+
+    Record 7's `successors` is empty in this change; whether a forward link
+    to an SP4C item is ever populated is an open question owned by
+    CHG-SP4B-DECOMPOSITION-ADOPTION (design D5) -- this is not asserted as a
+    permanent invariant. The SP4C forward-reference scan below reads live
+    `predecessors`/`successors` for all eight new records (the seven
+    scaffold items plus this change's own `CHG-SP4B-ITEM-SCAFFOLD`), not the
+    expectation constant, so it also catches a pre-wired SP4C reference on
+    the own item (corrects W2).
+    """
     items = {item["id"]: item for item in live_plan["items"]}
     for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN:
         item_id, _title, _owner_role, _acceptance_id, _decision_ids, predecessors, successors = (
@@ -873,13 +906,24 @@ def test_sp4b_scaffold_chain_lineage_is_exact_and_record7_terminal(
     terminal = items["CHG-SP4B-REAL-ACCEPTANCE"]
     assert terminal["successors"] == []
 
+    scaffold_and_own_ids = {entry[0] for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN} | {
+        "CHG-SP4B-ITEM-SCAFFOLD"
+    }
     all_lineage_refs = {
         ref
-        for entry in EXPECTED_SP4B_SCAFFOLD_CHAIN
-        for ref in (*entry[5], *entry[6])
+        for item_id in scaffold_and_own_ids
+        for ref in (*items[item_id]["predecessors"], *items[item_id]["successors"])
     }
     assert "CHG-SP4C-CONTROL-PLANE-EDGE" not in all_lineage_refs
 
+
+EXPECTED_PREEXISTING_COMMAND_CATALOG: dict[str, str] = {
+    "C37": "uv run pytest",
+    "C38": "uv run lint-imports",
+    "C39": "uv run mypy",
+    "C40": "uv run ruff check",
+    "C41": "uv build",
+}
 
 EXPECTED_SP4B_COMMAND_CATALOG: dict[str, str] = {
     "C42": "uv run pytest tests/portfolio/test_portfolio_integrity.py",
@@ -896,15 +940,28 @@ EXPECTED_SP4B_COMMAND_CATALOG: dict[str, str] = {
 def test_sp4b_command_catalog_mints_c42_to_c46_with_exact_strings(
     live_plan: dict[str, Any],
 ) -> None:
+    """Pin C42-C46's exact command strings and confirm C37-C41 remain
+    byte-unchanged (spec R6).
+
+    A set-difference-over-keys check only pins the added key set: a
+    pre-existing value could be mutated, or a pre-existing key deleted (if
+    still referenced by some decomposition, masking the loss), without
+    failing anything. Full dict equality against the merged pre-existing +
+    new mapping pins values, not just keys.
+    """
     catalog = live_plan["meta"]["command_catalog"]
-    for key, expected_command in EXPECTED_SP4B_COMMAND_CATALOG.items():
-        assert catalog[key] == expected_command
-    assert set(catalog) - {"C37", "C38", "C39", "C40", "C41"} == set(
-        EXPECTED_SP4B_COMMAND_CATALOG
-    )
+    assert catalog == EXPECTED_PREEXISTING_COMMAND_CATALOG | EXPECTED_SP4B_COMMAND_CATALOG
 
 
 def test_sp4b_item_scaffold_decomposition_is_exact(live_plan: dict[str, Any]) -> None:
+    """Pin this change's own decomposition record (spec R7), including
+    start_boundary/finish_boundary/rollback (corrects W5).
+
+    `changed_line_forecast` is intentionally not asserted here: the
+    validator's `forecast-sum`/`forecast-gate` checks already pin its
+    arithmetic against the live plan, so an extra literal copy here would
+    guard nothing the validator does not already guard.
+    """
     decomposition = next(
         entry for entry in live_plan["decompositions"] if entry["id"] == "CHG-SP4B-ITEM-SCAFFOLD"
     )
@@ -916,8 +973,13 @@ def test_sp4b_item_scaffold_decomposition_is_exact(live_plan: dict[str, Any]) ->
         "tests/portfolio/test_portfolio_integrity.py",
     ]
     assert decomposition["acceptance_ids"] == ["AC-CHG-SP4B-ITEM-SCAFFOLD-READY"]
+    assert decomposition["start_boundary"] == "start:CHG-SP4B-ITEM-SCAFFOLD"
+    assert decomposition["finish_boundary"] == "finish:CHG-SP4B-ITEM-SCAFFOLD"
     assert decomposition["dependencies"] == ["CHG-SP4B-VALIDATOR-GROUNDWORK"]
     assert decomposition["verification_commands"] == ["C42", "C43", "C44"]
+    assert decomposition["rollback"] == (
+        "revert the single commit; restore portfolio.json to prior committed bytes"
+    )
     assert decomposition["immediate_parent"] is None
     assert decomposition["status"] == "ready_for_proposal"
     assert decomposition["blocking_decision_ids"] == []
