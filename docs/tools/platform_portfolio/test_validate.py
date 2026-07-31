@@ -280,6 +280,23 @@ class TestValidator(unittest.TestCase):
         self.assertNotIn("forecast-gate", codes)
         self.assertNotIn("forecast-sum", codes)
 
+    # --- Coverage-only tests for pre-existing behavior (zero validate.py diff) ---
+
+    def test_detects_duplicate_item_id(self):
+        broken = copy.deepcopy(self.valid)
+        broken["items"].append(copy.deepcopy(broken["items"][0]))
+        self.assertIn("dup-id", _codes(validate.validate_plan(broken)))
+
+    def test_detects_unresolved_verification_command_reference(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["verification_commands"] = ["C-DOES-NOT-EXIST"]
+        self.assertIn("decomp-cmd", _codes(validate.validate_plan(broken)))
+
+    def test_detects_desynced_forecast_sum(self):
+        broken = copy.deepcopy(self.valid)
+        broken["decompositions"][0]["changed_line_forecast"]["total"] = 999
+        self.assertIn("forecast-sum", _codes(validate.validate_plan(broken)))
+
 
 class TestRepositoryValidation(unittest.TestCase):
     def _repository(self):
