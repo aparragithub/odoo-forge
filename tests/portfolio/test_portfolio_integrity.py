@@ -31,6 +31,8 @@ the file under test.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from typing import Any
 
 import validate
@@ -125,6 +127,124 @@ EXPECTED_ROUTE_DECOMPOSITIONS = frozenset(
 )
 EXPECTED_ROUTE_DECISIONS = frozenset({"DEC-CP-STACK", "DEC-UI-PARTIAL", "DEC-UI-STACK"})
 
+EXPECTED_DECISION_IDS = (
+    "DEC-6375",
+    "DP",
+    "DT",
+    "DD",
+    "DO",
+    "DR",
+    "DG",
+    "DPROV-DB",
+    "DPROV-REMOTE",
+    "DPROV-IDP",
+    "DPROV-CI",
+    "DPROV-SECRETS",
+    "DEC-CP-STACK",
+    "DEC-UI-PARTIAL",
+    "DEC-UI-STACK",
+)
+EXPECTED_DECOMPOSITION_IDS = (
+    "CHG-FIRST-DATABASE-ADAPTER",
+    "CHG-FIRST-REMOTE-ADAPTER",
+    "CHG-FIRST-IDENTITY-ADAPTER",
+    "CHG-PORTFOLIO-VALIDATOR",
+    "CHG-ADOPT-UI-ROUTE",
+    "CHG-PROVIDER-CATALOG",
+    "CHG-SP4A-INSTANCE-REGISTRY",
+    "CHG-SP4B-REGISTRY-POSTGRES",
+    "CHG-SP4C-CONTROL-PLANE-EDGE",
+    "CHG-OPS-UI-READONLY",
+)
+
+EXPECTED_UNRELATED_DECISION_DIGESTS = {
+    "DEC-6375": "1ee353af1f63b33ed822ed81736f1edadbecf92dd08cfdee924b07bb3c855744",
+    "DP": "fe1589cac9b6914e498a71faecd10aa94ed68791891eb7b8f2d3a307e3539b04",
+    "DT": "0724dd358bfeb948c1855e6e9435bb59992750376209a9ae22e3f89ce9611261",
+    "DD": "086e3c4b0fa8ed02d4d57dc186b893f2684592e57cc811e1f9ab84c593549747",
+    "DO": "69c61fb1305b6eb4a46b41d974f55698b473836bd62cc33149bc2cb4f604f249",
+    "DR": "4458b3eabd04077453943e1fb25f6bc412970578cde9c6cd1f8e6c6a76b5f674",
+    "DG": "b753ec94fb680561761c7c1da4a0e1855b37fdfb81c71f88c36fb0858e641ea6",
+    "DPROV-DB": "cfa0657b9aec400f48f5afa8eb7aacdb8f65c7cbe55108008cf7d3e6b29fb305",
+    "DPROV-REMOTE": "60d6dc85d001eb8af22925fc264bf5fd6141b7b21d1313d91127f5f0097fe7eb",
+    "DPROV-IDP": "cbcec2a9b59fb4aa41a79eb6122be20b12757aa3cf85701fe7a9b86a9d5d1ea4",
+    "DPROV-CI": "2e1772210a60f0fdd203622455e72d2a55034e815db8210fe90f31cb3a4c1bb4",
+    "DPROV-SECRETS": "51c04a52b07a0d765f90dc61d36ab0fac3f512b9d36715f2575c647d1040924c",
+    "DEC-UI-PARTIAL": "22aa0c1dcb66050d79eac7b3a4c4d7ec2ab91ee8e1f924a7837948a50c72c4c2",
+    "DEC-UI-STACK": "1e9c10d56d7db8ae7b302cbccaa570ca649e5c9f9abd2eff687376386ee7d6ed",
+}
+EXPECTED_UNRELATED_DECOMPOSITION_DIGESTS = {
+    "CHG-FIRST-DATABASE-ADAPTER": (
+        "05644f731e5a9c5f704a81164e258103e1848843da646f4b15c6e7474c16600c"
+    ),
+    "CHG-FIRST-REMOTE-ADAPTER": "49922f13209d39eedf107d1ae83b90b96c374e1afbf3e9809b84130dc94615b4",
+    "CHG-FIRST-IDENTITY-ADAPTER": (
+        "618e19319b384d1265ff03962b9d6789e9ce17b954bde6efdb4250822f4dde8b"
+    ),
+    "CHG-PORTFOLIO-VALIDATOR": "6805da24908487ba9e1e06dd73e9157a19b530ef1459c139ebb91199480cbe4d",
+    "CHG-ADOPT-UI-ROUTE": "f1a4b74c77c8d8b0bb0e826f021558ee155f6d52f06c954af40de0274e8e2ade",
+    "CHG-PROVIDER-CATALOG": "7f24c7988304c63d4e296afc25352591f14ed9186854f8901bbec69469737cfe",
+    "CHG-SP4A-INSTANCE-REGISTRY": (
+        "2718487ba90aa4a2dd8f201a97abeb035c9d115b72f5530446eb5d56d4c8b038"
+    ),
+    "CHG-OPS-UI-READONLY": "517e074c836c24bf1c4ec00ab9f8e7bc1765827688b662ac5bfd5b43b05847a9",
+}
+
+EXPECTED_SP4_CONTRACTS = {
+    "CHG-SP4B-REGISTRY-POSTGRES": {
+        "dependencies": ["CHG-SP4A-INSTANCE-REGISTRY"],
+        "immediate_parent": "CHG-SP4A-INSTANCE-REGISTRY",
+        "outputs": [
+            "src/odoo_forge_instances_postgres/",
+            "tests/odoo_forge_instances_postgres/",
+        ],
+        "changed_line_forecast": {
+            "files": [
+                {
+                    "additions": 200,
+                    "deletions": 0,
+                    "path": "src/odoo_forge_instances_postgres/",
+                    "total": 200,
+                },
+                {
+                    "additions": 150,
+                    "deletions": 0,
+                    "path": "tests/odoo_forge_instances_postgres/",
+                    "total": 150,
+                },
+            ],
+            "hard_gate": 400,
+            "total": 350,
+        },
+    },
+    "CHG-SP4C-CONTROL-PLANE-EDGE": {
+        "dependencies": [
+            "CHG-PROVIDER-CATALOG",
+            "CHG-SP4B-REGISTRY-POSTGRES",
+        ],
+        "immediate_parent": "CHG-SP4B-REGISTRY-POSTGRES",
+        "outputs": ["src/odoo_forge_server/", "tests/odoo_forge_server/"],
+        "changed_line_forecast": {
+            "files": [
+                {
+                    "additions": 220,
+                    "deletions": 0,
+                    "path": "src/odoo_forge_server/",
+                    "total": 220,
+                },
+                {
+                    "additions": 160,
+                    "deletions": 0,
+                    "path": "tests/odoo_forge_server/",
+                    "total": 160,
+                },
+            ],
+            "hard_gate": 400,
+            "total": 380,
+        },
+    },
+}
+
 
 def _unresolved_decision_evidence(plan: dict[str, Any]) -> list[tuple[str, str]]:
     evidence_catalog = set(plan["meta"]["evidence_catalog"])
@@ -146,6 +266,114 @@ def _unresolved_decomposition_inputs(plan: dict[str, Any]) -> list[tuple[str, st
         for input_id in decomposition.get("inputs", [])
         if input_id not in item_or_decomposition_ids
     ]
+
+
+def _canonical_record_digest(record: dict[str, Any]) -> str:
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _dec_cp_stack_governance_errors(plan: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    decisions = {entry["id"]: entry for entry in plan["decisions"]}
+    decompositions = {entry["id"]: entry for entry in plan["decompositions"]}
+
+    decision = decisions.get("DEC-CP-STACK")
+    if decision is None:
+        errors.append("dec-cp-stack-missing")
+    else:
+        expected_decision = {
+            "status": "decided",
+            "chosen": "FastAPI + psycopg",
+            "decided_date": "2026-07-30",
+            "rationale": (
+                "FastAPI best matches the typed Pydantic control-plane API, while psycopg is "
+                "the shared PostgreSQL driver and Docker aligns with the repository's existing "
+                "adapter/runtime investment."
+            ),
+            "consequence": (
+                "Initial production uses Docker Compose on one server; core domain, ports, and "
+                "adapters remain framework-neutral to preserve a no-rewrite scaling path; "
+                "psycopg pools are per worker and must be bounded against PostgreSQL capacity; "
+                "Jinja2 is an explicit dependency only for a later SSR slice; this decision "
+                "records architecture and does not implement or deliver the control plane."
+            ),
+            "evidence": ["S83", "S84", "S85"],
+        }
+        for field, expected_value in expected_decision.items():
+            if decision.get(field) != expected_value:
+                error_name = {
+                    "status": "dec-cp-stack-status",
+                    "chosen": "dec-cp-stack-chosen",
+                    "decided_date": "dec-cp-stack-date",
+                    "rationale": "dec-cp-stack-rationale",
+                    "consequence": "dec-cp-stack-consequence",
+                    "evidence": "dec-cp-stack-evidence",
+                }[field]
+                errors.append(error_name)
+
+        evidence_catalog = plan["meta"].get("evidence_catalog", {})
+        for evidence_id in decision.get("evidence", []):
+            if evidence_id not in evidence_catalog:
+                errors.append(f"dec-cp-stack-evidence-unresolved:{evidence_id}")
+
+        delivery_markers = ("implemented", "delivered", "deployed", "production-ready")
+        decision_text = " ".join(
+            str(decision.get(field, "")) for field in ("status", "rationale", "consequence")
+        ).lower()
+        if decision.get("status") in {"implemented", "delivered", "deployed"} or any(
+            marker in decision_text for marker in delivery_markers
+        ):
+            errors.append("dec-cp-stack-delivery-claim")
+
+    for decomposition_id, contract in EXPECTED_SP4_CONTRACTS.items():
+        decomposition = decompositions.get(decomposition_id)
+        label = "chg-sp4b" if decomposition_id.endswith("SP4B-REGISTRY-POSTGRES") else "chg-sp4c"
+        if decomposition is None:
+            errors.append(f"{label}-missing")
+            continue
+        if decomposition.get("blocking_decision_ids") != []:
+            errors.append(f"{label}-blocker")
+        if decomposition.get("type") != "implementation_change":
+            errors.append(f"{label}-type")
+        if decomposition.get("status") != "ready_for_proposal":
+            errors.append(f"{label}-status")
+        for field in ("dependencies", "immediate_parent", "outputs", "changed_line_forecast"):
+            if decomposition.get(field) != contract[field]:
+                field_name = field.replace("immediate_parent", "parent").replace(
+                    "changed_line_forecast", "forecast"
+                )
+                errors.append(f"{label}-{field_name}")
+
+    decomposition_order = tuple(entry["id"] for entry in plan["decompositions"])
+    if decomposition_order != EXPECTED_DECOMPOSITION_IDS:
+        errors.append("decomposition-id-order")
+    if (
+        "CHG-SP4B-REGISTRY-POSTGRES" in decomposition_order
+        and "CHG-SP4C-CONTROL-PLANE-EDGE" in decomposition_order
+        and decomposition_order.index("CHG-SP4B-REGISTRY-POSTGRES")
+        > decomposition_order.index("CHG-SP4C-CONTROL-PLANE-EDGE")
+    ):
+        errors.append("chg-sp4b-sp4c-order")
+
+    if tuple(entry["id"] for entry in plan["decisions"]) != EXPECTED_DECISION_IDS:
+        errors.append("decision-id-order")
+
+    for record_id, expected_digest in EXPECTED_UNRELATED_DECISION_DIGESTS.items():
+        record = decisions.get(record_id)
+        if record is None:
+            errors.append(f"unrelated-decision-missing:{record_id}")
+        elif _canonical_record_digest(record) != expected_digest:
+            errors.append(f"unrelated-decision-drift:{record_id}")
+
+    for record_id, expected_digest in EXPECTED_UNRELATED_DECOMPOSITION_DIGESTS.items():
+        record = decompositions.get(record_id)
+        if record is None:
+            errors.append(f"unrelated-decomposition-missing:{record_id}")
+        elif _canonical_record_digest(record) != expected_digest:
+            errors.append(f"unrelated-decomposition-drift:{record_id}")
+
+    return errors
 
 
 def test_live_plan_is_clean_at_every_severity_red_catches_bad_kind(
@@ -412,3 +640,171 @@ def test_status_invariants_accept_legal_governance_statuses(live_plan: dict[str,
 def test_status_invariants_hold(live_plan: dict[str, Any]) -> None:
     violations = [str(v) for v in validate.validate_plan(live_plan)]
     assert not any("status-" in v for v in violations)
+
+
+def test_dec_cp_stack_rejects_wrong_chosen_value(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-CP-STACK")
+    decision["chosen"] = "Flask + psycopg"
+
+    assert "dec-cp-stack-chosen" in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_missing_evidence_reference(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-CP-STACK")
+    decision["evidence"] = ["S83", "S85"]
+
+    assert "dec-cp-stack-evidence" in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_dangling_evidence_catalog_entry(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-CP-STACK")
+    decision["evidence"] = ["S83", "S84", "S85"]
+    mutated["meta"]["evidence_catalog"].update({"S84": "Engram #3727", "S85": "Engram #3734"})
+    mutated["meta"]["evidence_catalog"].pop("S85")
+
+    assert "dec-cp-stack-evidence-unresolved:S85" in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_wrong_date_rationale_and_consequence(
+    live_plan: dict[str, Any],
+) -> None:
+    mutations = (
+        ("decided_date", "2026-07-31", "dec-cp-stack-date"),
+        ("rationale", "A different rationale", "dec-cp-stack-rationale"),
+        ("consequence", "The control plane is already delivered.", "dec-cp-stack-consequence"),
+    )
+
+    for field, value, error_name in mutations:
+        mutated = copy.deepcopy(live_plan)
+        decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-CP-STACK")
+        decision[field] = value
+
+        assert error_name in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_accidental_delivery_claim(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-CP-STACK")
+    decision["status"] = "delivered"
+
+    assert "dec-cp-stack-delivery-claim" in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_stale_blocker_type_and_status(live_plan: dict[str, Any]) -> None:
+    for field, value, error_name in (
+        ("blocking_decision_ids", ["DEC-CP-STACK"], "chg-sp4b-blocker"),
+        ("type", "blocked_product_placeholder", "chg-sp4b-type"),
+        ("status", "blocked_placeholder", "chg-sp4b-status"),
+    ):
+        mutated = copy.deepcopy(live_plan)
+        decomposition = next(
+            entry
+            for entry in mutated["decompositions"]
+            if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+        )
+        decomposition[field] = value
+
+        assert error_name in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_changed_dependency_parent_output_and_forecast(
+    live_plan: dict[str, Any],
+) -> None:
+    mutations = (
+        ("dependencies", ["CHG-PROVIDER-CATALOG"], "chg-sp4b-dependencies"),
+        ("immediate_parent", "CHG-PROVIDER-CATALOG", "chg-sp4b-parent"),
+        ("outputs", ["src/changed/"], "chg-sp4b-outputs"),
+        (
+            "changed_line_forecast",
+            {"files": [], "hard_gate": 400, "total": 0},
+            "chg-sp4b-forecast",
+        ),
+    )
+
+    for field, value, error_name in mutations:
+        mutated = copy.deepcopy(live_plan)
+        decomposition = next(
+            entry
+            for entry in mutated["decompositions"]
+            if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+        )
+        decomposition[field] = value
+
+        assert error_name in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_changed_chg3_chg4_order(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decompositions = mutated["decompositions"]
+    chg3 = next(entry for entry in decompositions if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES")
+    chg4 = next(entry for entry in decompositions if entry["id"] == "CHG-SP4C-CONTROL-PLANE-EDGE")
+    chg3_index = decompositions.index(chg3)
+    chg4_index = decompositions.index(chg4)
+    decompositions[chg3_index], decompositions[chg4_index] = (
+        decompositions[chg4_index],
+        decompositions[chg3_index],
+    )
+
+    assert "chg-sp4b-sp4c-order" in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_names_missing_ordered_decompositions(live_plan: dict[str, Any]) -> None:
+    for decomposition_id, error_name in (
+        ("CHG-SP4B-REGISTRY-POSTGRES", "chg-sp4b-missing"),
+        ("CHG-SP4C-CONTROL-PLANE-EDGE", "chg-sp4c-missing"),
+    ):
+        mutated = copy.deepcopy(live_plan)
+        mutated["decompositions"] = [
+            entry for entry in mutated["decompositions"] if entry["id"] != decomposition_id
+        ]
+
+        assert error_name in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_unrelated_decision_drift(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DP")
+    decision["rationale"] = "A meaningful unrelated rationale mutation."
+
+    assert "unrelated-decision-drift:DP" in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_unrelated_decomposition_drift(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decomposition = next(
+        entry for entry in mutated["decompositions"] if entry["id"] == "CHG-SP4A-INSTANCE-REGISTRY"
+    )
+    decomposition["outputs"] = ["src/changed/instance_registry/"]
+
+    assert (
+        "unrelated-decomposition-drift:CHG-SP4A-INSTANCE-REGISTRY"
+        in _dec_cp_stack_governance_errors(mutated)
+    )
+
+
+def test_dec_cp_stack_governance_contract_holds(live_plan: dict[str, Any]) -> None:
+    assert _dec_cp_stack_governance_errors(live_plan) == []
+
+
+def test_dec_cp_stack_preserves_existing_decision_identity_and_gate(
+    live_plan: dict[str, Any],
+) -> None:
+    decision = next(entry for entry in live_plan["decisions"] if entry["id"] == "DEC-CP-STACK")
+
+    assert {
+        key: decision[key] for key in ("id", "owner", "due_gate", "blocking_effect", "options")
+    } == {
+        "id": "DEC-CP-STACK",
+        "owner": "Architecture",
+        "due_gate": "before CHG-SP4B-REGISTRY-POSTGRES",
+        "blocking_effect": "Blocks the registry persistence and control-plane edge changes",
+        "options": ["FastAPI + psycopg", "Flask + psycopg", "Starlette + psycopg"],
+    }
+
+
+def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any]) -> None:
+    assert live_plan["meta"]["evidence_catalog"]["S84"] == "Engram #3727"
+    assert live_plan["meta"]["evidence_catalog"]["S85"] == "Engram #3734"
