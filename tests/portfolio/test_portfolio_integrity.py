@@ -348,8 +348,11 @@ def _dec_cp_stack_governance_errors(plan: dict[str, Any]) -> list[str]:
     decomposition_order = tuple(entry["id"] for entry in plan["decompositions"])
     if decomposition_order != EXPECTED_DECOMPOSITION_IDS:
         errors.append("decomposition-id-order")
-    if decomposition_order.index("CHG-SP4B-REGISTRY-POSTGRES") > decomposition_order.index(
-        "CHG-SP4C-CONTROL-PLANE-EDGE"
+    if (
+        "CHG-SP4B-REGISTRY-POSTGRES" in decomposition_order
+        and "CHG-SP4C-CONTROL-PLANE-EDGE" in decomposition_order
+        and decomposition_order.index("CHG-SP4B-REGISTRY-POSTGRES")
+        > decomposition_order.index("CHG-SP4C-CONTROL-PLANE-EDGE")
     ):
         errors.append("chg-sp4b-sp4c-order")
 
@@ -748,6 +751,19 @@ def test_dec_cp_stack_rejects_changed_chg3_chg4_order(live_plan: dict[str, Any])
     assert "chg-sp4b-sp4c-order" in _dec_cp_stack_governance_errors(mutated)
 
 
+def test_dec_cp_stack_names_missing_ordered_decompositions(live_plan: dict[str, Any]) -> None:
+    for decomposition_id, error_name in (
+        ("CHG-SP4B-REGISTRY-POSTGRES", "chg-sp4b-missing"),
+        ("CHG-SP4C-CONTROL-PLANE-EDGE", "chg-sp4c-missing"),
+    ):
+        mutated = copy.deepcopy(live_plan)
+        mutated["decompositions"] = [
+            entry for entry in mutated["decompositions"] if entry["id"] != decomposition_id
+        ]
+
+        assert error_name in _dec_cp_stack_governance_errors(mutated)
+
+
 def test_dec_cp_stack_rejects_unrelated_decision_drift(live_plan: dict[str, Any]) -> None:
     mutated = copy.deepcopy(live_plan)
     decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DP")
@@ -790,8 +806,5 @@ def test_dec_cp_stack_preserves_existing_decision_identity_and_gate(
 
 
 def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any]) -> None:
-    assert live_plan["meta"]["evidence_catalog"] == {
-        **live_plan["meta"]["evidence_catalog"],
-        "S84": "Engram #3727",
-        "S85": "Engram #3734",
-    }
+    assert live_plan["meta"]["evidence_catalog"]["S84"] == "Engram #3727"
+    assert live_plan["meta"]["evidence_catalog"]["S85"] == "Engram #3734"
