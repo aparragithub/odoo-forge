@@ -262,6 +262,9 @@ def validate_plan(d: dict) -> list[Violation]:
                 or not out
                 or "\\" in out
                 or out.startswith("/")
+                # `C:/x` has no backslash and no leading slash, but is still
+                # drive-rooted and therefore not a relative repository path.
+                or re.match(r"^[A-Za-z]:", out) is not None
                 or any(s in ("", ".", "..") for s in seg[:-1])
                 or seg[-1] in (".", "..")
             ):
