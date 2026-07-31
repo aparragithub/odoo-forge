@@ -34,7 +34,7 @@ import copy
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pytest
 import validate
@@ -127,6 +127,7 @@ EXPECTED_ROUTE_DECOMPOSITIONS = frozenset(
         "CHG-OPS-UI-READONLY",
         "CHG-PORTFOLIO-AUTHORITY-PATH",
         "CHG-SP4B-VALIDATOR-GROUNDWORK",
+        "CHG-SP4B-ITEM-SCAFFOLD",
     }
 )
 EXPECTED_ROUTE_DECISIONS = frozenset({"DEC-CP-STACK", "DEC-UI-PARTIAL", "DEC-UI-STACK"})
@@ -161,6 +162,7 @@ EXPECTED_DECOMPOSITION_IDS = (
     "CHG-OPS-UI-READONLY",
     "CHG-PORTFOLIO-AUTHORITY-PATH",
     "CHG-SP4B-VALIDATOR-GROUNDWORK",
+    "CHG-SP4B-ITEM-SCAFFOLD",
 )
 
 EXPECTED_UNRELATED_DECISION_DIGESTS = {
@@ -814,6 +816,259 @@ def test_dec_cp_stack_preserves_existing_decision_identity_and_gate(
 def test_dec_cp_stack_catalogues_signed_engram_evidence(live_plan: dict[str, Any]) -> None:
     assert live_plan["meta"]["evidence_catalog"]["S84"] == "Engram #3727"
     assert live_plan["meta"]["evidence_catalog"]["S85"] == "Engram #3734"
+
+
+class ScaffoldRecord(NamedTuple):
+    """One expected SP4B scaffold item record.
+
+    Named fields rather than a positional tuple: the earlier seven-field
+    positional form was unpacked with throwaway names, and two of those
+    columns (`title`, `decision_ids`) silently went unasserted while still
+    looking covered. Named access makes an unused expectation visible.
+    """
+
+    item_id: str
+    title: str
+    owner_role: str
+    acceptance_id: str
+    decision_ids: tuple[str, ...]
+    predecessors: tuple[str, ...]
+    successors: tuple[str, ...]
+
+
+EXPECTED_SP4B_SCAFFOLD_CHAIN: tuple[ScaffoldRecord, ...] = (
+    ScaffoldRecord(
+        "CHG-SP4B-REDECOMPOSE",
+        "SP4B PostgreSQL Registry Recomposition",
+        "Architecture",
+        "AC-CHG-SP4B-REDECOMPOSE-READY",
+        (),
+        (),
+        ("CHG-SP4B-REGISTRY-POSTGRES",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-REGISTRY-POSTGRES",
+        "SP4B Registry PostgreSQL Schema and Migration",
+        "Data Platform",
+        "AC-SP4B-REGISTRY-POSTGRES-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-REDECOMPOSE",),
+        ("CHG-SP4B-ERRORS-PACKAGE",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-ERRORS-PACKAGE",
+        "SP4B Registry Errors and Package",
+        "Data Platform",
+        "AC-SP4B-ERRORS-PACKAGE-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-REGISTRY-POSTGRES",),
+        ("CHG-SP4B-ADAPTER",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-ADAPTER",
+        "SP4B PostgreSQL Registry Adapter",
+        "Data Platform",
+        "AC-SP4B-ADAPTER-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-ERRORS-PACKAGE",),
+        ("CHG-SP4B-CONFORMANCE-FAKES",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-CONFORMANCE-FAKES",
+        "SP4B Registry Conformance and Fakes",
+        "Data Platform",
+        "AC-SP4B-CONFORMANCE-FAKES-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-ADAPTER",),
+        ("CHG-SP4B-POSTGRES-HARNESS",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-POSTGRES-HARNESS",
+        "SP4B PostgreSQL Test Harness",
+        "Data Platform",
+        "AC-SP4B-POSTGRES-HARNESS-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-CONFORMANCE-FAKES",),
+        ("CHG-SP4B-REAL-ACCEPTANCE",),
+    ),
+    ScaffoldRecord(
+        "CHG-SP4B-REAL-ACCEPTANCE",
+        "SP4B Real PostgreSQL Acceptance",
+        "Data Platform",
+        "AC-SP4B-REAL-ACCEPTANCE-READY",
+        ("DEC-CP-STACK",),
+        ("CHG-SP4B-POSTGRES-HARNESS",),
+        (),
+    ),
+)
+
+
+def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
+    live_plan: dict[str, Any],
+) -> None:
+    """Pin kind/owner_role/status/evidence_date/title/decision_ids for all seven
+    scaffold records (spec R1; corrects W4).
+
+    `title` and `decision_ids` were previously unpacked from
+    `EXPECTED_SP4B_SCAFFOLD_CHAIN` and asserted nowhere: mutating either
+    survived both this suite and the validator.
+    """
+    items = {item["id"]: item for item in live_plan["items"]}
+    for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item = items[expected.item_id]
+        assert item["kind"] == "sdd_change"
+        assert item["owner_role"] == expected.owner_role
+        assert item["status"] == "proposed"
+        assert item["evidence_date"] is None
+        assert item["title"] == expected.title
+        assert tuple(item["decision_ids"]) == expected.decision_ids
+
+
+def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> None:
+    """Pin the acceptance-id CHG- infix asymmetry against the live plan (spec R2).
+
+    Record 1's acceptance id keeps the `CHG-` infix; records 2-7's drop it.
+    This asymmetry is deliberate and pinned, never normalized (design D4).
+    `acceptance_ids` is built from `live_plan`, not from the expectation
+    constant, so the infix/uniqueness checks below actually exercise the
+    live data instead of comparing hand-written literals to themselves.
+    """
+    items = {item["id"]: item for item in live_plan["items"]}
+    acceptance_ids: list[str] = []
+    for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item = items[expected.item_id]
+        live_acceptance_ids = [a["id"] for a in item["acceptance"]]
+        assert live_acceptance_ids == [expected.acceptance_id]
+        acceptance_ids.extend(live_acceptance_ids)
+    assert "CHG-" in acceptance_ids[0]
+    assert all("CHG-" not in aid for aid in acceptance_ids[1:])
+    assert len(set(acceptance_ids)) == len(acceptance_ids)
+
+
+def test_sp4b_scaffold_chain_lineage_is_exact_and_record7_terminal(
+    live_plan: dict[str, Any],
+) -> None:
+    """Pin the linear predecessor/successor chain across records 1-6 (spec R5)
+    and record 7's terminal successors list (spec R3).
+
+    Record 7's `successors` is empty in this change; whether a forward link
+    to an SP4C item is ever populated is an open question owned by
+    CHG-SP4B-DECOMPOSITION-ADOPTION (design D5) -- this is not asserted as a
+    permanent invariant. The SP4C forward-reference scan below reads live
+    `predecessors`/`successors` for all eight new records (the seven
+    scaffold items plus this change's own `CHG-SP4B-ITEM-SCAFFOLD`), not the
+    expectation constant, so it also catches a pre-wired SP4C reference on
+    the own item (corrects W2).
+    """
+    items = {item["id"]: item for item in live_plan["items"]}
+    for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN:
+        item = items[expected.item_id]
+        assert tuple(item["predecessors"]) == expected.predecessors
+        assert tuple(item["successors"]) == expected.successors
+
+    terminal = items["CHG-SP4B-REAL-ACCEPTANCE"]
+    assert terminal["successors"] == []
+
+    scaffold_and_own_ids = {expected.item_id for expected in EXPECTED_SP4B_SCAFFOLD_CHAIN} | {
+        "CHG-SP4B-ITEM-SCAFFOLD"
+    }
+    all_lineage_refs = {
+        ref
+        for item_id in scaffold_and_own_ids
+        for ref in (*items[item_id]["predecessors"], *items[item_id]["successors"])
+    }
+    assert "CHG-SP4C-CONTROL-PLANE-EDGE" not in all_lineage_refs
+
+
+EXPECTED_PREEXISTING_COMMAND_CATALOG: dict[str, str] = {
+    "C37": "uv run pytest",
+    "C38": "uv run lint-imports",
+    "C39": "uv run mypy",
+    "C40": "uv run ruff check",
+    "C41": "uv build",
+}
+
+EXPECTED_SP4B_COMMAND_CATALOG: dict[str, str] = {
+    "C42": "uv run pytest tests/portfolio/test_portfolio_integrity.py",
+    "C43": "uv run pytest docs/tools/platform_portfolio/test_validate.py",
+    "C44": "python docs/tools/platform_portfolio/validate.py --root .",
+    "C45": "uv run pytest tests/odoo_forge_instances_postgres -m 'not integration and not real_docker'",  # noqa: E501
+    "C46": (
+        "uv run pytest -m 'integration and real_docker' "
+        "tests/odoo_forge_instances_postgres/test_real_postgres_integration.py"
+    ),
+}
+
+
+def test_sp4b_command_catalog_mints_c42_to_c46_with_exact_strings(
+    live_plan: dict[str, Any],
+) -> None:
+    """Pin C42-C46's exact command strings and confirm C37-C41 remain
+    byte-unchanged (spec R6).
+
+    A set-difference-over-keys check only pins the added key set: a
+    pre-existing value could be mutated, or a pre-existing key deleted (if
+    still referenced by some decomposition, masking the loss), without
+    failing anything. Full dict equality against the merged pre-existing +
+    new mapping pins values, not just keys.
+    """
+    catalog = live_plan["meta"]["command_catalog"]
+    assert catalog == EXPECTED_PREEXISTING_COMMAND_CATALOG | EXPECTED_SP4B_COMMAND_CATALOG
+
+
+def test_sp4b_item_scaffold_decomposition_is_exact(live_plan: dict[str, Any]) -> None:
+    """Pin this change's own decomposition record (spec R7), including
+    start_boundary/finish_boundary/rollback and changed_line_forecast.
+
+    The forecast is pinned by value, not left to the validator. The
+    validator's `forecast-sum` only checks internal arithmetic, and
+    `forecast-gate` compares the record's total against a `hard_gate`
+    stored in that same record -- so raising `hard_gate` to 10000 or
+    deleting it outright defeats the gate while both checks stay silent.
+    Redistributing `additions`/`deletions`, rescaling every total
+    consistently, or replacing a file `path` are equally silent. An
+    arithmetic check passes for any internally consistent rewrite, so it
+    never substitutes for pinning the individual field values.
+    """
+    decomposition = next(
+        entry for entry in live_plan["decompositions"] if entry["id"] == "CHG-SP4B-ITEM-SCAFFOLD"
+    )
+    assert decomposition["owner"] == "Architecture"
+    assert decomposition["type"] == "implementation_change"
+    assert decomposition["inputs"] == []
+    assert decomposition["outputs"] == [
+        "docs/specs/platform/portfolio.json",
+        "tests/portfolio/test_portfolio_integrity.py",
+    ]
+    assert decomposition["acceptance_ids"] == ["AC-CHG-SP4B-ITEM-SCAFFOLD-READY"]
+    assert decomposition["start_boundary"] == "start:CHG-SP4B-ITEM-SCAFFOLD"
+    assert decomposition["finish_boundary"] == "finish:CHG-SP4B-ITEM-SCAFFOLD"
+    assert decomposition["dependencies"] == ["CHG-SP4B-VALIDATOR-GROUNDWORK"]
+    assert decomposition["verification_commands"] == ["C42", "C43", "C44"]
+    assert decomposition["rollback"] == (
+        "revert the single commit; restore portfolio.json to prior committed bytes"
+    )
+    assert decomposition["immediate_parent"] is None
+    assert decomposition["status"] == "ready_for_proposal"
+    assert decomposition["blocking_decision_ids"] == []
+    assert decomposition["changed_line_forecast"] == {
+        "files": [
+            {
+                "path": "docs/specs/platform/portfolio.json",
+                "additions": 134,
+                "deletions": 0,
+                "total": 134,
+            },
+            {
+                "path": "tests/portfolio/test_portfolio_integrity.py",
+                "additions": 107,
+                "deletions": 0,
+                "total": 107,
+            },
+        ],
+        "total": 241,
+        "hard_gate": 400,
+    }
 
 
 def _stale_authority_offenders(specs_root: Path) -> list[str]:
