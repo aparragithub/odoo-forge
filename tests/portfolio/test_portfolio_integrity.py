@@ -502,14 +502,16 @@ def _assert_dec_ui_authority(plan: dict[str, Any]) -> None:
     assert registry["status"] == "achieved"
     assert registry["evidence_date"] == "2026-08-01"
     assert registry["status_note"] == EXPECTED_REGISTRY_DELIVERY_NOTE
+    assert not registry.get("gaps")
     assert registry["acceptance"] == [
         {
-            "evidence": [],
+            "evidence": ["S86"],
             "gaps": [],
             "id": "AC-SP4B-REGISTRY-POSTGRES-READY",
             "status": "achieved",
         }
     ]
+    assert plan["meta"]["evidence_catalog"]["S86"] == "commit:f94b5ed"
 
     decompositions = {entry["id"]: entry for entry in plan["decompositions"]}
     assert _sp4b_leaf_chain_ids(plan)[1:] == EXPECTED_POST_REGISTRY_LEAVES
@@ -965,6 +967,45 @@ def test_dec_ui_semantic_contract_red_catches_cleared_readiness_gate(
     mutated = copy.deepcopy(live_plan)
     item = next(entry for entry in mutated["items"] if entry["id"] == "CHG-OPS-UI-READONLY")
     item["status"] = "achieved"
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_registry_delivery_evidence_red_catches_missing_acceptance_reference(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    registry = next(
+        entry for entry in mutated["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+    )
+    registry["acceptance"][0]["evidence"] = []
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_registry_delivery_evidence_red_catches_dangling_catalog_reference(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    registry = next(
+        entry for entry in mutated["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+    )
+    registry["acceptance"][0]["evidence"] = ["S-MISSING"]
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_registry_authority_red_catches_nonempty_optional_item_gaps(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    registry = next(
+        entry for entry in mutated["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+    )
+    registry["gaps"] = ["G0"]
 
     with pytest.raises(AssertionError):
         _assert_dec_ui_authority(mutated)
