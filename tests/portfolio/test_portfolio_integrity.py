@@ -191,8 +191,6 @@ EXPECTED_UNRELATED_DECISION_DIGESTS = {
     "DPROV-IDP": "cbcec2a9b59fb4aa41a79eb6122be20b12757aa3cf85701fe7a9b86a9d5d1ea4",
     "DPROV-CI": "2e1772210a60f0fdd203622455e72d2a55034e815db8210fe90f31cb3a4c1bb4",
     "DPROV-SECRETS": "51c04a52b07a0d765f90dc61d36ab0fac3f512b9d36715f2575c647d1040924c",
-    "DEC-UI-PARTIAL": "22aa0c1dcb66050d79eac7b3a4c4d7ec2ab91ee8e1f924a7837948a50c72c4c2",
-    "DEC-UI-STACK": "1e9c10d56d7db8ae7b302cbccaa570ca649e5c9f9abd2eff687376386ee7d6ed",
 }
 EXPECTED_UNRELATED_DECOMPOSITION_DIGESTS = {
     "CHG-FIRST-DATABASE-ADAPTER": (
@@ -208,7 +206,6 @@ EXPECTED_UNRELATED_DECOMPOSITION_DIGESTS = {
     "CHG-SP4A-INSTANCE-REGISTRY": (
         "2718487ba90aa4a2dd8f201a97abeb035c9d115b72f5530446eb5d56d4c8b038"
     ),
-    "CHG-OPS-UI-READONLY": "517e074c836c24bf1c4ec00ab9f8e7bc1765827688b662ac5bfd5b43b05847a9",
 }
 
 EXPECTED_SP4_CONTRACTS = {
@@ -430,6 +427,101 @@ def _dec_cp_stack_governance_errors(plan: dict[str, Any]) -> list[str]:
             errors.append(f"unrelated-decomposition-drift:{record_id}")
 
     return errors
+
+
+EXPECTED_DEC_UI_DECISIONS = {
+    "DEC-UI-PARTIAL": {
+        "status": "decided",
+        "chosen": "Allow a localhost-only single-operator read-only slice with a permanent gap",
+        "rationale": (
+            "The localhost-only, single-operator, read-only slice preserves useful visibility "
+            "while identity/RBAC remains deferred rather than cancelled."
+        ),
+        "consequence": (
+            "Accepted costs: identity/RBAC remains a permanent acceptance gap for this slice, "
+            "deferred rather than cancelled; loopback enforcement must be executable. "
+            "Downstream acceptance shows Docker-observed truth with a visible drift label and "
+            "keeps drifted rows visible. Data availability distinguishes exactly six states: "
+            "fresh, drifted, stale/unverified, empty, persistence error, and per-row partial "
+            "failure; anything not confirmed live is labelled."
+        ),
+    },
+    "DEC-UI-STACK": {
+        "status": "decided",
+        "chosen": "Server-rendered views with polling",
+        "rationale": (
+            "Server-rendered views with polling fit the decided FastAPI process without a SPA, "
+            "push transport, Node toolchain, or second artifact."
+        ),
+        "consequence": (
+            "Accepted cost: polling latency. The future slice uses server-rendered views with "
+            "polling inside FastAPI, with no SPA, push transport, Node toolchain, or second "
+            "artifact."
+        ),
+    },
+}
+EXPECTED_UI_NON_READINESS_NOTE = (
+    "Decision adoption does not deliver UI or runtime readiness; implementation remains gated "
+    "by the five post-registry SP4B leaves through CHG-SP4B-REAL-ACCEPTANCE, then "
+    "CHG-SP4C-CONTROL-PLANE-EDGE and control-plane authority acceptance."
+)
+EXPECTED_REGISTRY_DELIVERY_NOTE = "Delivered by PR #106 at main commit f94b5ed."
+EXPECTED_POST_REGISTRY_LEAVES = (
+    "CHG-SP4B-ERRORS-PACKAGE",
+    "CHG-SP4B-ADAPTER",
+    "CHG-SP4B-CONFORMANCE-FAKES",
+    "CHG-SP4B-POSTGRES-HARNESS",
+    "CHG-SP4B-REAL-ACCEPTANCE",
+)
+
+
+def _assert_dec_ui_authority(plan: dict[str, Any]) -> None:
+    decisions = {entry["id"]: entry for entry in plan["decisions"]}
+    for decision_id, expected_fields in EXPECTED_DEC_UI_DECISIONS.items():
+        decision = decisions[decision_id]
+        for field, expected in expected_fields.items():
+            assert decision[field] == expected
+
+    ui_item = next(entry for entry in plan["items"] if entry["id"] == "CHG-OPS-UI-READONLY")
+    assert ui_item["status"] == "proposed"
+    assert ui_item["status_note"] == EXPECTED_UI_NON_READINESS_NOTE
+    assert ui_item["acceptance"] == [
+        {
+            "evidence": [],
+            "gaps": ["G0"],
+            "id": "AC-CHG-OPS-UI-READONLY-READY",
+            "status": "proposed",
+        }
+    ]
+
+    operations_ui = next(entry for entry in plan["items"] if entry["id"] == "SP-OPERATIONS-UI")
+    assert operations_ui["status"] == "proposed"
+    assert operations_ui["acceptance"][0]["gaps"] == ["G0"]
+
+    registry = next(entry for entry in plan["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES")
+    assert registry["status"] == "achieved"
+    assert registry["evidence_date"] == "2026-08-01"
+    assert registry["status_note"] == EXPECTED_REGISTRY_DELIVERY_NOTE
+    assert not registry.get("gaps")
+    assert registry["acceptance"] == [
+        {
+            "evidence": ["S86"],
+            "gaps": [],
+            "id": "AC-SP4B-REGISTRY-POSTGRES-READY",
+            "status": "achieved",
+        }
+    ]
+    assert plan["meta"]["evidence_catalog"]["S86"] == "commit:f94b5ed"
+
+    decompositions = {entry["id"]: entry for entry in plan["decompositions"]}
+    assert _sp4b_leaf_chain_ids(plan)[1:] == EXPECTED_POST_REGISTRY_LEAVES
+    for entry_id in EXPECTED_POST_REGISTRY_LEAVES:
+        assert decompositions[entry_id]["status"] == "ready_for_proposal"
+
+
+def _assert_serialized_portfolio_authority(plan: dict[str, Any]) -> None:
+    _assert_dec_ui_authority(plan)
+    assert _dec_cp_stack_governance_errors(plan) == []
 
 
 def test_live_plan_is_clean_at_every_severity_red_catches_bad_kind(
@@ -841,6 +933,107 @@ def test_dec_cp_stack_rejects_unrelated_decomposition_drift(live_plan: dict[str,
     )
 
 
+def test_dec_ui_semantic_contract_accepts_authority_and_non_readiness(
+    live_plan: dict[str, Any],
+) -> None:
+    _assert_dec_ui_authority(live_plan)
+
+
+def test_dec_ui_semantic_contract_red_catches_restored_decision(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-UI-STACK")
+    decision["chosen"] = "Single-page application with push transport"
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_dec_ui_semantic_contract_red_catches_lost_drift_state_evidence(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decision = next(entry for entry in mutated["decisions"] if entry["id"] == "DEC-UI-PARTIAL")
+    decision["consequence"] = decision["consequence"].replace("drifted", "hidden")
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_dec_ui_semantic_contract_red_catches_cleared_readiness_gate(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    item = next(entry for entry in mutated["items"] if entry["id"] == "CHG-OPS-UI-READONLY")
+    item["status"] = "achieved"
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_registry_delivery_evidence_red_catches_missing_acceptance_reference(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    registry = next(
+        entry for entry in mutated["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+    )
+    registry["acceptance"][0]["evidence"] = []
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_registry_delivery_evidence_red_catches_dangling_catalog_reference(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    registry = next(
+        entry for entry in mutated["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+    )
+    registry["acceptance"][0]["evidence"] = ["S-MISSING"]
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_registry_authority_red_catches_nonempty_optional_item_gaps(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    registry = next(
+        entry for entry in mutated["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+    )
+    registry["gaps"] = ["G0"]
+
+    with pytest.raises(AssertionError):
+        _assert_dec_ui_authority(mutated)
+
+
+def test_serialized_portfolio_red_catches_registry_lost_update(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    registry = next(
+        entry for entry in mutated["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES"
+    )
+    registry["status"] = "proposed"
+    registry["evidence_date"] = None
+    registry["status_note"] = ""
+    registry["acceptance"][0]["status"] = "proposed"
+    registry["acceptance"][0]["gaps"] = ["G0"]
+
+    with pytest.raises(AssertionError):
+        _assert_serialized_portfolio_authority(mutated)
+
+
+def test_serialized_portfolio_authority_preserves_both_changes(
+    live_plan: dict[str, Any],
+) -> None:
+    _assert_serialized_portfolio_authority(live_plan)
+
+
 def test_dec_cp_stack_governance_contract_holds(live_plan: dict[str, Any]) -> None:
     assert _dec_cp_stack_governance_errors(live_plan) == []
 
@@ -975,8 +1168,12 @@ def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
         item = items[expected.item_id]
         assert item["kind"] == "sdd_change"
         assert item["owner_role"] == expected.owner_role
-        assert item["status"] == "proposed"
-        assert item["evidence_date"] is None
+        if expected.item_id == "CHG-SP4B-REGISTRY-POSTGRES":
+            assert item["status"] == "achieved"
+            assert item["evidence_date"] == "2026-08-01"
+        else:
+            assert item["status"] == "proposed"
+            assert item["evidence_date"] is None
         assert item["title"] == expected.title
         assert tuple(item["decision_ids"]) == expected.decision_ids
 
