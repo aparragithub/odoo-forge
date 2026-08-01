@@ -46,7 +46,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace", "src/odoo_forge_docker", "src/odoo_forge_registry", "src/odoo_forge_postgres_docker", "src/odoo_forge_catalog", "src/odoo_forge_pipeline_github"]
+packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace", "src/odoo_forge_docker", "src/odoo_forge_registry", "src/odoo_forge_postgres_docker", "src/odoo_forge_catalog", "src/odoo_forge_pipeline_github", "src/odoo_forge_instances_postgres"]
 
 [dependency-groups]
 dev = [
@@ -108,7 +108,7 @@ module = ["validate"]
 ignore_missing_imports = true
 
 [tool.importlinter]
-root_packages = ["odoo_forge", "odoo_forge_cli", "odoo_forge_git", "odoo_forge_workspace", "odoo_forge_docker", "odoo_forge_registry", "odoo_forge_postgres_docker", "odoo_forge_catalog", "odoo_forge_pipeline_github"]
+root_packages = ["odoo_forge", "odoo_forge_cli", "odoo_forge_git", "odoo_forge_workspace", "odoo_forge_docker", "odoo_forge_registry", "odoo_forge_postgres_docker", "odoo_forge_catalog", "odoo_forge_pipeline_github", "odoo_forge_instances_postgres"]
 include_external_packages = true
 
 [[tool.importlinter.contracts]]
@@ -173,3 +173,9 @@ name = "Core never imports the postgres-docker adapter"
 type = "forbidden"
 source_modules = ["odoo_forge"]
 forbidden_modules = ["odoo_forge_postgres_docker"]
+
+[[tool.importlinter.contracts]]
+name = "Core never imports the instances-postgres adapter"
+type = "forbidden"
+source_modules = ["odoo_forge"]
+forbidden_modules = ["odoo_forge_instances_postgres"]
