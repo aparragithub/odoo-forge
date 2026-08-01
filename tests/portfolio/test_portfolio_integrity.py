@@ -1019,6 +1019,10 @@ def test_sp4b_scaffold_acceptance_ids_are_exact(live_plan: dict[str, Any]) -> No
         live_acceptance_ids = [a["id"] for a in item["acceptance"]]
         assert live_acceptance_ids == [expected.acceptance_id]
         acceptance_ids.extend(live_acceptance_ids)
+    assert {
+        record.item_id for record in EXPECTED_SP4B_SCAFFOLD_CHAIN
+    } == SP4B_GOVERNANCE_ITEM_IDS | SP4B_LEAF_ITEM_IDS
+    assert SP4B_GOVERNANCE_ITEM_IDS.isdisjoint(SP4B_LEAF_ITEM_IDS)
     for item_id in SP4B_GOVERNANCE_ITEM_IDS:
         assert "CHG-" in items[item_id]["acceptance"][0]["id"]
     for item_id in SP4B_LEAF_ITEM_IDS:
@@ -1074,6 +1078,20 @@ def test_sp4b_scaffold_chain_red_catches_non_sp4c_foreign_successor(
 
     with pytest.raises(AssertionError):
         _assert_sp4b_scaffold_chain_lineage(mutated)
+
+
+def test_sp4b_leaf_chain_rejects_cycles(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    leaves = {
+        entry["id"]: entry
+        for entry in mutated["decompositions"]
+        if entry["id"].startswith("CHG-SP4B-")
+    }
+    leaves["CHG-SP4B-REGISTRY-POSTGRES"]["immediate_parent"] = "CHG-SP4B-ERRORS-PACKAGE"
+    leaves["CHG-SP4B-ADAPTER"]["immediate_parent"] = "CHG-SP4A-INSTANCE-REGISTRY"
+
+    with pytest.raises(AssertionError, match="cycle"):
+        _sp4b_leaf_chain_ids(mutated)
 
 
 EXPECTED_PREEXISTING_COMMAND_CATALOG: dict[str, str] = {
@@ -1437,13 +1455,14 @@ def _sp4b_leaf_chain_ids(plan: dict[str, Any]) -> tuple[str, ...]:
     Deliberately NOT derived from `EXPECTED_SP4B_LEAF_CONTRACTS`: if it were,
     the both-ways equality in `test_sp4b_leaf_contract_table_ids_match_live_leaf_ids`
     would be a tautology (an unpinned 4th leaf would never be noticed). The
-    `CHG-SP4B-` prefix filter excludes `CHG-SP4C-CONTROL-PLANE-EDGE`, which
-    still names leaf 1 as its `immediate_parent` in slice A (SP4C rewire is
-    slice B) and would otherwise collide as a second child of leaf 1.
+    `CHG-SP4B-` prefix filter excludes the legitimate SP4C child
+    `CHG-SP4C-CONTROL-PLANE-EDGE` of `CHG-SP4B-REAL-ACCEPTANCE`, which would
+    otherwise extend the SP4B leaf chain.
     """
     decompositions = {entry["id"]: entry for entry in plan["decompositions"]}
     chain = ["CHG-SP4B-REGISTRY-POSTGRES"]
     current = chain[0]
+    visited = set(chain)
     while True:
         candidates = [
             entry_id
@@ -1456,6 +1475,8 @@ def _sp4b_leaf_chain_ids(plan: dict[str, Any]) -> tuple[str, ...]:
         if not candidates:
             break
         current = candidates[0]
+        assert current not in visited, f"cycle in SP4B leaf chain at {current}"
+        visited.add(current)
         chain.append(current)
     return tuple(chain)
 
