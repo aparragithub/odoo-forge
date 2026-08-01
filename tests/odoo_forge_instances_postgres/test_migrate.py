@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import inspect
+import importlib
+import importlib.resources
 import re
-from pathlib import Path
 
 import pytest
 
-import odoo_forge_instances_postgres.migrate as migrate_module
 from odoo_forge_instances_postgres.migrate import (
     CatalogVerificationError,
     MigrationAutocommitError,
@@ -206,12 +205,52 @@ def test_missing_relation_is_a_typed_verification_failure() -> None:
     assert conn.rolled_back
 
 
-def test_no_drop_statement_and_no_down_migration_entry_point() -> None:
-    migrate_source = inspect.getsource(migrate_module)
-    sql_path = Path(__file__).parents[2] / (
-        "src/odoo_forge_instances_postgres/migrations/0001_instance_registry.sql"
+DESTRUCTIVE_KEYWORDS = ("drop", "truncate", "delete")
+REVERSAL_NAME_PATTERN = r"down|revert|rollback|undo|drop|teardown"
+
+
+def _destructive_keywords(sql: str) -> list[str]:
+    return [
+        keyword
+        for keyword in DESTRUCTIVE_KEYWORDS
+        if re.search(rf"\b{keyword}\b", sql, re.IGNORECASE)
+    ]
+
+
+@pytest.mark.parametrize("relation_exists", [False, True])
+def test_migration_sends_no_destructive_statement(relation_exists: bool) -> None:
+    """Neither the fresh nor the existing-table path may reach the database
+    with a destructive statement."""
+
+    cursor = FakeCursor(relation_exists=relation_exists)
+    run_migration(FakeConnection(cursor))
+    offenders = {
+        statement: found
+        for statement in cursor.executed
+        if (found := _destructive_keywords(statement))
+    }
+    assert not offenders
+
+
+def test_shipped_migration_sql_is_non_destructive() -> None:
+    """The packaged DDL that ships to users must be additive only."""
+
+    sql = (
+        importlib.resources.files("odoo_forge_instances_postgres.migrations")
+        .joinpath("0001_instance_registry.sql")
+        .read_text(encoding="utf-8")
     )
-    sql_source = sql_path.read_text(encoding="utf-8")
-    assert not re.search(r"\bdrop\b", migrate_source + sql_source, re.IGNORECASE)
-    assert not hasattr(migrate_module, "down_migration")
-    assert not hasattr(migrate_module, "rollback_migration")
+    assert not _destructive_keywords(sql)
+
+
+def test_public_surface_exposes_no_reversal_entry_point() -> None:
+    """The module exports the forward migration and no way to reverse it."""
+
+    module = importlib.import_module("odoo_forge_instances_postgres.migrate")
+    public_callables = {
+        name for name in dir(module) if not name.startswith("_") and callable(getattr(module, name))
+    }
+    assert "run_migration" in public_callables
+    assert not {
+        name for name in public_callables if re.search(REVERSAL_NAME_PATTERN, name, re.IGNORECASE)
+    }
