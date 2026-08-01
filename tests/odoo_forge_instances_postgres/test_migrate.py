@@ -100,6 +100,7 @@ def test_fresh_database_creates_and_verifies_an_ordinary_table() -> None:
         "advisory_lock",
         "relation_exists",
         "create_table",
+        "table_lock",
         "catalog_predicate",
     ]
     assert conn.committed and not conn.rolled_back

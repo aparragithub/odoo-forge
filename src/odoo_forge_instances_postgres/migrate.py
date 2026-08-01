@@ -147,6 +147,8 @@ def run_migration(conn: Connection) -> None:
         if relation is not None and relation[0] is not None:
             _execute_guarding_timeout(cursor, _TABLE_LOCK_SQL)
         cursor.execute(_migration_sql())
+        if relation is None or relation[0] is None:
+            _execute_guarding_timeout(cursor, _TABLE_LOCK_SQL)
         cursor.execute(_CATALOG_PREDICATE_SQL)
         _verify_catalog_signature(cursor.fetchone())
     except Exception:
