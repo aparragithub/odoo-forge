@@ -6,7 +6,7 @@
 
 **Plataforma declarativa para componer proyectos Odoo: manifests por capas, overrides resueltos y backends de ejecución desacoplados.**
 
-[English](README.md) · [Documentación](docs/00-master-index.md) · [Roadmap](ROADMAP.md)
+[English](README.md) · [Documentación](docs/00-master-index.md) · [Roadmap](ROADMAP.es.md)
 
 ---
 
@@ -145,7 +145,7 @@ uv run lint-imports               # contratos de arquitectura
 
 | Punto de entrada | Qué cubre |
 | --- | --- |
-| [`ROADMAP.md`](ROADMAP.md) | Qué funciona hoy, qué está construido sin conectar, y qué viene después |
+| [`ROADMAP.es.md`](ROADMAP.es.md) | Qué funciona hoy, qué está construido sin conectar, y qué viene después |
 | [`docs/comparison.md`](docs/comparison.md) | Cómo se compara odoo-forge con doodba, compose a mano y Odoo.sh — incluyendo cuándo no usarlo |
 | [`docs/recipes/`](docs/recipes/README.md) | Guías por tarea: agregar una capa de addons, override con tu fork, credenciales Enterprise |
 | [`docs/00-master-index.md`](docs/00-master-index.md) | Índice de toda la documentación de mantenimiento |
