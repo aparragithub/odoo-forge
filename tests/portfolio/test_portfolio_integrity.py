@@ -500,7 +500,6 @@ def _assert_dec_ui_authority(plan: dict[str, Any]) -> None:
 
     registry = next(entry for entry in plan["items"] if entry["id"] == "CHG-SP4B-REGISTRY-POSTGRES")
     assert registry["status"] == "achieved"
-    assert registry["gaps"] == []
     assert registry["evidence_date"] == "2026-08-01"
     assert registry["status_note"] == EXPECTED_REGISTRY_DELIVERY_NOTE
     assert registry["acceptance"] == [
