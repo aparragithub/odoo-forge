@@ -28,12 +28,16 @@ class FakeCursor:
     def __init__(
         self,
         catalog_row: tuple[object, ...] | None = ACCEPTING_ROW,
+        relation_exists: bool | None = None,
         fail_on_contains: str | None = None,
         fail_exception: Exception | None = None,
     ) -> None:
         self.executed: list[str] = []
-        self._catalog_row, self._fail_on_contains, self._fail_exception = (
-            catalog_row,
+        self._catalog_row = catalog_row
+        self._relation_exists = (
+            catalog_row is not None if relation_exists is None else relation_exists
+        )
+        self._fail_on_contains, self._fail_exception = (
             fail_on_contains,
             fail_exception,
         )
@@ -43,7 +47,10 @@ class FakeCursor:
             assert self._fail_exception is not None
             raise self._fail_exception
         self.executed.append(query)
+
     def fetchone(self) -> tuple[object, ...] | None:
+        if self.executed[-1].startswith("SELECT to_regclass"):
+            return ("public.instance_registry",) if self._relation_exists else (None,)
         return self._catalog_row
 
 
@@ -51,10 +58,13 @@ class FakeConnection:
     def __init__(self, cursor: FakeCursor, autocommit: bool = False) -> None:
         self.autocommit, self._cursor = autocommit, cursor
         self.committed = self.rolled_back = False
+
     def cursor(self) -> FakeCursor:
         return self._cursor
+
     def commit(self) -> None:
         self.committed = True
+
     def rollback(self) -> None:
         self.rolled_back = True
 
@@ -64,21 +74,50 @@ def _statement_kinds(executed: list[str]) -> list[str]:
     for statement in executed:
         upper = statement.upper()
         kinds.append(
-            "set_lock_timeout" if "LOCK_TIMEOUT" in upper else
-            "advisory_lock" if "PG_ADVISORY_XACT_LOCK" in upper else
-            "create_table" if "CREATE TABLE" in upper else
-            "table_lock" if "LOCK TABLE" in upper and "ACCESS EXCLUSIVE" in upper else
-            "catalog_predicate" if "PG_CLASS" in upper else "unknown"
+            "set_lock_timeout"
+            if "LOCK_TIMEOUT" in upper
+            else "advisory_lock"
+            if "PG_ADVISORY_XACT_LOCK" in upper
+            else "relation_exists"
+            if "TO_REGCLASS" in upper
+            else "create_table"
+            if "CREATE TABLE" in upper
+            else "table_lock"
+            if "LOCK TABLE" in upper and "ACCESS EXCLUSIVE" in upper
+            else "catalog_predicate"
+            if "PG_CLASS" in upper
+            else "unknown"
         )
     return kinds
 
 
 def test_fresh_database_creates_and_verifies_an_ordinary_table() -> None:
-    cursor = FakeCursor()
+    cursor = FakeCursor(relation_exists=False)
     conn = FakeConnection(cursor)
     run_migration(conn)
     assert _statement_kinds(cursor.executed) == [
-        "set_lock_timeout", "advisory_lock", "create_table", "table_lock", "catalog_predicate"
+        "set_lock_timeout",
+        "advisory_lock",
+        "relation_exists",
+        "create_table",
+        "catalog_predicate",
+    ]
+    assert conn.committed and not conn.rolled_back
+
+
+def test_existing_table_is_locked_before_table_ddl() -> None:
+    cursor = FakeCursor(relation_exists=True)
+    conn = FakeConnection(cursor)
+
+    run_migration(conn)
+
+    assert _statement_kinds(cursor.executed) == [
+        "set_lock_timeout",
+        "advisory_lock",
+        "relation_exists",
+        "table_lock",
+        "create_table",
+        "catalog_predicate",
     ]
     assert conn.committed and not conn.rolled_back
 
@@ -96,10 +135,15 @@ def test_catalog_predicate_is_constant_and_ignores_dropped_columns() -> None:
 @pytest.mark.parametrize(
     ("field_index", "value", "variant_hint"),
     [
-        (0, "p", "partition"), (1, "u", "unlogged"), (1, "t", "temporary"),
+        (0, "p", "partition"),
+        (1, "u", "unlogged"),
+        (1, "t", "temporary"),
         pytest.param(4, True, "inherit", id="inherit-child"),
         pytest.param(4, True, "inherit", id="inherit-parent"),
-        (5, True, "trigger"), (6, True, "rule"), (7, True, "generat"), (8, True, "identity"),
+        (5, True, "trigger"),
+        (6, True, "rule"),
+        (7, True, "generat"),
+        (8, True, "identity"),
     ],
 )
 def test_catalog_signature_rejects_unsafe_variant(

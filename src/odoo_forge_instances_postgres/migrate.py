@@ -18,6 +18,7 @@ _REGISTRY_TABLE = "public.instance_registry"
 _LOCK_TIMEOUT_SQLSTATE = "55P03"
 
 _ADVISORY_LOCK_SQL = f"SELECT pg_advisory_xact_lock({ADVISORY_LOCK_KEY_1}, {ADVISORY_LOCK_KEY_2})"
+_TABLE_EXISTS_SQL = "SELECT to_regclass('public.instance_registry')"
 _TABLE_LOCK_SQL = f"LOCK TABLE {_REGISTRY_TABLE} IN ACCESS EXCLUSIVE MODE"
 _CATALOG_PREDICATE_SQL = """
 SELECT c.relkind, c.relpersistence, c.relrowsecurity, c.relforcerowsecurity,
@@ -141,8 +142,11 @@ def run_migration(conn: Connection) -> None:
     try:
         cursor.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
         _execute_guarding_timeout(cursor, _ADVISORY_LOCK_SQL)
+        _execute_guarding_timeout(cursor, _TABLE_EXISTS_SQL)
+        relation = cursor.fetchone()
+        if relation is not None and relation[0] is not None:
+            _execute_guarding_timeout(cursor, _TABLE_LOCK_SQL)
         cursor.execute(_migration_sql())
-        _execute_guarding_timeout(cursor, _TABLE_LOCK_SQL)
         cursor.execute(_CATALOG_PREDICATE_SQL)
         _verify_catalog_signature(cursor.fetchone())
     except Exception:
