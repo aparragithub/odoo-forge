@@ -102,6 +102,10 @@ jobs:
           assert_failure_cleanup timeout
           uv pip install --python "$venv/bin/python" --no-deps "$wheel"
 
+          compat_venv="$smoke_root/compat-venv"
+          uv venv "$compat_venv"
+          uv pip install --python "$compat_venv/bin/python" "$wheel"
+
           # A polluted PYTHONPATH must not be able to satisfy the wheel proof.
           shadow="$smoke_root/shadow"
           mkdir -p "$shadow/odoo_forge_instances_postgres"
@@ -117,6 +121,19 @@ jobs:
           mkdir "$external_cwd"
           (
             cd "$external_cwd"
+            env -u PYTHONPATH PYTHONNOUSERSITE=1 "$compat_venv/bin/forge" --help > /dev/null
+            env -u PYTHONPATH PYTHONNOUSERSITE=1 "$compat_venv/bin/python" - <<'PY'
+          import importlib
+
+          for module_name in (
+              "odoo_forge", "odoo_forge_cli", "odoo_forge_git",
+              "odoo_forge_workspace", "odoo_forge_docker", "odoo_forge_registry",
+              "odoo_forge_postgres_docker", "odoo_forge_catalog",
+              "odoo_forge_pipeline_github",
+          ):
+              importlib.import_module(module_name)
+          print("all packages import from the built wheel")
+          PY
             env -u PYTHONPATH PYTHONNOUSERSITE=1 "$venv/bin/python" - <<'PY'
           import importlib
           import sys
