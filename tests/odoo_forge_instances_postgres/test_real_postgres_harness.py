@@ -246,18 +246,17 @@ def test_body_exception_identity_is_preserved_and_gets_sanitized_cleanup_note() 
     runner = ScriptedRunner(token="body-token", fail_commands=frozenset({"rm"}))
     error = RuntimeError("body-secret-marker")
 
-    with (
-        pytest.raises(RuntimeError) as raised,
-        postgres_harness(
+    try:
+        with postgres_harness(
             runner=runner,
             clock=ScriptedClock(),
             sleep=lambda _: None,
             token_factory=lambda: "body-token",
-        ) as session,
-    ):
-        raise error
+        ) as session:
+            raise error
+    except RuntimeError as raised:
+        assert raised is error
 
-    assert raised.value is error
     assert error.__notes__ == [
         "postgres harness cleanup residuals: container:remove-failed:1, network:remove-failed:1"
     ]

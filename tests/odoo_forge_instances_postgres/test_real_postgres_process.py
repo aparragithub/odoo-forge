@@ -28,8 +28,9 @@ def _require_real_docker() -> None:
         )
     except subprocess.TimeoutExpired:
         pytest.skip("Docker prerequisite unavailable: daemon probe timed out after 5s")
-    if result.returncode != 0:
-        pytest.skip("Docker prerequisite unavailable: daemon is unreachable")
+    else:
+        if result.returncode != 0:
+            pytest.skip("Docker prerequisite unavailable: daemon is unreachable")
 
 
 def test_real_postgres_process_is_explicitly_opt_in_and_available() -> None:
