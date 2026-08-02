@@ -113,7 +113,8 @@ def _ownership(runner: Runner, kind: str, name: str, token: str, *, timeout: flo
         timeout=timeout,
     )
     if result.returncode != 0:
-        return "missing" if "no such" in (result.stderr or "").lower() else "inspect-failed"
+        stderr = (result.stderr or "").lower()
+        return "missing" if "no such" in stderr or "not found" in stderr else "inspect-failed"
     return "owned" if (result.stdout or "").strip() == token else "foreign"
 
 
@@ -179,6 +180,7 @@ def postgres_harness(
     created: set[str] = set()
     body_error: BaseException | None = None
     try:
+        created.add("network")
         _checked(
             runner,
             [
@@ -192,7 +194,7 @@ def postgres_harness(
             env={},
             timeout=timeout,
         )
-        created.add("network")
+        created.add("volume")
         _checked(
             runner,
             [
@@ -206,7 +208,7 @@ def postgres_harness(
             env={},
             timeout=timeout,
         )
-        created.add("volume")
+        created.add("container")
         _checked(
             runner,
             [
@@ -234,8 +236,6 @@ def postgres_harness(
             env={"POSTGRES_DB": names["database"], "POSTGRES_USER": names["user"], **env},
             timeout=timeout,
         )
-        created.add("container")
-
         deadline = clock() + startup_timeout
         readiness = [
             "docker",
@@ -256,6 +256,11 @@ def postgres_harness(
                 )
             if _probe(runner, readiness, timeout=min(timeout, remaining)).returncode == 0:
                 break
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise PostgresHarnessError(
+                    f"postgres readiness timed out after {startup_timeout:g}s"
+                )
             state = _probe(
                 runner,
                 ["docker", "inspect", "--format={{.State.Status}}", names["container"]],
@@ -307,8 +312,10 @@ def postgres_harness(
                     retained.append(f"volume:{volume_name}")
                 elif volume_state == "missing":
                     pass
+                elif volume_state == "foreign":
+                    residuals.append("volume:ownership-mismatch")
                 else:
-                    residuals.append(f"volume:{volume_state}")
+                    residuals.append("volume:inspect-failed")
         session.cleanup_report = CleanupReport(tuple(residuals), tuple(retained))
         if residuals and body_error is None:
             raise PostgresHarnessError(f"cleanup incomplete: {', '.join(residuals)}")

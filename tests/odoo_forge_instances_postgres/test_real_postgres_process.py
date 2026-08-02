@@ -14,21 +14,25 @@ pytestmark = [pytest.mark.integration, pytest.mark.real_docker]
 
 
 def _require_real_docker() -> None:
-    if shutil.which("docker") is None:
-        pytest.skip("Docker prerequisite unavailable: executable not found")
     if os.environ.get("ODOO_FORGE_RUN_REAL_DOCKER") != "1":
         pytest.skip("real Docker smoke disabled; set ODOO_FORGE_RUN_REAL_DOCKER=1 explicitly")
-    result = subprocess.run(
-        ["docker", "info", "--format", "{{.ServerVersion}}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    if shutil.which("docker") is None:
+        pytest.skip("Docker prerequisite unavailable: executable not found")
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.ServerVersion}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+    except subprocess.TimeoutExpired:
+        pytest.skip("Docker prerequisite unavailable: daemon probe timed out after 5s")
     if result.returncode != 0:
         pytest.skip("Docker prerequisite unavailable: daemon is unreachable")
 
 
 def test_real_postgres_process_is_explicitly_opt_in_and_available() -> None:
     _require_real_docker()
-    with postgres_harness() as session:
+    with postgres_harness(remove_persisted_state=True) as session:
         assert session.connection.database.startswith("odoo_")
