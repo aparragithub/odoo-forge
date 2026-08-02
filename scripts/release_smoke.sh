@@ -15,7 +15,17 @@ cleanup() {
   rm -rf -- "$smoke_root"
 }
 
-trap cleanup EXIT HUP INT TERM
+cleanup_and_exit() {
+  local status="$1"
+  trap - HUP INT TERM
+  cleanup
+  exit "$status"
+}
+
+trap cleanup EXIT
+trap 'cleanup_and_exit 129' HUP
+trap 'cleanup_and_exit 130' INT
+trap 'cleanup_and_exit 143' TERM
 
 select_wheel() {
   local directory="$1"
