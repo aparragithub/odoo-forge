@@ -26,7 +26,8 @@ def _no_live_connection() -> AbstractContextManager[Connection]:
 def _public_methods(candidate_type: type[object]) -> set[str]:
     return {
         name
-        for name, member in vars(candidate_type).items()
+        for base in candidate_type.__mro__
+        for name, member in vars(base).items()
         if not name.startswith("_") and callable(member)
     }
 
@@ -84,7 +85,12 @@ class AsyncRegistry:
         return ()
 
 
-class ExtraMethod:
+class Resettable:
+    def reset(self) -> None:
+        return None
+
+
+class InheritedExtraMethod(Resettable):
     def store(self, record: InstanceRecord) -> InstanceRecord:
         return record
 
@@ -94,15 +100,12 @@ class ExtraMethod:
     def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]:
         return ()
 
-    def reset(self) -> None:
-        return None
-
 
 def test_missing_protocol_method_is_rejected_by_runtime_conformance() -> None:
     assert not isinstance(MissingMethod(), InstanceRegistry)
 
 
-@pytest.mark.parametrize("candidate_type", [WrongSignature, AsyncRegistry, ExtraMethod])
+@pytest.mark.parametrize("candidate_type", [WrongSignature, AsyncRegistry, InheritedExtraMethod])
 def test_signature_drift_is_rejected_after_structural_runtime_check(
     candidate_type: type[object],
 ) -> None:
