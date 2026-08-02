@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from concurrent.futures import Future
-from threading import Barrier, Event, Lock, Thread
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier, Event
 
 import pytest
 
@@ -92,29 +92,9 @@ def create_unsafe_registry(database: PostgresTestDatabase) -> None:
 
 
 def _bounded_threads(workers: tuple[Callable[[], object], ...]) -> tuple[object, ...]:
-    futures: tuple[Future[object], ...] = tuple(Future() for _ in workers)
-    lock = Lock()
-
-    def execute(index: int) -> None:
-        try:
-            value = workers[index]()
-        except BaseException as error:
-            with lock:
-                futures[index].set_exception(error)
-        else:
-            with lock:
-                futures[index].set_result(value)
-
-    threads = [Thread(target=execute, args=(index,)) for index in range(len(workers))]
-    for thread in threads:
-        thread.start()
-    try:
-        values = tuple(future.result(timeout=12) for future in futures)
-    finally:
-        for thread in threads:
-            thread.join(timeout=12)
-    assert all(not thread.is_alive() for thread in threads)
-    return values
+    with ThreadPoolExecutor(max_workers=len(workers)) as executor:
+        futures = tuple(executor.submit(worker) for worker in workers)
+        return tuple(future.result(timeout=12) for future in futures)
 
 
 def run_concurrent_migrations(database: PostgresTestDatabase) -> tuple[object, ...]:
@@ -138,34 +118,19 @@ def run_locked_migration(database: PostgresTestDatabase) -> None:
             if not release.wait(timeout=12):
                 raise TimeoutError("bounded DDL lock holder did not receive release")
 
-    holder: Future[object] = Future()
-    lock = Lock()
-
-    def run_holder() -> None:
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        holder = executor.submit(hold_lock)
         try:
-            hold_lock()
-        except BaseException as error:
-            with lock:
-                holder.set_exception(error)
-        else:
-            with lock:
-                holder.set_result(None)
-
-    thread = Thread(target=run_holder)
-    thread.start()
-    try:
-        assert acquired.wait(timeout=5)
-        with database.connect() as connection, pytest.raises(MigrationLockTimeoutError):
-            try:
-                run_migration(connection)
-            except MigrationLockTimeoutError:
-                assert connection.info.transaction_status is TransactionStatus.IDLE
-                raise
-    finally:
-        release.set()
-        thread.join(timeout=12)
-    assert not thread.is_alive()
-    holder.result(timeout=1)
+            assert acquired.wait(timeout=5)
+            with database.connect() as connection, pytest.raises(MigrationLockTimeoutError):
+                try:
+                    run_migration(connection)
+                except MigrationLockTimeoutError:
+                    assert connection.info.transaction_status is TransactionStatus.IDLE
+                    raise
+        finally:
+            release.set()
+        holder.result(timeout=12)
 
 
 def relation_exists(database: PostgresTestDatabase, relation: str) -> bool:

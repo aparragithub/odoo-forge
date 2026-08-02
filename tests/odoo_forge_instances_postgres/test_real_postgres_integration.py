@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 pytest.importorskip("psycopg", reason="C46 requires invocation-scoped Psycopg")
@@ -30,7 +32,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.real_docker]
 
 
 @pytest.fixture()
-def database() -> PostgresTestDatabase:
+def database() -> Iterator[PostgresTestDatabase]:
     with isolated_database() as database:
         yield database
 
@@ -70,16 +72,11 @@ def test_external_ddl_lock_timeout_is_typed_and_bounded(database: PostgresTestDa
 
 
 def test_failure_rolls_back_transactional_work(database: PostgresTestDatabase) -> None:
-    with (
-        pytest.raises(RuntimeError, match="scoped acceptance operation failed"),
-        database.connect() as connection,
-    ):
-        try:
+    with database.connect() as connection:
+        with pytest.raises(RuntimeError, match="scoped acceptance operation failed"):
             connection.execute("CREATE TABLE public.rollback_probe (id integer)")
             raise RuntimeError("scoped acceptance operation failed")
-        except RuntimeError:
-            connection.rollback()
-            raise
+        connection.rollback()
     assert not relation_exists(database, "public.rollback_probe")
 
 

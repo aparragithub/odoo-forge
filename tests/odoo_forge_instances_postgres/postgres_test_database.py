@@ -6,6 +6,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -41,8 +42,9 @@ def require_real_docker() -> None:
         )
     except subprocess.TimeoutExpired:
         pytest.skip("Docker prerequisite unavailable: daemon probe timed out after 5s")
-    if result.returncode != 0:
-        pytest.skip("Docker prerequisite unavailable: daemon is unreachable")
+    else:
+        if result.returncode != 0:
+            pytest.skip("Docker prerequisite unavailable: daemon is unreachable")
 
 
 def _free_tcp_port() -> int:
@@ -105,10 +107,16 @@ class PostgresTestDatabase:
 @contextmanager
 def isolated_database() -> Iterator[PostgresTestDatabase]:
     require_real_docker()
-    with postgres_harness(port=_free_tcp_port(), remove_persisted_state=True) as session:
-        database = PostgresTestDatabase(session)
-        _wait_for_database(database)
-        yield database
-    if not database.clean:
-        report = database.cleanup_report
-        raise PostgresHarnessError(f"C46 cleanup residuals: {report}")
+    database: PostgresTestDatabase | None = None
+    try:
+        with postgres_harness(port=_free_tcp_port(), remove_persisted_state=True) as session:
+            database = PostgresTestDatabase(session)
+            _wait_for_database(database)
+            yield database
+    finally:
+        if database is not None and not database.clean:
+            error = sys.exception()
+            detail = f"C46 cleanup residuals: {database.cleanup_report}"
+            if error is None:
+                raise PostgresHarnessError(detail)
+            error.add_note(detail)
