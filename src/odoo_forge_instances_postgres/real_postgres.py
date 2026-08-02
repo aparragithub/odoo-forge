@@ -147,6 +147,8 @@ def postgres_harness(
                 "--detach",
                 "--name",
                 names["container"],
+                "--label",
+                f"odoo-forge-harness-token={token}",
                 "--network",
                 names["network"],
                 "--publish",
@@ -178,7 +180,12 @@ def postgres_harness(
             names["database"],
         ]
         while True:
-            if runner(readiness, env={}, timeout=timeout).returncode == 0:
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise PostgresHarnessError(
+                    f"postgres readiness timed out after {startup_timeout:g}s"
+                )
+            if runner(readiness, env={}, timeout=min(timeout, remaining)).returncode == 0:
                 break
             remaining = deadline - clock()
             if remaining <= 0:

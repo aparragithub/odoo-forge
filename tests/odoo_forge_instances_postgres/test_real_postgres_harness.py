@@ -81,6 +81,11 @@ def test_harness_uses_one_token_for_owned_resources_and_yields_connection_info()
         assert session.connection.password not in " ".join(runner.calls[2][0])
         owned_commands = runner.calls[:3]
         assert all("fixture-token" in " ".join(argv) for argv, _, _ in owned_commands)
+        assert all(
+            ("--label", "odoo-forge-harness-token=fixture-token")
+            in tuple(zip(argv, argv[1:], strict=False))
+            for argv, _, _ in owned_commands
+        )
 
     assert runner.calls[-2][0][:3] == ("docker", "rm", "--force")
     assert runner.calls[-1][0][:3] == ("docker", "network", "rm")
@@ -105,6 +110,10 @@ def test_readiness_succeeds_before_the_finite_deadline() -> None:
 
     assert runner.readiness_calls == 3
     assert clock.now == pytest.approx(0.5)
+    readiness_timeouts = [
+        timeout for argv, _, timeout in runner.calls if argv[:3] == ("docker", "exec", "--")
+    ]
+    assert readiness_timeouts == pytest.approx([1.0, 0.75, 0.5])
 
 
 def test_readiness_failure_is_bounded_and_owned_resources_are_torn_down() -> None:
@@ -128,3 +137,34 @@ def test_readiness_failure_is_bounded_and_owned_resources_are_torn_down() -> Non
     assert runner.calls[-2][0][:3] == ("docker", "rm", "--force")
     assert runner.calls[-1][0][:3] == ("docker", "network", "rm")
     assert all("timeout-token" in " ".join(argv) for argv, _, _ in runner.calls)
+
+
+def test_readiness_runner_timeout_cannot_overrun_deadline() -> None:
+    clock = ScriptedClock()
+    readiness_timeouts: list[float] = []
+
+    def runner(
+        argv: Sequence[str], *, env: Mapping[str, str], timeout: float
+    ) -> CompletedProcess[str]:
+        command = tuple(argv)
+        if command[:3] == ("docker", "exec", "--"):
+            readiness_timeouts.append(timeout)
+            clock.now += timeout
+            return CompletedProcess(command, 1)
+        return CompletedProcess(command, 0)
+
+    with (
+        pytest.raises(PostgresHarnessError, match="readiness timed out"),
+        postgres_harness(
+            runner=runner,
+            clock=clock,
+            sleep=clock.sleep,
+            token_factory=lambda: "deadline-token",
+            startup_timeout=0.5,
+            poll_interval=0.25,
+        ),
+    ):
+        pytest.fail("the harness must not yield before readiness")
+
+    assert readiness_timeouts == pytest.approx([0.5])
+    assert clock.now == pytest.approx(0.5)
