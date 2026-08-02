@@ -120,6 +120,7 @@ def run_locked_migration(database: PostgresTestDatabase) -> None:
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         holder = executor.submit(hold_lock)
+        main_error: BaseException | None = None
         try:
             assert acquired.wait(timeout=5)
             with database.connect() as connection, pytest.raises(MigrationLockTimeoutError):
@@ -128,9 +129,20 @@ def run_locked_migration(database: PostgresTestDatabase) -> None:
                 except MigrationLockTimeoutError:
                     assert connection.info.transaction_status is TransactionStatus.IDLE
                     raise
+        except BaseException as error:
+            main_error = error
+            raise
         finally:
             release.set()
-        holder.result(timeout=12)
+            try:
+                holder.result(timeout=12)
+            except BaseException as holder_error:
+                if main_error is not None:
+                    raise BaseExceptionGroup(
+                        "migration assertion and lock holder both failed",
+                        (main_error, holder_error),
+                    ) from None
+                raise
 
 
 def relation_exists(database: PostgresTestDatabase, relation: str) -> bool:

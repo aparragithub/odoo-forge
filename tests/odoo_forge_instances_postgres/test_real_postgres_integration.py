@@ -12,6 +12,7 @@ from postgres_test_database import (  # type: ignore[import-not-found]
     PostgresTestDatabase,
     isolated_database,
 )
+from psycopg.errors import DivisionByZero  # type: ignore[import-not-found]
 from test_real_postgres_acceptance import (  # type: ignore[import-not-found]
     assert_registry_shape,
     create_safe_registry,
@@ -73,9 +74,9 @@ def test_external_ddl_lock_timeout_is_typed_and_bounded(database: PostgresTestDa
 
 def test_failure_rolls_back_transactional_work(database: PostgresTestDatabase) -> None:
     with database.connect() as connection:
-        with pytest.raises(RuntimeError, match="scoped acceptance operation failed"):
+        with pytest.raises(DivisionByZero):
             connection.execute("CREATE TABLE public.rollback_probe (id integer)")
-            raise RuntimeError("scoped acceptance operation failed")
+            connection.execute("SELECT 1 / 0")
         connection.rollback()
     assert not relation_exists(database, "public.rollback_probe")
 
