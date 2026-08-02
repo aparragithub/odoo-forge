@@ -111,13 +111,16 @@ def test_readiness_failure_is_bounded_and_owned_resources_are_torn_down() -> Non
     runner = ScriptedRunner(ready_after=99)
     clock = ScriptedClock()
 
-    with pytest.raises(PostgresHarnessError, match="readiness timed out"), postgres_harness(
-        runner=runner,
-        clock=clock,
-        sleep=clock.sleep,
-        token_factory=lambda: "timeout-token",
-        startup_timeout=0.5,
-        poll_interval=0.25,
+    with (
+        pytest.raises(PostgresHarnessError, match="readiness timed out"),
+        postgres_harness(
+            runner=runner,
+            clock=clock,
+            sleep=clock.sleep,
+            token_factory=lambda: "timeout-token",
+            startup_timeout=0.5,
+            poll_interval=0.25,
+        ),
     ):
         pytest.fail("the harness must not yield before readiness")
 

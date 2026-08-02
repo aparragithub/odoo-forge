@@ -53,9 +53,7 @@ class PostgresSession:
     cleanup_report: CleanupReport | None = None
 
 
-def _run(
-    argv: Sequence[str], *, env: Mapping[str, str], timeout: float
-) -> CompletedProcess[str]:
+def _run(argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> CompletedProcess[str]:
     try:
         return subprocess.run(
             list(argv),
@@ -118,8 +116,12 @@ def postgres_harness(
         _checked(
             runner,
             [
-                "docker", "network", "create", "--label",
-                f"odoo-forge-harness-token={token}", names["network"],
+                "docker",
+                "network",
+                "create",
+                "--label",
+                f"odoo-forge-harness-token={token}",
+                names["network"],
             ],
             env={},
             timeout=timeout,
@@ -127,8 +129,12 @@ def postgres_harness(
         _checked(
             runner,
             [
-                "docker", "volume", "create", "--label",
-                f"odoo-forge-harness-token={token}", names["volume"],
+                "docker",
+                "volume",
+                "create",
+                "--label",
+                f"odoo-forge-harness-token={token}",
+                names["volume"],
             ],
             env={},
             timeout=timeout,
@@ -136,11 +142,24 @@ def postgres_harness(
         _checked(
             runner,
             [
-                "docker", "run", "--detach", "--name", names["container"],
-                "--network", names["network"], "--publish", f"{port}:5432",
-                "--env", "POSTGRES_DB", "--env", "POSTGRES_USER",
-                "--env", "POSTGRES_PASSWORD", "--mount",
-                f"source={names['volume']},destination=/var/lib/postgresql/data", image,
+                "docker",
+                "run",
+                "--detach",
+                "--name",
+                names["container"],
+                "--network",
+                names["network"],
+                "--publish",
+                f"{port}:5432",
+                "--env",
+                "POSTGRES_DB",
+                "--env",
+                "POSTGRES_USER",
+                "--env",
+                "POSTGRES_PASSWORD",
+                "--mount",
+                f"source={names['volume']},destination=/var/lib/postgresql/data",
+                image,
             ],
             env={"POSTGRES_DB": names["database"], "POSTGRES_USER": names["user"], **env},
             timeout=timeout,
@@ -148,8 +167,15 @@ def postgres_harness(
 
         deadline = clock() + startup_timeout
         readiness = [
-            "docker", "exec", "--", names["container"], "pg_isready",
-            "--username", names["user"], "--dbname", names["database"],
+            "docker",
+            "exec",
+            "--",
+            names["container"],
+            "pg_isready",
+            "--username",
+            names["user"],
+            "--dbname",
+            names["database"],
         ]
         while True:
             if runner(readiness, env={}, timeout=timeout).returncode == 0:
@@ -176,8 +202,6 @@ def postgres_harness(
                 _checked(runner, argv, env={}, timeout=timeout)
             except PostgresHarnessError:
                 residuals.append(label)
-        session.cleanup_report = CleanupReport(
-            tuple(residuals), (f"volume:{names['volume']}",)
-        )
+        session.cleanup_report = CleanupReport(tuple(residuals), (f"volume:{names['volume']}",))
         if residuals and body_error is None:
             raise PostgresHarnessError(f"cleanup incomplete: {', '.join(residuals)}")
