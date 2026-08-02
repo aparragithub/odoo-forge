@@ -1305,7 +1305,7 @@ EXPECTED_SP4B_COMMAND_CATALOG: dict[str, str] = {
     "C44": "python docs/tools/platform_portfolio/validate.py --root .",
     "C45": "uv run pytest tests/odoo_forge_instances_postgres -m 'not integration and not real_docker'",  # noqa: E501
     "C46": (
-        "uv run pytest -m 'integration and real_docker' "
+        "uv run --with 'psycopg[binary]==3.2.10' pytest -m 'integration and real_docker' "
         "tests/odoo_forge_instances_postgres/test_real_postgres_integration.py"
     ),
 }
