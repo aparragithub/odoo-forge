@@ -38,22 +38,7 @@ jobs:
         run: uv build
 
       - name: Smoke-test the built wheel in a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/smoke
-          uv pip install --python /tmp/smoke/bin/python dist/*.whl
-          /tmp/smoke/bin/forge --help > /dev/null
-          /tmp/smoke/bin/python - <<'PY'
-          import importlib
-          for m in (
-              "odoo_forge", "odoo_forge_cli", "odoo_forge_git",
-              "odoo_forge_workspace", "odoo_forge_docker", "odoo_forge_registry",
-              "odoo_forge_postgres_docker", "odoo_forge_catalog",
-              "odoo_forge_pipeline_github",
-          ):
-              importlib.import_module(m)
-          print("all packages import from the built wheel")
-          PY
+        run: bash scripts/release_smoke.sh dist
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
