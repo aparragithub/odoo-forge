@@ -1,3 +1,15 @@
 """Instance registry PostgreSQL schema and migration package (inert marker)."""
 
-__all__: list[str] = []
+from .errors import (
+    CatalogVerificationError,
+    MigrationAutocommitError,
+    MigrationLockTimeoutError,
+    RegistryTableRejectedError,
+)
+
+__all__ = [
+    "MigrationAutocommitError",
+    "MigrationLockTimeoutError",
+    "RegistryTableRejectedError",
+    "CatalogVerificationError",
+]
