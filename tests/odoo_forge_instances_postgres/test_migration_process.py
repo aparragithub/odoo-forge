@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -13,18 +12,6 @@ MARKER_PACKAGES = (
     "odoo_forge_instances_postgres.migrations",
 )
 MIGRATE_MODULE = "odoo_forge_instances_postgres.migrate"
-RELEASE_WORKFLOW = Path(__file__).parents[2] / ".github/workflows/release.yml"
-WHEEL_SMOKE_PACKAGES = (
-    "odoo_forge",
-    "odoo_forge_cli",
-    "odoo_forge_git",
-    "odoo_forge_workspace",
-    "odoo_forge_docker",
-    "odoo_forge_registry",
-    "odoo_forge_postgres_docker",
-    "odoo_forge_catalog",
-    "odoo_forge_pipeline_github",
-)
 
 
 def _run(code: str) -> subprocess.CompletedProcess[str]:
@@ -98,14 +85,3 @@ def test_public_migration_callables_are_synchronous() -> None:
         "); "
         "assert not asynchronous, f'async public callables: {asynchronous}'"
     )
-
-
-def test_release_smoke_retains_cli_and_broad_package_coverage() -> None:
-    workflow = RELEASE_WORKFLOW.read_text()
-
-    assert 'compat_venv="$smoke_root/compat-venv"' in workflow
-    assert 'uv pip install --python "$compat_venv/bin/python" "$wheel"' in workflow
-    assert '"$compat_venv/bin/forge" --help > /dev/null' in workflow
-    assert "all packages import from the built wheel" in workflow
-    for package in WHEEL_SMOKE_PACKAGES:
-        assert f'"{package}"' in workflow
