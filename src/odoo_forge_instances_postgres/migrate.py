@@ -10,6 +10,21 @@ from __future__ import annotations
 import importlib.resources
 from typing import Protocol
 
+from .errors import (
+    CatalogVerificationError,
+    MigrationAutocommitError,
+    MigrationLockTimeoutError,
+    RegistryTableRejectedError,
+)
+
+__all__ = [
+    "MigrationAutocommitError",
+    "MigrationLockTimeoutError",
+    "RegistryTableRejectedError",
+    "CatalogVerificationError",
+    "run_migration",
+]
+
 ADVISORY_LOCK_KEY_1 = 1329876815
 ADVISORY_LOCK_KEY_2 = 1230128945
 LOCK_TIMEOUT = "5s"
@@ -55,22 +70,6 @@ class Cursor(Protocol):
     def execute(self, query: str) -> object: ...
 
     def fetchone(self) -> tuple[object, ...] | None: ...
-
-
-class MigrationAutocommitError(Exception):
-    """Raised when `run_migration` is invoked on an autocommit connection."""
-
-
-class MigrationLockTimeoutError(Exception):
-    """Raised when a lock wait exceeds `lock_timeout` (SQLSTATE 55P03)."""
-
-
-class RegistryTableRejectedError(Exception):
-    """Raised when the existing registry table fails the catalog predicate."""
-
-
-class CatalogVerificationError(Exception):
-    """Raised when the catalog predicate returns no matching relation."""
 
 
 def _migration_sql() -> str:
