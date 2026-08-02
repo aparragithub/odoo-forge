@@ -70,10 +70,24 @@ def _run(argv: Sequence[str], *, env: Mapping[str, str], timeout: float) -> Comp
 def _checked(
     runner: Runner, argv: Sequence[str], *, env: Mapping[str, str], timeout: float
 ) -> CompletedProcess[str]:
-    result = runner(argv, env=env, timeout=timeout)
+    try:
+        result = runner(argv, env=env, timeout=timeout)
+    except PostgresHarnessError:
+        raise
+    except Exception:
+        raise PostgresHarnessError("docker command execution failed") from None
     if result.returncode != 0:
         raise PostgresHarnessError(f"docker command failed with exit code {result.returncode}")
     return result
+
+
+def _probe(runner: Runner, argv: Sequence[str], *, timeout: float) -> CompletedProcess[str]:
+    try:
+        return runner(argv, env={}, timeout=timeout)
+    except PostgresHarnessError:
+        raise
+    except Exception:
+        raise PostgresHarnessError("docker command execution failed") from None
 
 
 def _names(token: str) -> dict[str, str]:
@@ -86,6 +100,57 @@ def _names(token: str) -> dict[str, str]:
     }
 
 
+def _ownership(runner: Runner, kind: str, name: str, token: str, *, timeout: float) -> str:
+    label_path = ".Config.Labels" if kind == "container" else ".Labels"
+    result = _probe(
+        runner,
+        [
+            "docker",
+            "inspect",
+            f'--format={{{{index {label_path} "odoo-forge-harness-token"}}}}',
+            name,
+        ],
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").lower()
+        return "missing" if "no such" in stderr or "not found" in stderr else "inspect-failed"
+    return "owned" if (result.stdout or "").strip() == token else "foreign"
+
+
+def _cleanup_resource(
+    runner: Runner,
+    kind: str,
+    name: str,
+    token: str,
+    argv: Sequence[str],
+    residuals: list[str],
+    *,
+    timeout: float,
+) -> bool:
+    try:
+        state = _ownership(runner, kind, name, token, timeout=timeout)
+    except Exception:
+        state = "inspect-failed"
+    if state == "missing":
+        return False
+    if state == "foreign":
+        residuals.append(f"{kind}:ownership-mismatch")
+        return False
+    if state == "inspect-failed":
+        residuals.append(f"{kind}:inspect-failed")
+        return False
+    try:
+        result = _probe(runner, argv, timeout=timeout)
+    except PostgresHarnessError:
+        residuals.append(f"{kind}:remove-failed")
+        return False
+    if result.returncode != 0:
+        residuals.append(f"{kind}:remove-failed:{result.returncode}")
+        return False
+    return True
+
+
 @contextmanager
 def postgres_harness(
     *,
@@ -94,6 +159,7 @@ def postgres_harness(
     image: str = "postgres:16",
     startup_timeout: float = 30.0,
     poll_interval: float = 0.1,
+    remove_persisted_state: bool = False,
     runner: Runner = _run,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
@@ -111,8 +177,10 @@ def postgres_harness(
         PostgresConnectionInfo(host, port, names["database"], names["user"], password)
     )
     timeout = startup_timeout
+    created: set[str] = set()
     body_error: BaseException | None = None
     try:
+        created.add("network")
         _checked(
             runner,
             [
@@ -126,6 +194,7 @@ def postgres_harness(
             env={},
             timeout=timeout,
         )
+        created.add("volume")
         _checked(
             runner,
             [
@@ -139,6 +208,7 @@ def postgres_harness(
             env={},
             timeout=timeout,
         )
+        created.add("container")
         _checked(
             runner,
             [
@@ -166,7 +236,6 @@ def postgres_harness(
             env={"POSTGRES_DB": names["database"], "POSTGRES_USER": names["user"], **env},
             timeout=timeout,
         )
-
         deadline = clock() + startup_timeout
         readiness = [
             "docker",
@@ -185,8 +254,20 @@ def postgres_harness(
                 raise PostgresHarnessError(
                     f"postgres readiness timed out after {startup_timeout:g}s"
                 )
-            if runner(readiness, env={}, timeout=min(timeout, remaining)).returncode == 0:
+            if _probe(runner, readiness, timeout=min(timeout, remaining)).returncode == 0:
                 break
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise PostgresHarnessError(
+                    f"postgres readiness timed out after {startup_timeout:g}s"
+                )
+            state = _probe(
+                runner,
+                ["docker", "inspect", "--format={{.State.Status}}", names["container"]],
+                timeout=min(timeout, remaining),
+            )
+            if state.returncode == 0 and (state.stdout or "").strip() in {"exited", "dead"}:
+                raise PostgresHarnessError("postgres process exited before readiness")
             remaining = deadline - clock()
             if remaining <= 0:
                 raise PostgresHarnessError(
@@ -200,15 +281,43 @@ def postgres_harness(
         raise
     finally:
         residuals: list[str] = []
-        cleanup = [
+        cleanup = (
             ("container", ["docker", "rm", "--force", names["container"]]),
             ("network", ["docker", "network", "rm", names["network"]]),
-        ]
-        for label, argv in cleanup:
-            try:
-                _checked(runner, argv, env={}, timeout=timeout)
-            except PostgresHarnessError:
-                residuals.append(label)
-        session.cleanup_report = CleanupReport(tuple(residuals), (f"volume:{names['volume']}",))
+        )
+        for kind, argv in cleanup:
+            if kind in created:
+                _cleanup_resource(
+                    runner, kind, names[kind], token, argv, residuals, timeout=timeout
+                )
+        retained: list[str] = []
+        if "volume" in created:
+            volume_name = names["volume"]
+            if remove_persisted_state:
+                _cleanup_resource(
+                    runner,
+                    "volume",
+                    volume_name,
+                    token,
+                    ["docker", "volume", "rm", volume_name],
+                    residuals,
+                    timeout=timeout,
+                )
+            else:
+                try:
+                    volume_state = _ownership(runner, "volume", volume_name, token, timeout=timeout)
+                except Exception:
+                    volume_state = "inspect-failed"
+                if volume_state == "owned":
+                    retained.append(f"volume:{volume_name}")
+                elif volume_state == "missing":
+                    pass
+                elif volume_state == "foreign":
+                    residuals.append("volume:ownership-mismatch")
+                else:
+                    residuals.append("volume:inspect-failed")
+        session.cleanup_report = CleanupReport(tuple(residuals), tuple(retained))
         if residuals and body_error is None:
             raise PostgresHarnessError(f"cleanup incomplete: {', '.join(residuals)}")
+        if residuals and body_error is not None:
+            body_error.add_note(f"postgres harness cleanup residuals: {', '.join(residuals)}")
