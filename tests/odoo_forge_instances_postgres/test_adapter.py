@@ -202,6 +202,7 @@ def test_list_scopes_and_orders_records_and_empty_scope_commits() -> None:
         )
         == ()
     )
+    assert (empty_connection.commit_count, empty_connection.rollback_count) == (1, 0)
 
 
 def test_get_translates_a_missing_row_to_typed_not_found() -> None:
@@ -232,7 +233,6 @@ def test_failures_rollback_once_preserve_identity_and_do_not_retry(failure_locat
     connection = ScriptedConnection(
         cursor,
         commit_error=failure if failure_location == "commit" else None,
-        rollback_error=RuntimeError("rollback") if failure_location == "execute" else None,
     )
     acquirer = ScriptedAcquirer(connection)
 
@@ -246,3 +246,25 @@ def test_failures_rollback_once_preserve_identity_and_do_not_retry(failure_locat
     assert connection.rollback_count == 1 and acquirer.calls == 1 and acquirer.releases[0]
     assert connection.commit_count == (1 if failure_location == "commit" else 0)
     assert len(cursor.executed) == (0 if failure_location == "execute" else 1)
+
+
+def test_rollback_failure_is_logged_without_replacing_operation_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    operation_failure = RuntimeError("execute")
+    rollback_failure = RuntimeError("rollback")
+    connection = ScriptedConnection(
+        ScriptedCursor(error=operation_failure, error_at="execute"),
+        rollback_error=rollback_failure,
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        PostgresInstanceRegistry(ScriptedAcquirer(connection)).store(_record("instance-1"))
+
+    assert excinfo.value is operation_failure
+    assert connection.rollback_count == 1
+    assert len(caplog.records) == 1
+    record = caplog.records[0]
+    assert record.name == "odoo_forge_instances_postgres.adapter"
+    assert record.getMessage() == "Transaction rollback failed"
+    assert record.exc_info is not None and record.exc_info[1] is rollback_failure

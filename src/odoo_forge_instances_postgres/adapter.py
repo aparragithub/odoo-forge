@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from contextlib import AbstractContextManager, suppress
+from contextlib import AbstractContextManager
 from typing import Protocol, TypeVar, cast
 
 from odoo_forge.instance_registry import (
@@ -17,6 +18,8 @@ from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
 
 __all__ = ["Connection", "ConnectionAcquirer", "Cursor", "PostgresInstanceRegistry"]
+
+_logger = logging.getLogger(__name__)
 
 
 class Cursor(Protocol):
@@ -113,8 +116,10 @@ class PostgresInstanceRegistry(InstanceRegistry):
                 result = operation(connection)
                 connection.commit()
             except Exception:
-                with suppress(Exception):
+                try:
                     connection.rollback()
+                except Exception:
+                    _logger.exception("Transaction rollback failed")
                 raise
             return result
 
