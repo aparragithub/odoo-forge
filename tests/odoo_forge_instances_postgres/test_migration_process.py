@@ -32,7 +32,9 @@ def _assert_clean_exit(code: str) -> None:
 @pytest.mark.parametrize(
     "code",
     [
-        "import odoo_forge_instances_postgres as p; assert p.__all__ == []",
+        "import odoo_forge_instances_postgres as p; "
+        "assert p.__all__ == ['MigrationAutocommitError', 'MigrationLockTimeoutError', "
+        "'RegistryTableRejectedError', 'CatalogVerificationError']",
         "import odoo_forge_instances_postgres.migrations as p; assert p.__all__ == []",
         "import odoo_forge_instances_postgres.migrate as m; assert callable(m.run_migration)",
     ],
@@ -49,6 +51,16 @@ def test_importing_a_marker_does_not_load_the_migration_module(marker: str) -> N
         f"import sys, {marker}; "
         f"assert {MIGRATE_MODULE!r} not in sys.modules, "
         f"'{marker} transitively imported the migration module'"
+    )
+
+
+def test_root_import_exports_errors_without_loading_runtime_modules() -> None:
+    _assert_clean_exit(
+        "import sys, odoo_forge_instances_postgres as p; "
+        "assert 'odoo_forge_instances_postgres.migrate' not in sys.modules; "
+        "assert 'asyncio' not in sys.modules; "
+        "assert p.MigrationAutocommitError.__module__ == "
+        "'odoo_forge_instances_postgres.errors'"
     )
 
 
