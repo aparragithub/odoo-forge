@@ -23,8 +23,10 @@ class _Backend:
 
     def status(self, ref: InstanceRef) -> InstanceStatus:
         self.status_calls.append(ref)
-        healthy = RoleStatus(running=True, state="healthy", ready=True)
-        return InstanceStatus(odoo=healthy, postgres=healthy)
+        return InstanceStatus(
+            odoo=RoleStatus(running=True, state="healthy", ready=True),
+            postgres=RoleStatus(running=True, state="no_healthcheck", ready=True),
+        )
 
 
 class _Cursor:
@@ -88,7 +90,11 @@ def test_composition_resolves_catalog_and_runs_status_through_registry() -> None
     response = TestClient(app).get("/api/v1/tenants/tenant-1/projects/project-1/instances")
     assert response.status_code == 200
     assert response.json()["outcome"] == "fresh"
-    assert [ref.instance for ref in backend.status_calls] == ["alpha"]
+    assert response.json()["rows"][0]["live"]["postgres"] == {
+        "running": True,
+        "state": "no_healthcheck",
+        "ready": True,
+    }
 
 
 def test_composition_rejects_unresolved_backend_catalog() -> None:
