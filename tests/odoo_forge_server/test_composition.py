@@ -14,6 +14,7 @@ from odoo_forge.provider_catalog import (
     ProviderKind,
 )
 from odoo_forge_instances_postgres.adapter import Connection
+from odoo_forge_server.app import UiRuntime
 from odoo_forge_server.composition import create_production_app
 
 
@@ -95,6 +96,28 @@ def test_composition_resolves_catalog_and_runs_status_through_registry() -> None
         "state": "no_healthcheck",
         "ready": True,
     }
+
+
+def test_composition_injects_the_same_reconciler_into_the_ui() -> None:
+    backend = _Backend()
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": backend},
+        acquire_connection=lambda: contextmanager(_connection)(),
+        ui_runtime=UiRuntime("127.0.0.1"),
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+    api = client.get("/api/v1/tenants/tenant-1/projects/project-1/instances")
+    ui = client.get("/ui/tenants/tenant-1/projects/project-1/instances")
+
+    assert api.status_code == ui.status_code == 200
+    assert api.json()["outcome"] == "fresh"
+    assert "Aggregate outcome: <strong>fresh</strong>" in ui.text
+    assert [ref.network for ref in backend.status_calls] == [
+        "odoo-forge-project-1-alpha",
+        "odoo-forge-project-1-alpha",
+    ]
 
 
 def test_composition_rejects_unresolved_backend_catalog() -> None:

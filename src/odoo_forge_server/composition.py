@@ -23,7 +23,7 @@ from odoo_forge_instances_postgres.adapter import (
     ConnectionAcquirer,
     PostgresInstanceRegistry,
 )
-from odoo_forge_server.app import create_app
+from odoo_forge_server.app import UiRuntime, create_app
 
 BackendAdapter = Any
 
@@ -43,6 +43,7 @@ def create_production_app(
     provider_catalog: ProviderCatalog,
     backend_adapters: Mapping[str, BackendAdapter] | None = None,
     acquire_connection: Callable[[], AbstractContextManager[Connection]] | None = None,
+    ui_runtime: UiRuntime | None = None,
 ) -> FastAPI:
     """Compose approved adapters while injecting only the backend status callable."""
     resolution = ProviderCatalogResolver(provider_catalog).resolve(ProviderKind.BACKEND)
@@ -59,7 +60,7 @@ def create_production_app(
     acquirer = acquire_connection or _psycopg_acquirer(database_url)
     registry: InstanceRegistry = PostgresInstanceRegistry(acquirer)
     reconciler = Reconciler(registry, backend.status)
-    app = create_app(reconciler=reconciler)
+    app = create_app(reconciler=reconciler, ui_runtime=ui_runtime)
     app.state.registry = registry
     app.state.backend_status = backend.status
     app.state.reconciler = reconciler
