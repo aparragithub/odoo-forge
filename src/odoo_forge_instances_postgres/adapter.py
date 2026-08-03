@@ -7,14 +7,17 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import Protocol, TypeVar, cast
 
+from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.instance_registry import (
     InstancePointer,
     InstanceRecord,
     InstanceRecordNotFoundError,
+    InstanceRegistrationConflictError,
+    MissingReceiptError,
 )
 from odoo_forge.instance_registry.types import InstanceId
 from odoo_forge.ports.instance_registry import InstanceRegistry
-from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef
+from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
 
 __all__ = ["Connection", "ConnectionAcquirer", "Cursor", "PostgresInstanceRegistry"]
@@ -65,6 +68,19 @@ FROM public.instance_registry
 WHERE tenant_id = %s AND project_id = %s
 ORDER BY instance_id ASC
 """
+_RECEIPT_COLUMNS = (
+    f"{_COLUMNS}, operation_id, request_digest, owned_resource_ids, live_proof_expected"
+)
+_REGISTER_LOOKUP_SQL = f"""
+SELECT {_RECEIPT_COLUMNS}
+FROM public.instance_registry
+WHERE operation_id = %s OR (tenant_id, project_id, instance_id) = (%s, %s, %s)
+"""
+_REGISTER_INSERT_SQL = f"""
+INSERT INTO public.instance_registry ({_RECEIPT_COLUMNS})
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+RETURNING {_RECEIPT_COLUMNS}
+"""
 
 
 def _record_parameters(record: InstanceRecord) -> tuple[object, ...]:
@@ -84,6 +100,34 @@ def _pointer_parameters(pointer: InstancePointer) -> tuple[object, ...]:
         pointer.scope.project_id,
         pointer.instance_id.value,
     )
+
+
+def _receipt_parameters(receipt: OwnershipReceipt) -> tuple[object, ...]:
+    return (
+        receipt.operation.operation_id,
+        receipt.operation.request_digest,
+        list(receipt.owned_resource_ids),
+        receipt.live_proof_expected,
+    )
+
+
+def _receipt_record_parameters(
+    record: InstanceRecord, receipt: OwnershipReceipt
+) -> tuple[object, ...]:
+    return (*_record_parameters(record), *_receipt_parameters(receipt))
+
+
+def _record_from_receipt_row(row: tuple[object, ...]) -> InstanceRecord:
+    *base_row, operation_id, request_digest, owned_resource_ids, live_proof_expected = row
+    record = _record_from_row(tuple(base_row))
+    receipt = OwnershipReceipt(
+        operation=DurableOperationIdentity(
+            operation_id=cast(str, operation_id), request_digest=cast(str, request_digest)
+        ),
+        owned_resource_ids=tuple(cast("list[str]", owned_resource_ids)),
+        live_proof_expected=cast(bool, live_proof_expected),
+    )
+    return record.model_copy(update={"receipt": receipt})
 
 
 def _record_from_row(row: tuple[object, ...]) -> InstanceRecord:
@@ -150,5 +194,31 @@ class PostgresInstanceRegistry(InstanceRegistry):
             cursor = connection.cursor()
             cursor.execute(_LIST_SQL, (scope.tenant.value, scope.project_id))
             return tuple(_record_from_row(row) for row in cursor.fetchall())
+
+        return self._transaction(operation)
+
+    def register(self, record: InstanceRecord) -> InstanceRecord:
+        receipt = record.receipt
+        if receipt is None:
+            raise MissingReceiptError(record.pointer)
+
+        def operation(connection: Connection) -> InstanceRecord:
+            cursor = connection.cursor()
+            cursor.execute(
+                _REGISTER_LOOKUP_SQL,
+                (receipt.operation.operation_id, *_pointer_parameters(record.pointer)),
+            )
+            rows = cursor.fetchall()
+            for row in rows:
+                existing = _record_from_receipt_row(row)
+                if existing == record:
+                    return existing
+            if rows:
+                raise InstanceRegistrationConflictError(record.pointer)
+            cursor.execute(_REGISTER_INSERT_SQL, _receipt_record_parameters(record, receipt))
+            inserted = cursor.fetchone()
+            if inserted is None:
+                raise RuntimeError("register did not return an authoritative row")
+            return _record_from_receipt_row(inserted)
 
         return self._transaction(operation)

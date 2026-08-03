@@ -253,6 +253,23 @@ def test_shipped_migration_sql_is_non_destructive() -> None:
     assert not _destructive_keywords(sql)
 
 
+def test_shipped_migration_sql_adds_nullable_receipt_columns_and_unique_operation_index() -> None:
+    """Lineage evidence is additive: nullable columns plus a partial unique index."""
+
+    sql = (
+        importlib.resources.files("odoo_forge_instances_postgres.migrations")
+        .joinpath("0001_instance_registry.sql")
+        .read_text(encoding="utf-8")
+    )
+    upper = sql.upper()
+    for column in ("OPERATION_ID", "REQUEST_DIGEST", "OWNED_RESOURCE_IDS", "LIVE_PROOF_EXPECTED"):
+        assert f"ADD COLUMN IF NOT EXISTS {column}" in upper
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS" in upper
+    assert "ON PUBLIC.INSTANCE_REGISTRY (OPERATION_ID)" in upper
+    assert "WHERE OPERATION_ID IS NOT NULL" in upper
+    assert not _destructive_keywords(sql)
+
+
 def test_public_surface_exposes_no_reversal_entry_point() -> None:
     """The module exports the forward migration and no way to reverse it."""
 

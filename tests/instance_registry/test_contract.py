@@ -10,14 +10,17 @@ from typing import Any, cast
 import pytest
 from pydantic import ValidationError
 
+from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.instance_registry import (
     InstanceId,
     InstancePointer,
     InstanceRecord,
     InstanceRecordNotFoundError,
+    InstanceRegistrationConflictError,
     InstanceRegistryError,
+    MissingReceiptError,
 )
-from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef
+from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
 
 
@@ -37,6 +40,13 @@ def _record() -> InstanceRecord:
             resource_kind="instance",
             ownership=ResourceOwnership.CREATED,
         ),
+    )
+
+
+def _receipt(operation_id: str = "postgres-docker:op-1") -> OwnershipReceipt:
+    return OwnershipReceipt(
+        operation=DurableOperationIdentity(operation_id=operation_id, request_digest="a" * 64),
+        owned_resource_ids=("container-1",),
     )
 
 
@@ -116,6 +126,16 @@ def test_instance_record_rejects_invalid_composed_resource() -> None:
         InstanceRecord(pointer=_pointer(), resource={"identifier": "resource-1"})  # type: ignore[arg-type]
 
 
+def test_instance_record_defaults_to_no_receipt_and_accepts_lineage_evidence() -> None:
+    bare = _record()
+    assert bare.receipt is None
+
+    lineage = _record().model_copy(update={"receipt": _receipt()})
+    assert lineage.receipt == _receipt()
+    with pytest.raises(ValidationError):
+        cast(Any, lineage).receipt = _receipt("postgres-docker:op-2")
+
+
 def test_instance_registry_exports_only_the_public_domain_contract() -> None:
     instance_registry = importlib.import_module("odoo_forge.instance_registry")
 
@@ -124,7 +144,9 @@ def test_instance_registry_exports_only_the_public_domain_contract() -> None:
         "InstancePointer",
         "InstanceRecord",
         "InstanceRecordNotFoundError",
+        "InstanceRegistrationConflictError",
         "InstanceRegistryError",
+        "MissingReceiptError",
     }
     assert all(
         "image" not in name.lower() and "ghcr" not in name.lower()
@@ -138,3 +160,19 @@ def test_not_found_error_is_typed_and_redacts_unrelated_input() -> None:
     assert isinstance(error, InstanceRegistryError)
     assert error.pointer == _pointer("private-instance")
     assert str(error) == "instance record not found: project-1/private-instance"
+
+
+def test_missing_receipt_error_is_typed() -> None:
+    error = MissingReceiptError(_pointer("private-instance"))
+
+    assert isinstance(error, InstanceRegistryError)
+    assert error.pointer == _pointer("private-instance")
+    assert str(error) == "registration receipt required: project-1/private-instance"
+
+
+def test_registration_conflict_error_is_typed() -> None:
+    error = InstanceRegistrationConflictError(_pointer("private-instance"))
+
+    assert isinstance(error, InstanceRegistryError)
+    assert error.pointer == _pointer("private-instance")
+    assert str(error) == "instance registration conflict: project-1/private-instance"

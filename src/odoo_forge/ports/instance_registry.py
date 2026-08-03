@@ -24,5 +24,15 @@ class InstanceRegistry(Protocol):
         """Return records in the scope in deterministic instance-id order."""
         pass
 
+    def register(self, record: InstanceRecord) -> InstanceRecord:
+        """Persist one receipt-bearing registration; compare, never replace.
+
+        Requires `record.receipt`. Looks up any existing row by the
+        receipt's operation identity: an exact match returns that row
+        unchanged (idempotent retry, no second write); a materially
+        different match raises without mutating existing state.
+        """
+        pass
+
 
 __all__ = ["InstanceRegistry"]

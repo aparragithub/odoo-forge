@@ -17,4 +17,30 @@ class InstanceRecordNotFoundError(InstanceRegistryError):
         )
 
 
-__all__ = ["InstanceRecordNotFoundError", "InstanceRegistryError"]
+class MissingReceiptError(InstanceRegistryError):
+    """Raised when a registration is submitted without required lineage receipt."""
+
+    def __init__(self, pointer: InstancePointer) -> None:
+        self.pointer = pointer
+        super().__init__(
+            f"registration receipt required: {pointer.scope.project_id}/{pointer.instance_id.value}"
+        )
+
+
+class InstanceRegistrationConflictError(InstanceRegistryError):
+    """Raised when a registration reuses an operation identity with different data."""
+
+    def __init__(self, pointer: InstancePointer) -> None:
+        self.pointer = pointer
+        super().__init__(
+            "instance registration conflict: "
+            f"{pointer.scope.project_id}/{pointer.instance_id.value}"
+        )
+
+
+__all__ = [
+    "InstanceRecordNotFoundError",
+    "InstanceRegistrationConflictError",
+    "InstanceRegistryError",
+    "MissingReceiptError",
+]

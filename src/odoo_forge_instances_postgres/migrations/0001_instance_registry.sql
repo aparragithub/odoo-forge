@@ -12,3 +12,16 @@ CREATE TABLE IF NOT EXISTS public.instance_registry (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, project_id, instance_id)
 );
+
+-- Lineage/receipt evidence for authoritative registrations. Additive and
+-- nullable: legacy rows written before this evidence existed keep NULL
+-- values rather than fabricated legacy evidence.
+ALTER TABLE public.instance_registry
+    ADD COLUMN IF NOT EXISTS operation_id TEXT,
+    ADD COLUMN IF NOT EXISTS request_digest TEXT,
+    ADD COLUMN IF NOT EXISTS owned_resource_ids TEXT[],
+    ADD COLUMN IF NOT EXISTS live_proof_expected BOOLEAN;
+
+CREATE UNIQUE INDEX IF NOT EXISTS instance_registry_operation_id_key
+    ON public.instance_registry (operation_id)
+    WHERE operation_id IS NOT NULL;

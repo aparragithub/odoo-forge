@@ -7,16 +7,26 @@ from typing import get_type_hints
 
 import pytest
 
+from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.instance_registry import (
     InstanceId,
     InstancePointer,
     InstanceRecord,
     InstanceRecordNotFoundError,
+    InstanceRegistrationConflictError,
+    MissingReceiptError,
 )
 from odoo_forge.ports.instance_registry import InstanceRegistry
-from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef
+from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
 from tests.instance_registry.test_contract import _trap_external_io
+
+
+def _receipt(operation_id: str = "postgres-docker:op-1") -> OwnershipReceipt:
+    return OwnershipReceipt(
+        operation=DurableOperationIdentity(operation_id=operation_id, request_digest="a" * 64),
+        owned_resource_ids=("container-1",),
+    )
 
 
 def _scope(project_id: str = "project-1") -> ProjectScope:
@@ -39,6 +49,7 @@ def _record(instance_id: str, project_id: str = "project-1") -> InstanceRecord:
 class _ConformingInstanceRegistry:
     def __init__(self) -> None:
         self._records: dict[tuple[str, str, str], InstanceRecord] = {}
+        self._by_operation: dict[str, InstanceRecord] = {}
 
     def store(self, record: InstanceRecord) -> InstanceRecord:
         key = _key(record.pointer)
@@ -54,6 +65,21 @@ class _ConformingInstanceRegistry:
     def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]:
         records = (record for record in self._records.values() if record.pointer.scope == scope)
         return tuple(sorted(records, key=lambda record: record.pointer.instance_id.value))
+
+    def register(self, record: InstanceRecord) -> InstanceRecord:
+        if record.receipt is None:
+            raise MissingReceiptError(record.pointer)
+        key = _key(record.pointer)
+        existing = self._by_operation.get(record.receipt.operation.operation_id) or (
+            self._records.get(key)
+        )
+        if existing is not None:
+            if existing == record:
+                return existing
+            raise InstanceRegistrationConflictError(record.pointer)
+        self._by_operation[record.receipt.operation.operation_id] = record
+        self._records[key] = record
+        return record
 
 
 def _key(pointer: InstancePointer) -> tuple[str, str, str]:
@@ -75,6 +101,9 @@ def test_runtime_protocol_check_only_requires_operation_presence() -> None:
         def list(self) -> None:
             return None
 
+        def register(self) -> None:
+            return None
+
     assert isinstance(_IncompatibleOperationShapes(), InstanceRegistry)
 
 
@@ -92,11 +121,13 @@ def test_port_declares_exact_core_signatures_and_return_types() -> None:
         "store": ["self", "record"],
         "get": ["self", "pointer"],
         "list": ["self", "scope"],
+        "register": ["self", "record"],
     }
     expected_types = {
         "store": (InstanceRecord, InstanceRecord),
         "get": (InstancePointer, InstanceRecord),
         "list": (ProjectScope, tuple[InstanceRecord, ...]),
+        "register": (InstanceRecord, InstanceRecord),
     }
 
     for name, parameters in expected_parameters.items():
@@ -160,3 +191,24 @@ def test_get_raises_typed_not_found_error_for_missing_pointer() -> None:
         registry.get(pointer)
 
     assert excinfo.value.pointer == pointer
+
+
+def test_register_requires_a_receipt() -> None:
+    registry = _ConformingInstanceRegistry()
+
+    with pytest.raises(MissingReceiptError):
+        registry.register(_record("instance-1"))
+
+
+def test_register_rejects_reuse_of_the_same_pointer_under_a_new_operation_id() -> None:
+    registry = _ConformingInstanceRegistry()
+    original = _record("instance-1").model_copy(
+        update={"receipt": _receipt("postgres-docker:op-1")}
+    )
+    reuse = _record("instance-1").model_copy(update={"receipt": _receipt("postgres-docker:op-2")})
+    registry.register(original)
+
+    with pytest.raises(InstanceRegistrationConflictError):
+        registry.register(reuse)
+
+    assert registry.get(original.pointer) == original
