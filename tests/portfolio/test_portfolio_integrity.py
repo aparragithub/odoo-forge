@@ -210,6 +210,7 @@ EXPECTED_UNRELATED_DECOMPOSITION_DIGESTS = {
 
 EXPECTED_SP4_CONTRACTS = {
     "CHG-SP4B-REGISTRY-POSTGRES": {
+        "status": "ready_for_proposal",
         "inputs": ["CHG-SP4A-INSTANCE-REGISTRY"],
         "dependencies": ["CHG-SP4A-INSTANCE-REGISTRY"],
         "immediate_parent": "CHG-SP4A-INSTANCE-REGISTRY",
@@ -260,6 +261,7 @@ EXPECTED_SP4_CONTRACTS = {
         },
     },
     "CHG-SP4C-CONTROL-PLANE-EDGE": {
+        "status": "delivered",
         "inputs": [
             "CHG-PROVIDER-CATALOG",
             "CHG-SP4B-REAL-ACCEPTANCE",
@@ -382,7 +384,7 @@ def _dec_cp_stack_governance_errors(plan: dict[str, Any]) -> list[str]:
             errors.append(f"{label}-blocker")
         if decomposition.get("type") != "implementation_change":
             errors.append(f"{label}-type")
-        if decomposition.get("status") != "ready_for_proposal":
+        if decomposition.get("status") != contract["status"]:
             errors.append(f"{label}-status")
         for field in (
             "inputs",
@@ -856,6 +858,18 @@ def test_dec_cp_stack_rejects_stale_blocker_type_and_status(live_plan: dict[str,
         decomposition[field] = value
 
         assert error_name in _dec_cp_stack_governance_errors(mutated)
+
+
+def test_dec_cp_stack_rejects_stale_sp4c_delivery_status(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    decomposition = next(
+        entry for entry in mutated["decompositions"] if entry["id"] == "CHG-SP4C-CONTROL-PLANE-EDGE"
+    )
+    decomposition["status"] = "ready_for_proposal"
+
+    assert "chg-sp4c-status" in _dec_cp_stack_governance_errors(mutated)
 
 
 def test_dec_cp_stack_rejects_changed_dependency_parent_output_and_forecast(
