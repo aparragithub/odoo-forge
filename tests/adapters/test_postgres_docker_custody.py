@@ -5,6 +5,7 @@ from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
+from typing import Any
 
 import pytest
 from pydantic import ValidationError
@@ -74,7 +75,7 @@ def _request(
     ],
 )
 def test_request_contract_rejects_invalid_identity_and_resource(
-    changes: dict[str, object], message: str
+    changes: dict[str, Any], message: str
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         _request(**changes)
@@ -148,7 +149,14 @@ def test_conflicting_state_and_operation_fail_closed(tmp_path: Path, operation: 
         _adapter(authority, request).confirm(request)
 
 
-def _write_record(authority, request, *, operation=None, docker_id=None, state):
+def _write_record(
+    authority: LocalOwnershipAuthority,
+    request: CustodyRequest,
+    *,
+    operation: str | None = None,
+    docker_id: str | None = None,
+    state: str,
+) -> None:
     authority.write({"operation": operation or request.operation.operation_id, "kind": "container", "name": request.resource_name, "docker_id": docker_id or request.resource_id, "state": state})  # noqa: E501
 
 
