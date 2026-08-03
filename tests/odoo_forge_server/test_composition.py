@@ -7,12 +7,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from odoo_forge.backend.status import InstanceRef, InstanceStatus, RoleStatus
+from odoo_forge.control_plane.authority import ControlPlaneAuthority
+from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.provider_catalog import (
     ApprovedProviderAdapter,
     GlobalProviderBinding,
     ProviderCatalog,
     ProviderKind,
 )
+from odoo_forge.resource_ownership import OwnershipReceipt
 from odoo_forge_instances_postgres.adapter import Connection
 from odoo_forge_server.app import UiRuntime
 from odoo_forge_server.composition import create_production_app
@@ -118,6 +121,38 @@ def test_composition_injects_the_same_reconciler_into_the_ui() -> None:
         "odoo-forge-project-1-alpha",
         "odoo-forge-project-1-alpha",
     ]
+
+
+class _FakeCustody:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def confirm(self, request: object) -> OwnershipReceipt:
+        self.calls += 1
+        return OwnershipReceipt(
+            operation=DurableOperationIdentity(
+                operation_id="postgres-docker:op-1", request_digest="a" * 64
+            ),
+            owned_resource_ids=("container-1",),
+        )
+
+
+def test_composition_wires_one_authority_over_the_same_registry_with_no_new_route() -> None:
+    custody = _FakeCustody()
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=lambda: contextmanager(_connection)(),
+        custody_adapter=custody,
+    )
+
+    authority = app.state.control_plane_authority
+    assert isinstance(authority, ControlPlaneAuthority)
+    assert authority._registry is app.state.registry
+
+    methods = [route.methods for route in app.routes if hasattr(route, "methods")]
+    assert all(methods_set <= {"GET", "HEAD"} for methods_set in methods)
 
 
 def test_composition_rejects_unresolved_backend_catalog() -> None:
