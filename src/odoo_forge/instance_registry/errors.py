@@ -38,9 +38,27 @@ class InstanceRegistrationConflictError(InstanceRegistryError):
         )
 
 
+class ReceiptOverwriteRejectedError(InstanceRegistryError):
+    """Raised when `store()` would rewrite a row that already carries a receipt.
+
+    `store()` is a generic create-or-replace write with no lineage
+    semantics; a receipt-bearing row is authoritative and its evidence must
+    only ever be extended through `register()`, never silently rewritten or
+    cleared by a plain overwrite.
+    """
+
+    def __init__(self, pointer: InstancePointer) -> None:
+        self.pointer = pointer
+        super().__init__(
+            "store() cannot overwrite a receipt-bearing row: "
+            f"{pointer.scope.project_id}/{pointer.instance_id.value}"
+        )
+
+
 __all__ = [
     "InstanceRecordNotFoundError",
     "InstanceRegistrationConflictError",
     "InstanceRegistryError",
     "MissingReceiptError",
+    "ReceiptOverwriteRejectedError",
 ]

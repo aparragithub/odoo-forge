@@ -5,6 +5,7 @@ from odoo_forge.instance_registry.errors import (
     InstanceRegistrationConflictError,
     InstanceRegistryError,
     MissingReceiptError,
+    ReceiptOverwriteRejectedError,
 )
 from odoo_forge.instance_registry.types import InstanceId, InstancePointer, InstanceRecord
 
@@ -16,4 +17,5 @@ __all__ = [
     "InstanceRegistrationConflictError",
     "InstanceRegistryError",
     "MissingReceiptError",
+    "ReceiptOverwriteRejectedError",
 ]

@@ -14,6 +14,7 @@ from odoo_forge.instance_registry import (
     InstanceRecordNotFoundError,
     InstanceRegistrationConflictError,
     MissingReceiptError,
+    ReceiptOverwriteRejectedError,
 )
 from odoo_forge.instance_registry.types import InstanceId
 from odoo_forge.ports.instance_registry import InstanceRegistry
@@ -68,6 +69,11 @@ FROM public.instance_registry
 WHERE tenant_id = %s AND project_id = %s
 ORDER BY instance_id ASC
 """
+_STORE_RECEIPT_CHECK_SQL = """
+SELECT operation_id
+FROM public.instance_registry
+WHERE tenant_id = %s AND project_id = %s AND instance_id = %s
+"""
 _RECEIPT_COLUMNS = (
     f"{_COLUMNS}, operation_id, request_digest, owned_resource_ids, live_proof_expected"
 )
@@ -79,6 +85,7 @@ WHERE operation_id = %s OR (tenant_id, project_id, instance_id) = (%s, %s, %s)
 _REGISTER_INSERT_SQL = f"""
 INSERT INTO public.instance_registry ({_RECEIPT_COLUMNS})
 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT DO NOTHING
 RETURNING {_RECEIPT_COLUMNS}
 """
 
@@ -170,6 +177,14 @@ class PostgresInstanceRegistry(InstanceRegistry):
     def store(self, record: InstanceRecord) -> InstanceRecord:
         def operation(connection: Connection) -> InstanceRecord:
             cursor = connection.cursor()
+            cursor.execute(_STORE_RECEIPT_CHECK_SQL, _pointer_parameters(record.pointer))
+            existing = cursor.fetchone()
+            if existing is not None and existing[0] is not None:
+                # A receipt-bearing row is authoritative canonical lineage
+                # evidence: `store()` is a plain create-or-replace write with
+                # no lineage semantics of its own, so it must never rewrite
+                # (and never silently strip) an existing receipt.
+                raise ReceiptOverwriteRejectedError(record.pointer)
             cursor.execute(_STORE_SQL, _record_parameters(record))
             row = cursor.fetchone()
             if row is None:
@@ -204,21 +219,39 @@ class PostgresInstanceRegistry(InstanceRegistry):
 
         def operation(connection: Connection) -> InstanceRecord:
             cursor = connection.cursor()
-            cursor.execute(
-                _REGISTER_LOOKUP_SQL,
-                (receipt.operation.operation_id, *_pointer_parameters(record.pointer)),
-            )
-            rows = cursor.fetchall()
-            for row in rows:
-                existing = _record_from_receipt_row(row)
-                if existing == record:
-                    return existing
-            if rows:
-                raise InstanceRegistrationConflictError(record.pointer)
+            existing = self._matching_registered_row(cursor, record, receipt)
+            if existing is not None:
+                return existing
             cursor.execute(_REGISTER_INSERT_SQL, _receipt_record_parameters(record, receipt))
             inserted = cursor.fetchone()
-            if inserted is None:
-                raise RuntimeError("register did not return an authoritative row")
-            return _record_from_receipt_row(inserted)
+            if inserted is not None:
+                return _record_from_receipt_row(inserted)
+            # A concurrent IDENTICAL registration committed between our
+            # lookup and this INSERT: `ON CONFLICT DO NOTHING` silently
+            # skipped our own row instead of raising a raw driver
+            # `UniqueViolation`. Re-read the now-committed row so the loser
+            # converges on the same typed outcome an uncontended retry would
+            # have reached, rather than leaking an untyped driver error.
+            existing = self._matching_registered_row(cursor, record, receipt)
+            if existing is not None:
+                return existing
+            raise InstanceRegistrationConflictError(record.pointer)
 
         return self._transaction(operation)
+
+    @staticmethod
+    def _matching_registered_row(
+        cursor: Cursor, record: InstanceRecord, receipt: OwnershipReceipt
+    ) -> InstanceRecord | None:
+        cursor.execute(
+            _REGISTER_LOOKUP_SQL,
+            (receipt.operation.operation_id, *_pointer_parameters(record.pointer)),
+        )
+        rows = cursor.fetchall()
+        for row in rows:
+            existing = _record_from_receipt_row(row)
+            if existing == record:
+                return existing
+        if rows:
+            raise InstanceRegistrationConflictError(record.pointer)
+        return None

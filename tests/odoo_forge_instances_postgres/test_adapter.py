@@ -15,6 +15,7 @@ from odoo_forge.instance_registry import (
     InstanceRecordNotFoundError,
     InstanceRegistrationConflictError,
     MissingReceiptError,
+    ReceiptOverwriteRejectedError,
 )
 from odoo_forge.ports.instance_registry import InstanceRegistry
 from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
@@ -84,11 +85,15 @@ class ScriptedCursor:
         self,
         rows: list[Row | None] | None = None,
         list_rows: list[Row] | None = None,
+        list_rows_sequence: list[list[Row]] | None = None,
         error: Exception | None = None,
         error_at: str | None = None,
     ) -> None:
         self.executed: list[tuple[str, tuple[object, ...]]] = []
         self.rows, self.list_rows = rows or [], list_rows or []
+        self._list_rows_sequence = (
+            list(list_rows_sequence) if list_rows_sequence is not None else None
+        )
         self.error, self.error_at = error, error_at
 
     def _raise(self, location: str) -> None:
@@ -105,6 +110,8 @@ class ScriptedCursor:
 
     def fetchall(self) -> list[Row]:
         self._raise("fetch")
+        if self._list_rows_sequence is not None:
+            return self._list_rows_sequence.pop(0) if self._list_rows_sequence else []
         return self.list_rows
 
 
@@ -156,20 +163,39 @@ def test_store_is_parameterized_and_returns_authoritative_six_column_row() -> No
     authoritative = _record(
         "instance-1", identifier="database-value", ownership=ResourceOwnership.ADOPTED
     )
-    cursor = ScriptedCursor(rows=[_row(authoritative)])
+    cursor = ScriptedCursor(rows=[None, _row(authoritative)])
     connection = ScriptedConnection(cursor)
     acquirer = ScriptedAcquirer(connection)
     registry = PostgresInstanceRegistry(acquirer)
 
     assert isinstance(registry, InstanceRegistry)
     assert registry.store(requested) == authoritative
-    query, parameters = cursor.executed[0]
+    query, parameters = cursor.executed[1]
     assert parameters == _row(requested) and query.count("%s") == 6
     assert "INSERT INTO public.instance_registry" in query
     assert "ON CONFLICT (tenant_id, project_id, instance_id) DO UPDATE" in query
     assert "RETURNING tenant_id, project_id, instance_id" in query and "updated_at = now()" in query
     assert (connection.commit_count, connection.rollback_count, acquirer.calls) == (1, 0, 1)
     assert acquirer.releases[0]
+
+
+def test_store_rejects_overwriting_an_existing_receipt_bearing_row() -> None:
+    """`store()` must never rewrite a row whose committed lineage it cannot preserve.
+
+    Paired with the fake's equivalent guard: both layers must agree that a
+    plain overwrite of a receipt-bearing row is rejected, never silently
+    applied and never silently stripped of its receipt.
+    """
+    requested = _record("instance-1", identifier="replacement")
+    cursor = ScriptedCursor(rows=[("postgres-docker:op-1",)])
+    connection = ScriptedConnection(cursor)
+    registry = PostgresInstanceRegistry(ScriptedAcquirer(connection))
+
+    with pytest.raises(ReceiptOverwriteRejectedError):
+        registry.store(requested)
+
+    assert len(cursor.executed) == 1
+    assert connection.commit_count == 0 and connection.rollback_count == 1
 
 
 def test_store_replaces_by_identity_and_get_reconstructs_all_columns() -> None:
@@ -180,7 +206,7 @@ def test_store_replaces_by_identity_and_get_reconstructs_all_columns() -> None:
         kind="container",
         ownership=ResourceOwnership.EXTERNAL,
     )
-    store_cursor = ScriptedCursor(rows=[_row(replacement)])
+    store_cursor = ScriptedCursor(rows=[None, _row(replacement)])
     get_cursor = ScriptedCursor(rows=[_row(replacement)])
     list_cursor = ScriptedCursor(list_rows=[_row(replacement)])
     acquirer = ScriptedAcquirer(
@@ -193,7 +219,7 @@ def test_store_replaces_by_identity_and_get_reconstructs_all_columns() -> None:
     assert registry.store(original) == replacement
     assert registry.get(replacement.pointer) == replacement
     assert registry.list(replacement.pointer.scope) == (replacement,)
-    store_query, store_parameters = store_cursor.executed[0]
+    store_query, store_parameters = store_cursor.executed[1]
     get_query, get_parameters = get_cursor.executed[0]
     assert store_parameters[:3] == get_parameters == ("tenant-1", "project-1", "instance-1")
     assert "ON CONFLICT (tenant_id, project_id, instance_id)" in store_query
@@ -248,10 +274,10 @@ def test_failures_rollback_once_preserve_identity_and_do_not_retry(failure_locat
     requested = _record("instance-1")
     if failure_location == "map":
         cursor = ScriptedCursor(
-            rows=[("tenant-1", "project-1", "instance-1", "resource", "instance", "invalid")]
+            rows=[None, ("tenant-1", "project-1", "instance-1", "resource", "instance", "invalid")]
         )
     elif failure_location == "commit":
-        cursor = ScriptedCursor(rows=[_row(requested)])
+        cursor = ScriptedCursor(rows=[None, _row(requested)])
     else:
         cursor = ScriptedCursor(error=failure, error_at=failure_location)
     connection = ScriptedConnection(
@@ -269,7 +295,9 @@ def test_failures_rollback_once_preserve_identity_and_do_not_retry(failure_locat
     )
     assert connection.rollback_count == 1 and acquirer.calls == 1 and acquirer.releases[0]
     assert connection.commit_count == (1 if failure_location == "commit" else 0)
-    assert len(cursor.executed) == (0 if failure_location == "execute" else 1)
+    assert (
+        len(cursor.executed) == {"execute": 0, "fetch": 1, "map": 2, "commit": 2}[failure_location]
+    )
 
 
 def test_rollback_failure_is_logged_without_replacing_operation_failure(
@@ -323,9 +351,42 @@ def test_register_inserts_a_new_receipt_bearing_row_by_plain_insert() -> None:
         "instance-1",
     )
     assert "INSERT INTO public.instance_registry" in insert_query
-    assert "ON CONFLICT" not in insert_query
+    assert "ON CONFLICT DO NOTHING" in insert_query
     assert insert_parameters == _receipt_row(record)
     assert connection.commit_count == 1
+
+
+def test_register_converges_a_concurrent_identical_registration_without_a_typed_error() -> None:
+    """A losing concurrent IDENTICAL registration must not leak a raw driver error.
+
+    `ON CONFLICT DO NOTHING` lets our own INSERT silently insert zero rows
+    when a concurrent identical registration committed between our initial
+    lookup and this INSERT; `fetchone()` then returns `None` instead of
+    raising `UniqueViolation`. The adapter must re-read the now-committed row
+    and converge on the idempotent return the port's retry contract promises.
+    """
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    cursor = ScriptedCursor(rows=[None], list_rows_sequence=[[], [_receipt_row(record)]])
+    connection = ScriptedConnection(cursor)
+    registry = PostgresInstanceRegistry(ScriptedAcquirer(connection))
+
+    assert registry.register(record) == record
+    assert len(cursor.executed) == 3
+    assert connection.commit_count == 1
+
+
+def test_register_reports_a_typed_conflict_for_a_concurrent_differing_registration() -> None:
+    record = _record("instance-1").model_copy(update={"receipt": _receipt("postgres-docker:op-1")})
+    winner = _record("instance-1").model_copy(update={"receipt": _receipt("postgres-docker:op-2")})
+    cursor = ScriptedCursor(rows=[None], list_rows_sequence=[[], [_receipt_row(winner)]])
+    connection = ScriptedConnection(cursor)
+    registry = PostgresInstanceRegistry(ScriptedAcquirer(connection))
+
+    with pytest.raises(InstanceRegistrationConflictError):
+        registry.register(record)
+
+    assert len(cursor.executed) == 3
+    assert connection.commit_count == 0 and connection.rollback_count == 1
 
 
 def test_register_is_idempotent_for_an_exact_committed_retry() -> None:
