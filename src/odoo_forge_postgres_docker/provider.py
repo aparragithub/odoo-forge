@@ -502,7 +502,14 @@ class DockerPostgresqlDatabaseProvider:
         """
         user = (env or {}).get("POSTGRES_USER", "postgres")
         database = (env or {}).get("POSTGRES_DB")
+        # Both values reach a `docker exec` argv, so hold them to the same
+        # identifier contract every other externally-supplied name in this
+        # adapter already satisfies. `POSTGRES_USER` is validated nowhere else,
+        # and nothing guarantees `POSTGRES_DB` equals the already-validated
+        # `spec.name`.
+        self._validate_identifier(user)
         if database is not None:
+            self._validate_identifier(database)
             argv = [
                 "docker",
                 "exec",

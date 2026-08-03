@@ -98,14 +98,15 @@ def _wait_for_database(container: str) -> None:
     """Poll a REAL query, not `pg_isready`: the postgres entrypoint runs a
     temporary bootstrap server during initdb, so `pg_isready` reports ready
     before the named database actually exists."""
-    for _ in range(120):
+    attempts, interval = 120, 0.25
+    for _ in range(attempts):
         probe = _docker(
             ["exec", container, "psql", "-U", "postgres", "-d", container, "-tAc", "SELECT 1"]
         )
         if probe.returncode == 0:
             return
-        time.sleep(0.25)
-    pytest.fail(f"database {container} never became reachable in {container}")
+        time.sleep(interval)
+    pytest.fail(f"database {container} never became reachable in {attempts * interval:.0f}s")
 
 
 def _sql(container: str, statement: str) -> str:
