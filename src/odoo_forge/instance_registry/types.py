@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from odoo_forge.resource_ownership.types import ResourceRef
+from odoo_forge.resource_ownership.types import OwnershipReceipt, ResourceRef
 from odoo_forge.tenancy.types import ProjectScope
 
 
@@ -28,6 +28,9 @@ class InstanceRecord(_InstanceRegistryValue):
 
     pointer: InstancePointer
     resource: ResourceRef
+    receipt: OwnershipReceipt | None = None
+    """Optional lineage evidence. Legacy rows have no receipt; a canonical
+    authoritative registration (`InstanceRegistry.register`) requires one."""
 
 
 __all__ = ["InstanceId", "InstancePointer", "InstanceRecord"]

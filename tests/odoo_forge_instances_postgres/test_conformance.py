@@ -16,7 +16,7 @@ from odoo_forge_instances_postgres.adapter import (
 )
 from odoo_forge_instances_postgres.fakes import FakeInstanceRegistry
 
-_CONTRACT_METHODS = {"store", "get", "list"}
+_CONTRACT_METHODS = {"store", "get", "list", "register"}
 
 
 def _no_live_connection() -> AbstractContextManager[Connection]:
@@ -73,6 +73,9 @@ class WrongSignature:
     def list(self, scope: object) -> tuple[object, ...]:
         return (scope,)
 
+    def register(self, record: object) -> object:
+        return record
+
 
 class AsyncRegistry:
     async def store(self, record: InstanceRecord) -> InstanceRecord:
@@ -83,6 +86,9 @@ class AsyncRegistry:
 
     async def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]:
         return ()
+
+    async def register(self, record: InstanceRecord) -> InstanceRecord:
+        return record
 
 
 class Resettable:
@@ -99,6 +105,9 @@ class InheritedExtraMethod(Resettable):
 
     def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]:
         return ()
+
+    def register(self, record: InstanceRecord) -> InstanceRecord:
+        return record
 
 
 def test_missing_protocol_method_is_rejected_by_runtime_conformance() -> None:

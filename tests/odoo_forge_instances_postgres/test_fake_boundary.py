@@ -4,19 +4,29 @@ from __future__ import annotations
 
 import pytest
 
+from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.instance_registry import (
     InstanceId,
     InstancePointer,
     InstanceRecord,
     InstanceRecordNotFoundError,
+    InstanceRegistrationConflictError,
+    MissingReceiptError,
 )
-from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef
+from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
 from odoo_forge_instances_postgres.fakes import FakeInstanceRegistry
 
 
 def _scope(tenant: str = "tenant-1", project: str = "project-1") -> ProjectScope:
     return ProjectScope(tenant=TenantId(value=tenant), project_id=project)
+
+
+def _receipt(operation_id: str = "postgres-docker:op-1") -> OwnershipReceipt:
+    return OwnershipReceipt(
+        operation=DurableOperationIdentity(operation_id=operation_id, request_digest="a" * 64),
+        owned_resource_ids=("container-1",),
+    )
 
 
 def _record(
@@ -112,3 +122,58 @@ def test_fake_module_exports_only_the_fake() -> None:
     import odoo_forge_instances_postgres.fakes as fakes
 
     assert fakes.__all__ == ["FakeInstanceRegistry"]
+
+
+def test_register_requires_a_receipt_and_mutates_nothing() -> None:
+    fake = FakeInstanceRegistry()
+    record = _record("instance-1")
+
+    with pytest.raises(MissingReceiptError):
+        fake.register(record)
+
+    assert fake.list(record.pointer.scope) == ()
+
+
+def test_register_persists_a_new_receipt_bearing_row() -> None:
+    fake = FakeInstanceRegistry()
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+
+    assert fake.register(record) == record
+    assert fake.get(record.pointer) == record
+
+
+def test_register_is_idempotent_for_an_exact_committed_retry() -> None:
+    fake = FakeInstanceRegistry()
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    fake.register(record)
+
+    assert fake.register(record) == record
+    assert fake.list(record.pointer.scope) == (record,)
+
+
+def test_register_rejects_a_conflicting_reuse_of_the_operation_identity() -> None:
+    fake = FakeInstanceRegistry()
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    conflicting = _record("instance-2").model_copy(update={"receipt": _receipt()})
+    fake.register(record)
+
+    with pytest.raises(InstanceRegistrationConflictError):
+        fake.register(conflicting)
+
+    assert fake.get(record.pointer) == record
+    with pytest.raises(InstanceRecordNotFoundError):
+        fake.get(conflicting.pointer)
+
+
+def test_register_rejects_reuse_of_the_same_pointer_under_a_new_operation_id() -> None:
+    fake = FakeInstanceRegistry()
+    original = _record("instance-1").model_copy(
+        update={"receipt": _receipt("postgres-docker:op-1")}
+    )
+    reuse = _record("instance-1").model_copy(update={"receipt": _receipt("postgres-docker:op-2")})
+    fake.register(original)
+
+    with pytest.raises(InstanceRegistrationConflictError):
+        fake.register(reuse)
+
+    assert fake.get(original.pointer) == original

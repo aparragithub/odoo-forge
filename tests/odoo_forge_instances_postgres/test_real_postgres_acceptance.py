@@ -30,6 +30,10 @@ DEFAULT_COLUMNS = (
     "resource_ownership",
     "created_at",
     "updated_at",
+    "operation_id",
+    "request_digest",
+    "owned_resource_ids",
+    "live_proof_expected",
 )
 
 

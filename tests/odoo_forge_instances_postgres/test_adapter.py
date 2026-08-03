@@ -7,14 +7,17 @@ from contextlib import AbstractContextManager, contextmanager
 
 import pytest
 
+from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.instance_registry import (
     InstanceId,
     InstancePointer,
     InstanceRecord,
     InstanceRecordNotFoundError,
+    InstanceRegistrationConflictError,
+    MissingReceiptError,
 )
 from odoo_forge.ports.instance_registry import InstanceRegistry
-from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef
+from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
 from odoo_forge_instances_postgres.adapter import PostgresInstanceRegistry
 
@@ -52,6 +55,27 @@ def _row(record: InstanceRecord) -> Row:
         record.resource.identifier,
         record.resource.resource_kind,
         record.resource.ownership.value,
+    )
+
+
+def _receipt(operation_id: str = "postgres-docker:op-1") -> OwnershipReceipt:
+    return OwnershipReceipt(
+        operation=DurableOperationIdentity(operation_id=operation_id, request_digest="a" * 64),
+        owned_resource_ids=("container-1",),
+    )
+
+
+def _receipt_row(record: InstanceRecord) -> Row:
+    assert record.receipt is not None
+    return (*_row(record), *_receipt_fields(record.receipt))
+
+
+def _receipt_fields(receipt: OwnershipReceipt) -> Row:
+    return (
+        receipt.operation.operation_id,
+        receipt.operation.request_digest,
+        list(receipt.owned_resource_ids),
+        receipt.live_proof_expected,
     )
 
 
@@ -268,3 +292,79 @@ def test_rollback_failure_is_logged_without_replacing_operation_failure(
     assert record.name == "odoo_forge_instances_postgres.adapter"
     assert record.getMessage() == "Transaction rollback failed"
     assert record.exc_info is not None and record.exc_info[1] is rollback_failure
+
+
+def test_register_requires_a_receipt_and_touches_no_connection() -> None:
+    acquirer = ScriptedAcquirer()
+    registry = PostgresInstanceRegistry(acquirer)
+
+    with pytest.raises(MissingReceiptError):
+        registry.register(_record("instance-1"))
+
+    assert acquirer.calls == 0
+
+
+def test_register_inserts_a_new_receipt_bearing_row_by_plain_insert() -> None:
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    cursor = ScriptedCursor(list_rows=[], rows=[_receipt_row(record)])
+    connection = ScriptedConnection(cursor)
+    registry = PostgresInstanceRegistry(ScriptedAcquirer(connection))
+
+    assert registry.register(record) == record
+    lookup_query, lookup_parameters = cursor.executed[0]
+    insert_query, insert_parameters = cursor.executed[1]
+    assert "WHERE operation_id = %s OR (tenant_id, project_id, instance_id) = (%s, %s, %s)" in (
+        lookup_query
+    )
+    assert lookup_parameters == (
+        record.receipt.operation.operation_id,  # type: ignore[union-attr]
+        "tenant-1",
+        "project-1",
+        "instance-1",
+    )
+    assert "INSERT INTO public.instance_registry" in insert_query
+    assert "ON CONFLICT" not in insert_query
+    assert insert_parameters == _receipt_row(record)
+    assert connection.commit_count == 1
+
+
+def test_register_is_idempotent_for_an_exact_committed_retry() -> None:
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    cursor = ScriptedCursor(list_rows=[_receipt_row(record)])
+    connection = ScriptedConnection(cursor)
+    registry = PostgresInstanceRegistry(ScriptedAcquirer(connection))
+
+    assert registry.register(record) == record
+    assert len(cursor.executed) == 1
+    assert "SELECT" in cursor.executed[0][0]
+    assert connection.commit_count == 1
+
+
+def test_register_rejects_a_conflicting_reuse_of_the_operation_identity() -> None:
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    conflicting = _record("instance-2").model_copy(update={"receipt": _receipt()})
+    cursor = ScriptedCursor(list_rows=[_receipt_row(record)])
+    connection = ScriptedConnection(cursor)
+    registry = PostgresInstanceRegistry(ScriptedAcquirer(connection))
+
+    with pytest.raises(InstanceRegistrationConflictError):
+        registry.register(conflicting)
+
+    assert len(cursor.executed) == 1
+    assert connection.commit_count == 0 and connection.rollback_count == 1
+
+
+def test_register_rejects_reuse_of_the_same_pointer_under_a_new_operation_id() -> None:
+    original = _record("instance-1").model_copy(
+        update={"receipt": _receipt("postgres-docker:op-1")}
+    )
+    reuse = _record("instance-1").model_copy(update={"receipt": _receipt("postgres-docker:op-2")})
+    cursor = ScriptedCursor(list_rows=[_receipt_row(original)])
+    connection = ScriptedConnection(cursor)
+    registry = PostgresInstanceRegistry(ScriptedAcquirer(connection))
+
+    with pytest.raises(InstanceRegistrationConflictError):
+        registry.register(reuse)
+
+    assert len(cursor.executed) == 1
+    assert connection.commit_count == 0 and connection.rollback_count == 1

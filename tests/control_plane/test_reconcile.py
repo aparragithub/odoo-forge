@@ -64,6 +64,9 @@ class _Registry:
 
         raise InstanceRecordNotFoundError(pointer)
 
+    def register(self, record: InstanceRecord) -> InstanceRecord:
+        raise AssertionError("reconciliation must remain read-only")
+
 
 @pytest.mark.parametrize(
     ("status", "expected"),
