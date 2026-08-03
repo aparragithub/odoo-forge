@@ -1420,7 +1420,13 @@ def test_provision_failure_rolls_back_freshly_created_volume_but_preserves_adopt
 # -- Phase 2.3: spec-driven readiness probe --
 
 
-def test_wait_ready_derives_probe_user_and_database_from_spec_env() -> None:
+def test_wait_ready_probes_a_real_query_against_the_named_database_not_pg_isready() -> None:
+    """Fixed readiness race: `pg_isready` reports ready against the postgres
+    image's temporary bootstrap server, before `POSTGRES_DB` actually exists,
+    and it ignores its own `-d` for existence purposes (same hazard already
+    documented and avoided by `_await_scratch_readiness` in
+    `mask_transform.py`). Once a database name is known, `_wait_ready` MUST
+    probe with a real query against THAT database instead."""
     calls: list[tuple[str, ...]] = []
 
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -1441,12 +1447,45 @@ def test_wait_ready_derives_probe_user_and_database_from_spec_env() -> None:
         "docker",
         "exec",
         "database-42",
-        "pg_isready",
+        "psql",
         "-U",
         "odoo",
         "-d",
         "odoo-db",
+        "-tAc",
+        "SELECT 1",
     )
+    assert "pg_isready" not in exec_call
+
+
+def test_wait_ready_retries_the_real_query_until_the_database_answers() -> None:
+    """Triangulation: the query-based probe must be retried within the
+    existing bounded readiness timeout, exactly like the previous
+    `pg_isready` probe was, and must NOT be a one-shot check."""
+    attempts: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        if argv[:2] == ["docker", "exec"]:
+            attempts.append(tuple(argv))
+            if len(attempts) < 3:
+                return subprocess.CompletedProcess(argv, 1, "", "database does not exist")
+            return subprocess.CompletedProcess(argv, 0, "1", "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        sleep=lambda _seconds: None,
+        credential_target=_credential_target,
+    ).provision(
+        DatabaseSpec(name="database-42", env={"POSTGRES_DB": "database-42"}),
+        CredentialHandle("opaque"),
+    )
+
+    assert len(attempts) == 3
+    assert all(call[3] == "psql" for call in attempts)
 
 
 def test_wait_ready_defaults_to_postgres_user_with_no_dash_d_when_env_is_empty() -> None:

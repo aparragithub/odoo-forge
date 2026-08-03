@@ -67,7 +67,13 @@ def copy(
         credentials=CredentialHandle(f"database-copy/{source}"),
         target=TargetContext(kind="source", target_id=source),
     )
-    spec = DatabaseSpec(name=target)
+    # The real restore path (`make_docker_restore_target`) always runs
+    # `pg_restore -U postgres -d <target>` against the target container, so
+    # the provisioned database MUST be literally named `target`. Passing
+    # `POSTGRES_DB` here mirrors the established pattern in
+    # `mask_transform.py`'s scratch-database provisioning: set `POSTGRES_DB`
+    # to the same name later used in `-d`.
+    spec = DatabaseSpec(name=target, env={"POSTGRES_DB": target})
     canonical_policy = json.dumps(
         policy.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
     ).encode()
