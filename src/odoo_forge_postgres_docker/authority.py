@@ -9,7 +9,8 @@ import json
 import os
 import secrets
 import stat
-from collections.abc import Iterator, Mapping
+import subprocess
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -22,9 +23,17 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from odoo_forge.database.errors import DatabaseOperationError
+from odoo_forge.ports.resource_custody import (
+    CustodyRequest,
+    CustodyTransitionConflictError,
+    CustodyUnverifiableError,
+    custody_operation_parts,
+)
+from odoo_forge.resource_ownership.types import OwnershipReceipt
 
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
+_PROVIDER = "postgres-docker"
 _REQUIRED_RECORD_FIELDS = frozenset({"operation", "kind", "name", "docker_id", "state"})
 _STORED_RECORD_FIELDS = _REQUIRED_RECORD_FIELDS | frozenset({"generation", "key_id", "signature"})
 _EVIDENCE_FIELDS = frozenset(
@@ -51,6 +60,99 @@ class AuthorityCustodyError(AuthorityError):
 
 class AuthorityStateError(AuthorityError):
     """Authority state is missing, corrupt, or could not be committed safely."""
+
+
+class DockerResourceCustodyAdapter:
+    """Confirm Docker identity and converge local custody for one request."""
+
+    def __init__(
+        self,
+        authority: "LocalOwnershipAuthority",
+        *,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        self._authority = authority
+        self._runner = runner or _run_docker
+        self._timeout = timeout
+
+    def confirm(self, request: CustodyRequest) -> OwnershipReceipt:
+        self._verify_live(request)
+        try:
+            self._authority.converge(
+                request.operation.operation_id, request.resource_name, request.resource_id
+            )
+        except CustodyTransitionConflictError:
+            raise
+        except (AuthorityError, OSError) as exc:
+            raise CustodyUnverifiableError() from exc
+        return OwnershipReceipt(
+            operation=request.operation,
+            owned_resource_ids=(request.resource_id,),
+            live_proof_expected=True,
+        )
+
+    def _verify_live(self, request: CustodyRequest) -> None:
+        try:
+            provider, token = custody_operation_parts(request.operation.operation_id)
+            if provider != _PROVIDER:
+                raise ValueError
+            result = self._runner(
+                ["docker", "inspect", request.resource_name], timeout=self._timeout
+            )
+            if result.returncode != 0 or not isinstance(result.stdout, str):
+                raise ValueError
+            inspected = json.loads(result.stdout)
+            if not isinstance(inspected, list) or len(inspected) != 1:
+                raise ValueError
+            container = inspected[0]
+            if not isinstance(container, dict):
+                raise ValueError
+            labels = container["Config"]["Labels"]
+            if (
+                container["Id"] != request.resource_id
+                or not isinstance(labels, dict)
+                or not all(isinstance(value, str) for value in labels.values())
+                or not {
+                    "io.odoo-forge.provider": _PROVIDER,
+                    "io.odoo-forge.operation": request.operation.operation_id,
+                    "io.odoo-forge.resource-kind": "container",
+                    "io.odoo-forge.creator-token": token,
+                }.items()
+                <= labels.items()
+            ):
+                raise ValueError
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            subprocess.TimeoutExpired,
+        ) as exc:
+            raise CustodyUnverifiableError() from exc
+
+
+def _container_record(operation: str, name: str, docker_id: str, state: str) -> dict[str, str]:
+    """Build the one container-record shape every writer appends.
+
+    Kept in a single place so a field change cannot be applied to some
+    writers and missed in others, which `_validate_record` would then reject
+    only at runtime.
+    """
+    return {
+        "operation": operation,
+        "kind": "container",
+        "name": name,
+        "docker_id": docker_id,
+        "state": state,
+    }
+
+
+def _run_docker(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(argv), capture_output=True, check=False, shell=False, text=True, timeout=timeout
+    )
 
 
 class LocalOwnershipAuthority:
@@ -104,16 +206,7 @@ class LocalOwnershipAuthority:
         initializing = not self._lock_path.exists()
         with self.locked():
             state = self._read_or_initial_state(initializing=initializing)
-            self._append(
-                state,
-                {
-                    "operation": operation,
-                    "kind": "container",
-                    "name": name,
-                    "docker_id": "",
-                    "state": "reserved",
-                },
-            )
+            self._append(state, _container_record(operation, name, "", "reserved"))
 
     def bind(self, operation: str, name: str, docker_id: str) -> None:
         """Bind a reserved record to Docker's immutable resource identity."""
@@ -142,14 +235,53 @@ class LocalOwnershipAuthority:
                 return
             self._append(
                 state,
-                {
-                    "operation": operation,
-                    "kind": "container",
-                    "name": name,
-                    "docker_id": record["docker_id"],
-                    "state": "retired",
-                },
+                _container_record(operation, name, str(record["docker_id"]), "retired"),
             )
+
+    def converge(self, operation: str, name: str, docker_id: str) -> None:
+        """Apply the supported transition sequence once while holding the lock."""
+        initializing = not self._lock_path.exists()
+        with self.locked():
+            state = self._read_or_initial_state(initializing=initializing)
+            record = self._latest(state, operation, name)
+            if self._held_by_other_operation(state, operation, name):
+                raise CustodyTransitionConflictError()
+            if record is None:
+                self._append_transition(state, operation, name, "", "reserved")
+                self._append_transition(state, operation, name, docker_id, "reserved")
+                self._append_transition(state, operation, name, docker_id, "active")
+            elif record["state"] == "reserved" and record["docker_id"] == "":
+                self._append_transition(state, operation, name, docker_id, "reserved")
+                self._append_transition(state, operation, name, docker_id, "active")
+            elif record["state"] == "reserved" and record["docker_id"] == docker_id:
+                self._append_transition(state, operation, name, docker_id, "active")
+            elif (
+                record["kind"] != "container"
+                or record["state"] != "active"
+                or record["docker_id"] != docker_id
+            ):
+                raise CustodyTransitionConflictError()
+
+    def _append_transition(
+        self, state: dict[str, Any], operation: str, name: str, docker_id: str, target: str
+    ) -> None:
+        self._append(state, _container_record(operation, name, docker_id, target))
+
+    @staticmethod
+    def _held_by_other_operation(state: Mapping[str, Any], operation: str, name: str) -> bool:
+        """Report whether another operation still holds custody of `name`.
+
+        Only each other operation's LATEST state counts. `retire` appends a
+        `retired` record instead of deleting history, so scanning every record
+        would let one retired predecessor block the name forever. Reducing to
+        the latest state per operation frees a retired name for reuse while
+        still refusing a name another operation holds reserved or active.
+        """
+        latest_state_by_operation: dict[str, object] = {}
+        for record in state["records"]:
+            if record["name"] == name and record["operation"] != operation:
+                latest_state_by_operation[record["operation"]] = record["state"]
+        return any(held != "retired" for held in latest_state_by_operation.values())
 
     @classmethod
     def recover(cls, root: Path) -> "LocalOwnershipAuthority":
@@ -269,16 +401,7 @@ class LocalOwnershipAuthority:
                 or record["docker_id"] not in {"", docker_id}
             ):
                 raise AuthorityStateError()
-            self._append(
-                state,
-                {
-                    "operation": operation,
-                    "kind": "container",
-                    "name": name,
-                    "docker_id": docker_id,
-                    "state": target,
-                },
-            )
+            self._append(state, _container_record(operation, name, docker_id, target))
 
     @staticmethod
     def _latest(state: Mapping[str, Any], operation: str, name: str) -> Mapping[str, object] | None:
