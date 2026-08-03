@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-from typing import cast
-
 import pytest
-from fastapi import FastAPI
-from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 
 from odoo_forge.backend.status import InstanceStatus, RoleStatus
@@ -170,10 +166,9 @@ def test_polling_reconciles_again_and_ui_is_get_only() -> None:
     path = "/ui/tenants/tenant-1/projects/project-1/instances"
     first, second = client.get(path), client.get(path)
     assert "fresh" in first.text and "drifted" in second.text
+    assert 'http-equiv="refresh" content="60"' in first.text
+    assert "Automatically refreshes every 60 seconds." in first.text
     assert reconciler.list_calls == 2
-    assert client.post(path).status_code == 405
-    assert all(
-        route.methods <= {"GET", "HEAD", "OPTIONS"}
-        for route in cast(FastAPI, client.app).routes
-        if isinstance(route, APIRoute) and route.path.startswith("/ui/")
-    )
+    paths = (path, f"{path}/alpha")
+    for method in (client.post, client.put, client.delete, client.patch):
+        assert all(method(candidate).status_code == 405 for candidate in paths)

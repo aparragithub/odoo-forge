@@ -107,12 +107,17 @@ def test_composition_injects_the_same_reconciler_into_the_ui() -> None:
         acquire_connection=lambda: contextmanager(_connection)(),
         ui_runtime=UiRuntime("127.0.0.1"),
     )
-    assert (
-        TestClient(app, base_url="http://127.0.0.1")
-        .get("/ui/tenants/tenant-1/projects/project-1/instances")
-        .status_code
-        == 200
-    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+    api = client.get("/api/v1/tenants/tenant-1/projects/project-1/instances")
+    ui = client.get("/ui/tenants/tenant-1/projects/project-1/instances")
+
+    assert api.status_code == ui.status_code == 200
+    assert api.json()["outcome"] == "fresh"
+    assert "Aggregate outcome: <strong>fresh</strong>" in ui.text
+    assert [ref.network for ref in backend.status_calls] == [
+        "odoo-forge-project-1-alpha",
+        "odoo-forge-project-1-alpha",
+    ]
 
 
 def test_composition_rejects_unresolved_backend_catalog() -> None:

@@ -10,7 +10,7 @@ from fastapi.templating import Jinja2Templates
 from odoo_forge.control_plane.models import ReconciliationOutcome, ReconciliationResult
 from odoo_forge.instance_registry import InstanceId, InstancePointer
 from odoo_forge.tenancy import ProjectScope, TenantId
-from odoo_forge_server.app import UiRuntime
+from odoo_forge_server.runtime import UiRuntime
 
 _PREFIX = "/ui/tenants/{tenant_id}/projects/{project_id}/instances"
 _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -33,6 +33,8 @@ def _label(outcome: ReconciliationOutcome) -> str:
 
 
 def _guard(request: Request, runtime: UiRuntime) -> None:
+    # A local reverse proxy defeats this socket-origin check; access control must
+    # then be enforced at the proxy or network boundary.
     server = request.scope.get("server")
     if not server or server[0] != runtime.bind_host:
         raise HTTPException(status_code=403, detail="read-only UI is loopback-only")
@@ -41,13 +43,28 @@ def _guard(request: Request, runtime: UiRuntime) -> None:
 def _render(
     request: Request, name: str, result: ReconciliationResult, *, status: int = 200, **extra: Any
 ) -> HTMLResponse:
-    context = {"result": result, "label": _label(result.outcome), **extra}
+    rows = tuple(
+        {
+            "value": row,
+            "label": _label(row.outcome),
+            "is_drifted": row.outcome is ReconciliationOutcome.DRIFTED,
+        }
+        for row in result.rows
+    )
+    context = {
+        "result": result,
+        "label": _label(result.outcome),
+        "is_persistence_error": result.outcome is ReconciliationOutcome.PERSISTENCE_ERROR,
+        "rows": rows,
+        **extra,
+    }
     return _TEMPLATES.TemplateResponse(
         request=request, name=name, context=context, status_code=status
     )
 
 
 def create_ui_router(reconciler: Any, runtime: UiRuntime) -> APIRouter:
+    """Create loopback-guarded, read-only HTML reconciliation routes."""
     router = APIRouter()
 
     @router.get(_PREFIX, response_class=HTMLResponse)
@@ -73,7 +90,13 @@ def create_ui_router(reconciler: Any, runtime: UiRuntime) -> APIRouter:
             raise HTTPException(status_code=404, detail="instance not found")
         if result.outcome is ReconciliationOutcome.PERSISTENCE_ERROR:
             return _render(request, "instances.html", result, status=503)
-        return _render(request, "instance.html", result, row=result.rows[0])
+        return _render(
+            request,
+            "instance.html",
+            result,
+            row=result.rows[0],
+            is_drifted=result.rows[0].outcome is ReconciliationOutcome.DRIFTED,
+        )
 
     return router
 
