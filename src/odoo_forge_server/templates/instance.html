@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Instance — {{ label }}{% endblock %}
+{% block content %}<h1>Read-only instance detail</h1>
+<p>Outcome: <strong>{{ label }}</strong></p>
+<p>Instance: {{ row.record.pointer.instance_id.value }}</p>
+<p>Configured/expected state: resource={{ row.record.resource.identifier }}; Odoo running=True, state=healthy, ready=True; Postgres running=True, state=healthy, ready=True.</p>
+<p>Docker observed: Odoo running={{ row.live.odoo.running if row.live else "unverified" }}, state={{ row.live.odoo.state if row.live else "unverified" }}, ready={{ row.live.odoo.ready if row.live else "unverified" }}; Postgres running={{ row.live.postgres.running if row.live else "unverified" }}, state={{ row.live.postgres.state if row.live else "unverified" }}, ready={{ row.live.postgres.ready if row.live else "unverified" }}.</p>
+{% if row.outcome.value == "drifted" and row.live %}<p>Expected-versus-Docker-observed difference: Odoo running expected=True, observed={{ row.live.odoo.running }}; Odoo state expected=healthy, observed={{ row.live.odoo.state }}; Odoo ready expected=True, observed={{ row.live.odoo.ready }}. Postgres running expected=True, observed={{ row.live.postgres.running }}; Postgres state expected=healthy, observed={{ row.live.postgres.state }}; Postgres ready expected=True, observed={{ row.live.postgres.ready }}.</p>{% endif %}
+{% if row.detail %}<p>Row diagnostic: {{ row.detail }}</p>{% endif %}
+{% endblock %}
