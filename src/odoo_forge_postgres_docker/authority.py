@@ -9,7 +9,8 @@ import json
 import os
 import secrets
 import stat
-from collections.abc import Iterator, Mapping
+import subprocess
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
@@ -22,6 +23,12 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 from odoo_forge.database.errors import DatabaseOperationError
+from odoo_forge.ports.resource_custody import (
+    CustodyRequest,
+    CustodyTransitionConflictError,
+    CustodyUnverifiableError,
+)
+from odoo_forge.resource_ownership.types import OwnershipReceipt
 
 _DIRECTORY_MODE = 0o700
 _FILE_MODE = 0o600
@@ -51,6 +58,81 @@ class AuthorityCustodyError(AuthorityError):
 
 class AuthorityStateError(AuthorityError):
     """Authority state is missing, corrupt, or could not be committed safely."""
+
+
+class DockerResourceCustodyAdapter:
+    """Confirm Docker identity and converge local custody for one request."""
+
+    def __init__(
+        self,
+        authority: "LocalOwnershipAuthority",
+        *,
+        runner: Callable[..., subprocess.CompletedProcess[str]] | None = None,
+        timeout: float = 10.0,
+    ) -> None:
+        self._authority = authority
+        self._runner = runner or _run_docker
+        self._timeout = timeout
+
+    def confirm(self, request: CustodyRequest) -> OwnershipReceipt:
+        self._verify_live(request)
+        try:
+            self._authority.converge(
+                request.operation.operation_id, request.resource_name, request.resource_id
+            )
+        except CustodyTransitionConflictError:
+            raise
+        except (AuthorityError, OSError) as exc:
+            raise CustodyUnverifiableError() from exc
+        return OwnershipReceipt(
+            operation=request.operation,
+            owned_resource_ids=(request.resource_id,),
+            live_proof_expected=True,
+        )
+
+    def _verify_live(self, request: CustodyRequest) -> None:
+        try:
+            result = self._runner(
+                ["docker", "inspect", request.resource_name], timeout=self._timeout
+            )
+            if result.returncode != 0 or not isinstance(result.stdout, str):
+                raise ValueError
+            inspected = json.loads(result.stdout)
+            if not isinstance(inspected, list) or len(inspected) != 1:
+                raise ValueError
+            container = inspected[0]
+            labels = container["Config"]["Labels"]
+            if (
+                not isinstance(container, dict)
+                or container["Id"] != request.resource_id
+                or not isinstance(labels, dict)
+                or not all(isinstance(value, str) for value in labels.values())
+                or not {
+                    "io.odoo-forge.provider": "postgres-docker",
+                    "io.odoo-forge.operation": request.operation.operation_id,
+                    "io.odoo-forge.resource-kind": "container",
+                    "io.odoo-forge.creator-token": request.operation.operation_id.removeprefix(
+                        "postgres-docker:"
+                    ),
+                }.items()
+                <= labels.items()
+            ):
+                raise ValueError
+        except (
+            OSError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            subprocess.TimeoutExpired,
+        ) as exc:
+            raise CustodyUnverifiableError() from exc
+
+
+def _run_docker(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        list(argv), capture_output=True, check=False, shell=False, text=True, timeout=timeout
+    )
 
 
 class LocalOwnershipAuthority:
@@ -150,6 +232,52 @@ class LocalOwnershipAuthority:
                     "state": "retired",
                 },
             )
+
+    def converge(self, operation: str, name: str, docker_id: str) -> None:
+        """Apply the supported transition sequence once while holding the lock."""
+        initializing = not self._lock_path.exists()
+        with self.locked():
+            state = self._read_or_initial_state(initializing=initializing)
+            record = self._latest(state, operation, name)
+            other = next(
+                (
+                    item
+                    for item in reversed(state["records"])
+                    if item["name"] == name and item["operation"] != operation
+                ),
+                None,
+            )
+            if other is not None:
+                raise CustodyTransitionConflictError()
+            if record is None:
+                self._append_transition(state, operation, name, "", "reserved")
+                self._append_transition(state, operation, name, docker_id, "reserved")
+                self._append_transition(state, operation, name, docker_id, "active")
+            elif record["state"] == "reserved" and record["docker_id"] == "":
+                self._append_transition(state, operation, name, docker_id, "reserved")
+                self._append_transition(state, operation, name, docker_id, "active")
+            elif record["state"] == "reserved" and record["docker_id"] == docker_id:
+                self._append_transition(state, operation, name, docker_id, "active")
+            elif (
+                record["kind"] != "container"
+                or record["state"] != "active"
+                or record["docker_id"] != docker_id
+            ):
+                raise CustodyTransitionConflictError()
+
+    def _append_transition(
+        self, state: dict[str, Any], operation: str, name: str, docker_id: str, target: str
+    ) -> None:
+        self._append(
+            state,
+            {
+                "operation": operation,
+                "kind": "container",
+                "name": name,
+                "docker_id": docker_id,
+                "state": target,
+            },
+        )
 
     @classmethod
     def recover(cls, root: Path) -> "LocalOwnershipAuthority":
