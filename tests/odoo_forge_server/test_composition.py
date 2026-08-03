@@ -7,12 +7,23 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from odoo_forge.backend.status import InstanceRef, InstanceStatus, RoleStatus
+from odoo_forge.control_plane.authority import ControlPlaneAuthority, RegistrationRequest
+from odoo_forge.durable_operations.types import DurableOperationIdentity
+from odoo_forge.instance_registry.types import InstanceId, InstancePointer
+from odoo_forge.ports.resource_custody import (
+    CustodyStartingState,
+    CustodyTransition,
+    custody_request_digest,
+)
 from odoo_forge.provider_catalog import (
     ApprovedProviderAdapter,
     GlobalProviderBinding,
     ProviderCatalog,
     ProviderKind,
 )
+from odoo_forge.resource_ownership import OwnershipReceipt
+from odoo_forge.resource_ownership.types import ResourceOwnership, ResourceRef
+from odoo_forge.tenancy.types import ProjectScope, TenantId
 from odoo_forge_instances_postgres.adapter import Connection
 from odoo_forge_server.app import UiRuntime
 from odoo_forge_server.composition import create_production_app
@@ -30,24 +41,83 @@ class _Backend:
         )
 
 
-class _Cursor:
-    def execute(self, query: str, parameters: tuple[object, ...]) -> None:
-        pass
+_LIST_ROW = (
+    "tenant-1",
+    "project-1",
+    "alpha",
+    "odoo-forge-project-1-alpha",
+    "instance",
+    "created",
+)
+_REGISTERED_ROW = (
+    "tenant-1",
+    "project-1",
+    "alpha",
+    "odoo-forge-project-1-alpha",
+    "container",
+    "created",
+    "postgres-docker:op-1",
+    "a" * 64,
+    ["container-1"],
+    True,
+)
+_REGISTERED_POINTER = InstancePointer(
+    scope=ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1"),
+    instance_id=InstanceId(value="alpha"),
+)
+_REGISTERED_RESOURCE = ResourceRef(
+    identifier="odoo-forge-project-1-alpha",
+    resource_kind="container",
+    ownership=ResourceOwnership.CREATED,
+)
 
-    def fetchone(self) -> None:
-        return None
+
+def _registration_request() -> RegistrationRequest:
+    operation = "postgres-docker:op-1"
+    return RegistrationRequest(
+        operation=DurableOperationIdentity(
+            operation_id=operation,
+            request_digest=custody_request_digest(
+                operation_id=operation,
+                pointer=_REGISTERED_POINTER,
+                resource=_REGISTERED_RESOURCE,
+                resource_name=_REGISTERED_RESOURCE.identifier,
+                resource_id="container-1",
+                starting_state=CustodyStartingState.UNRESERVED,
+                requested_transition=CustodyTransition.RESERVE_BIND_ACTIVATE,
+            ),
+        ),
+        pointer=_REGISTERED_POINTER,
+        resource=_REGISTERED_RESOURCE,
+        resource_name=_REGISTERED_RESOURCE.identifier,
+        resource_id="container-1",
+    )
+
+
+class _Cursor:
+    """Answer by statement so a register round-trip can be observed.
+
+    The registry issues a lookup that must find nothing, then an insert that
+    must return the committed row, so a single fixed response cannot serve
+    both.
+    """
+
+    def __init__(self) -> None:
+        self._inserting = False
+        self._register_lookup = False
+
+    def execute(self, query: str, parameters: tuple[object, ...]) -> None:
+        normalized = " ".join(query.split()).upper()
+        self._inserting = normalized.startswith("INSERT")
+        self._register_lookup = "OPERATION_ID = " in normalized
+
+    def fetchone(self) -> tuple[object, ...] | None:
+        return _REGISTERED_ROW if self._inserting else None
 
     def fetchall(self) -> list[tuple[object, ...]]:
-        return [
-            (
-                "tenant-1",
-                "project-1",
-                "alpha",
-                "odoo-forge-project-1-alpha",
-                "instance",
-                "created",
-            )
-        ]
+        if self._inserting or self._register_lookup:
+            return []
+        return [_LIST_ROW]
 
 
 class _Connection:
@@ -118,6 +188,56 @@ def test_composition_injects_the_same_reconciler_into_the_ui() -> None:
         "odoo-forge-project-1-alpha",
         "odoo-forge-project-1-alpha",
     ]
+
+
+class _FakeCustody:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def confirm(self, request: object) -> OwnershipReceipt:
+        self.calls += 1
+        return OwnershipReceipt(
+            operation=DurableOperationIdentity(
+                operation_id="postgres-docker:op-1", request_digest="a" * 64
+            ),
+            owned_resource_ids=("container-1",),
+        )
+
+
+def test_composition_wires_one_authority_over_the_app_registry_with_no_new_route() -> None:
+    """Assert the wiring through behavior, not through private attributes.
+
+    Registering via the authority must reach the app's own connection factory
+    and must go through the INJECTED custody adapter; a default Docker adapter
+    would never touch this fake.
+    """
+    custody, acquired = _FakeCustody(), []
+
+    def acquire() -> AbstractContextManager[Connection]:
+        acquired.append(True)
+        return contextmanager(_connection)()
+
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=acquire,
+        custody_adapter=custody,
+    )
+
+    authority = app.state.control_plane_authority
+    assert isinstance(authority, ControlPlaneAuthority)
+    assert acquired == []
+
+    registered = authority.register(_registration_request())
+
+    assert custody.calls == 1
+    assert acquired, "the authority must register through the app's connection factory"
+    assert registered.pointer == _registration_request().pointer
+    assert registered.receipt is not None
+
+    methods = [route.methods for route in app.routes if hasattr(route, "methods")]
+    assert all(methods_set <= {"GET", "HEAD"} for methods_set in methods)
 
 
 def test_composition_rejects_unresolved_backend_catalog() -> None:
