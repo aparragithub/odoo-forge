@@ -1,7 +1,7 @@
 # fmt: off
 import json
 import subprocess
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.instance_registry.types import InstanceId, InstancePointer
 from odoo_forge.ports.resource_custody import (
+    CustodyError,
     CustodyRequest,
     CustodyStartingState,
     CustodyTransition,
@@ -27,7 +28,7 @@ from odoo_forge_postgres_docker.authority import (
     LocalOwnershipAuthority,
 )
 
-_EXPECTED_DIGEST = "1e340b7568efdcbdfdb4282c083a3c93b2257fd7352defcb45c0bc46c3d7156c"
+_EXPECTED_DIGEST = "6ba412b533ab8559c71bd2437cec6a989b53964c399a10344c5a5fa3c1f9342f"
 _POINTER = InstancePointer(
     scope=ProjectScope(tenant=TenantId(value="tenant-a"), project_id="project-a"),
     instance_id=InstanceId(value="instance-a"),
@@ -41,9 +42,11 @@ def _request(
     resource_kind: str = "container",
     ownership: ResourceOwnership = ResourceOwnership.CREATED,
     request_digest: str | None = None,
+    digest_operation: str | None = None,
 ) -> CustodyRequest:
     resource = ResourceRef(identifier="database-a", resource_kind=resource_kind, ownership=ownership)  # noqa: E501
     digest = request_digest or custody_request_digest(
+        operation_id=digest_operation or operation,
         pointer=_POINTER,
         resource=resource,
         resource_name=resource_name,
@@ -64,10 +67,16 @@ def _request(
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
-        ({"operation": "not-postgres"}, "unsupported custody operation"),
+        ({"operation": "not-provider-qualified"}, "must be provider-qualified"),
         ({"operation": ""}, "at least 1 character"),
+        ({"operation": ":op-a"}, "custody operation provider is required"),
+        ({"operation": " postgres-docker:op-a"}, "custody operation provider is required"),
         ({"operation": "postgres-docker:"}, "custody operation token is required"),
         ({"operation": "postgres-docker: "}, "custody operation token is required"),
+        ({"operation": "postgres-docker: op-a"}, "custody operation token is required"),
+        ({"operation": "postgres-docker:op-a "}, "custody operation token is required"),
+        ({"resource_name": ""}, "at least 1 character"),
+        ({"resource_id": ""}, "at least 1 character"),
         ({"resource_name": "other-name"}, "custody resource name must match"),
         ({"request_digest": "wrong-digest"}, "custody request digest does not match"),
         ({"resource_kind": "volume"}, "unsupported custody resource"),
@@ -79,6 +88,23 @@ def test_request_contract_rejects_invalid_identity_and_resource(
 ) -> None:
     with pytest.raises(ValidationError, match=message):
         _request(**changes)
+
+
+def test_digest_is_bound_to_the_operation_identity() -> None:
+    """A digest computed for another operation must not validate this request.
+
+    The digest asserts request MEANING, and the operation token is part of
+    that meaning: without this binding two requests differing only by
+    operation share one digest.
+    """
+    assert _request().operation.request_digest == _EXPECTED_DIGEST
+    with pytest.raises(ValidationError, match="custody request digest does not match"):
+        _request(operation="postgres-docker:op-b", digest_operation="postgres-docker:op-a")
+
+
+def test_custody_errors_share_one_base() -> None:
+    assert issubclass(CustodyTransitionConflictError, CustodyError)
+    assert issubclass(CustodyUnverifiableError, CustodyError)
 
 def _inspect(request: CustodyRequest, *, labels: dict[str, str] | object = "valid") -> str:
     actual = {
@@ -92,6 +118,14 @@ def _inspect(request: CustodyRequest, *, labels: dict[str, str] | object = "vali
     return json.dumps([{"Id": request.resource_id, "Config": {"Labels": actual if labels == "valid" else labels}}])  # noqa: E501
 
 
+def _runner_for(
+    stdout: str, *, returncode: int = 0
+) -> Callable[..., subprocess.CompletedProcess[str]]:
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(argv, returncode, stdout, "")
+    return runner
+
+
 def _adapter(
     authority: LocalOwnershipAuthority, request: CustodyRequest, payload: object = "valid"
 ) -> DockerResourceCustodyAdapter:
@@ -103,21 +137,62 @@ def _adapter(
     return DockerResourceCustodyAdapter(authority, runner=runner, timeout=3.0)
 
 
-@pytest.mark.parametrize("payload", ["not-json", "{}", "[]", [{"wrong": "shape"}], {"bad": "labels"}, {"x": 1}])  # noqa: E501
-def test_malformed_inspect_and_labels_are_unverifiable(tmp_path: Path, payload: object) -> None:
+@pytest.mark.parametrize("labels", [{"bad": "labels"}, {"x": 1}, "not-json"])
+def test_malformed_labels_are_unverifiable(tmp_path: Path, labels: object) -> None:
     request, authority = _request(), LocalOwnershipAuthority(tmp_path / "authority")
     with pytest.raises(CustodyUnverifiableError):
-        _adapter(authority, request, payload).confirm(request)
+        _adapter(authority, request, labels).confirm(request)
     assert not (authority.root / "authority.json").exists()
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "{}",                                       # top-level object, not a list
+        "[]",                                       # empty list
+        '[{"Id": "immutable-a"}, {"Id": "x"}]',     # more than one container
+        '["immutable-a"]',                          # list entry is not a mapping
+        '[{"Id": "immutable-a"}]',                  # no Config key
+    ],
+)
+def test_malformed_inspect_shapes_are_unverifiable(tmp_path: Path, stdout: str) -> None:
+    """Each case controls raw stdout so the shape guards are really exercised.
+
+    Routing these through `_inspect` would have made them all land on the
+    non-dict `Labels` branch instead, leaving the list and length guards
+    uncovered.
+    """
+    request, authority = _request(), LocalOwnershipAuthority(tmp_path / "authority")
+    adapter = DockerResourceCustodyAdapter(authority, runner=_runner_for(stdout), timeout=3.0)
+    with pytest.raises(CustodyUnverifiableError):
+        adapter.confirm(request)
+    assert not (authority.root / "authority.json").exists()
+
+
+def test_non_zero_docker_exit_is_unverifiable(tmp_path: Path) -> None:
+    request, authority = _request(), LocalOwnershipAuthority(tmp_path / "authority")
+    runner = _runner_for(_inspect(request), returncode=1)
+    adapter = DockerResourceCustodyAdapter(authority, runner=runner, timeout=3.0)
+    with pytest.raises(CustodyUnverifiableError):
+        adapter.confirm(request)
+
+
+def test_foreign_provider_operation_is_unverifiable(tmp_path: Path) -> None:
+    """The core port stays provider-neutral, so the adapter owns this refusal."""
+    request, authority = _request(operation="other-provider:op-a"), LocalOwnershipAuthority(tmp_path / "authority")  # noqa: E501
+    adapter = DockerResourceCustodyAdapter(authority, runner=_runner_for(_inspect(request)), timeout=3.0)  # noqa: E501
+    with pytest.raises(CustodyUnverifiableError):
+        adapter.confirm(request)
 
 
 def test_timeout_and_immutable_id_mismatch_are_unverifiable(tmp_path: Path) -> None:
     request, authority = _request(), LocalOwnershipAuthority(tmp_path / "authority")
     with pytest.raises(CustodyUnverifiableError):
         _adapter(authority, request, subprocess.TimeoutExpired("docker inspect", 3.0)).confirm(request)  # noqa: E501
-    mismatch = _adapter(authority, request)
-    mismatch._runner = lambda argv, *, timeout: subprocess.CompletedProcess(
-        argv, 0, _inspect(request).replace(request.resource_id, "other-id"), ""
+    mismatch = DockerResourceCustodyAdapter(
+        authority,
+        runner=_runner_for(_inspect(request).replace(request.resource_id, "other-id")),
+        timeout=3.0,
     )
     with pytest.raises(CustodyUnverifiableError):
         mismatch.confirm(request)
@@ -149,6 +224,30 @@ def test_conflicting_state_and_operation_fail_closed(tmp_path: Path, operation: 
         _adapter(authority, request).confirm(request)
 
 
+@pytest.mark.parametrize("state", ["reserved", "active"])
+def test_name_held_by_another_operation_conflicts(tmp_path: Path, state: str) -> None:
+    request, authority = _request(), LocalOwnershipAuthority(tmp_path / "authority")
+    _write_record(authority, request, operation="postgres-docker:other", state=state)
+    with pytest.raises(CustodyTransitionConflictError):
+        _adapter(authority, request).confirm(request)
+
+
+def test_name_retired_by_another_operation_is_reusable(tmp_path: Path) -> None:
+    """A retired predecessor must not reserve the name forever.
+
+    `retire` appends a `retired` record rather than deleting history, so a
+    conflict scan over every record would exhaust each name after its first
+    successful lifecycle.
+    """
+    request, authority = _request(), LocalOwnershipAuthority(tmp_path / "authority")
+    authority.reserve("postgres-docker:other", request.resource_name)
+    authority.bind("postgres-docker:other", request.resource_name, "immutable-old")
+    authority.activate("postgres-docker:other", request.resource_name, "immutable-old")
+    authority.retire("postgres-docker:other", request.resource_name, "immutable-old")
+    receipt = _adapter(authority, request).confirm(request)
+    assert receipt.owned_resource_ids == (request.resource_id,)
+
+
 def _write_record(
     authority: LocalOwnershipAuthority,
     request: CustodyRequest,
@@ -174,11 +273,12 @@ def test_concurrent_exact_retries_commit_one_transition_sequence(tmp_path: Path)
     request, authority = _request(), LocalOwnershipAuthority(tmp_path / "authority")
     barrier = Barrier(2)
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
-        barrier.wait(timeout=2)
+        # Generous: the barrier only guards against a deadlocked test, and a
+        # loaded runner delaying the second thread is not a custody defect.
+        barrier.wait(timeout=30)
         return subprocess.CompletedProcess(argv, 0, _inspect(request), "")
     adapter = DockerResourceCustodyAdapter(authority, runner=runner)
     with ThreadPoolExecutor(max_workers=2) as pool:
         receipts = list(pool.map(adapter.confirm, (request, request)))
     assert receipts[0] == receipts[1]
     assert len(authority.read()["records"]) == 3
-# fmt: on
