@@ -485,11 +485,45 @@ class DockerPostgresqlDatabaseProvider:
         return labels, identity
 
     def _wait_ready(self, resource_id: str, env: Mapping[str, str] | None = None) -> None:
+        """Poll until the resource is ready to serve queries.
+
+        When a database name is known, this probes with a REAL query against
+        THAT database rather than `pg_isready`: the postgres image's
+        entrypoint runs a TEMPORARY bootstrap server during initdb, and
+        `pg_isready` reports success against that bootstrap server before
+        `POSTGRES_DB` has actually been created — it also ignores its own
+        `-d` argument for existence purposes. Probing with `pg_isready`
+        therefore returns "ready" too early, and a subsequent `pg_restore`
+        can fail against a database that does not exist yet. Mirrors the
+        SAME real-query pattern already used by this package's
+        `_await_scratch_readiness` (`mask_transform.py`). When no database
+        name is known (e.g. `verify_runtime_ownership`'s no-env call),
+        `pg_isready` remains the probe — there is no database to query.
+        """
         user = (env or {}).get("POSTGRES_USER", "postgres")
-        argv = ["docker", "exec", resource_id, "pg_isready", "-U", user]
         database = (env or {}).get("POSTGRES_DB")
+        # Both values reach a `docker exec` argv, so hold them to the same
+        # identifier contract every other externally-supplied name in this
+        # adapter already satisfies. `POSTGRES_USER` is validated nowhere else,
+        # and nothing guarantees `POSTGRES_DB` equals the already-validated
+        # `spec.name`.
+        self._validate_identifier(user)
         if database is not None:
-            argv.extend(("-d", database))
+            self._validate_identifier(database)
+            argv = [
+                "docker",
+                "exec",
+                resource_id,
+                "psql",
+                "-U",
+                user,
+                "-d",
+                database,
+                "-tAc",
+                "SELECT 1",
+            ]
+        else:
+            argv = ["docker", "exec", resource_id, "pg_isready", "-U", user]
         deadline = self._monotonic() + self._readiness_timeout
         while True:
             try:

@@ -85,6 +85,44 @@ def test_copy_wires_source_capture_anonymize_deliver_and_prints_the_target(
     assert call["retain_staged"] is False
 
 
+def test_copy_provisions_the_target_database_named_after_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real restore path always runs `pg_restore -U postgres -d <target>`
+    against the target container (see `make_docker_restore_target`), so the
+    target `DatabaseSpec` MUST provision a database literally named `target`
+    via `POSTGRES_DB`; otherwise `postgres:16` only ever creates the default
+    `postgres` database and every restore fails with "database does not
+    exist" for any target name other than the literal string `postgres`.
+    """
+    fake = _FakeCoordinator(
+        result=_FakeCoordinatedCopyResult(
+            creation=_creation("db-target"), state=LifecycleState.SUCCEEDED
+        )
+    )
+    monkeypatch.setattr(
+        _composition, "_make_data_artifact_copy_coordinator", lambda **_kwargs: fake
+    )
+
+    result = runner.invoke(app, ["copy", "db-source", "db-target"])
+
+    assert result.exit_code == 0, result.output
+    spec = fake.run_calls[0]["spec"]
+    assert isinstance(spec, DatabaseSpec)
+    assert spec.env == {"POSTGRES_DB": "db-target"}
+
+    # Triangulation: a different target name must derive a different
+    # `POSTGRES_DB`, proving the value tracks the CLI argument rather than
+    # being a hardcoded fake.
+    fake.run_calls.clear()
+    other = runner.invoke(app, ["copy", "db-source", "other-target"])
+
+    assert other.exit_code == 0, other.output
+    other_spec = fake.run_calls[0]["spec"]
+    assert isinstance(other_spec, DatabaseSpec)
+    assert other_spec.env == {"POSTGRES_DB": "other-target"}
+
+
 def test_copy_binds_opaque_credentials_never_plaintext(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = _FakeCoordinator(
         result=_FakeCoordinatedCopyResult(
