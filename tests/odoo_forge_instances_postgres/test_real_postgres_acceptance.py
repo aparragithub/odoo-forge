@@ -11,7 +11,7 @@ import pytest
 pytest.importorskip("psycopg", reason="C46 requires invocation-scoped Psycopg")
 
 from postgres_test_database import PostgresTestDatabase  # type: ignore[import-not-found]
-from psycopg.pq import TransactionStatus  # type: ignore[import-not-found]
+from psycopg.pq import TransactionStatus
 
 from odoo_forge.instance_registry import InstanceId, InstancePointer, InstanceRecord
 from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef

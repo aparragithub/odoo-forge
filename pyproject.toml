@@ -26,7 +26,9 @@ classifiers = [
 ]
 dependencies = [
     "cryptography>=43.0",
+    "fastapi>=0.115,<0.116",
     "pydantic>=2.7",
+    "psycopg[binary]>=3.2",
     "pyyaml>=6.0",
     "typer>=0.12",
 ]
@@ -46,10 +48,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace", "src/odoo_forge_docker", "src/odoo_forge_registry", "src/odoo_forge_postgres_docker", "src/odoo_forge_catalog", "src/odoo_forge_pipeline_github", "src/odoo_forge_instances_postgres"]
+packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace", "src/odoo_forge_docker", "src/odoo_forge_registry", "src/odoo_forge_postgres_docker", "src/odoo_forge_catalog", "src/odoo_forge_pipeline_github", "src/odoo_forge_instances_postgres", "src/odoo_forge_server"]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.27,<1.0",
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "import-linter>=2.0",

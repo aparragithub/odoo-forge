@@ -12,7 +12,7 @@ from postgres_test_database import (  # type: ignore[import-not-found]
     PostgresTestDatabase,
     isolated_database,
 )
-from psycopg.errors import DivisionByZero  # type: ignore[import-not-found]
+from psycopg.errors import DivisionByZero
 from test_real_postgres_acceptance import (  # type: ignore[import-not-found]
     assert_registry_shape,
     create_safe_registry,
