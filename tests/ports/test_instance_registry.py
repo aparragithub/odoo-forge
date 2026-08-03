@@ -15,6 +15,7 @@ from odoo_forge.instance_registry import (
     InstanceRecordNotFoundError,
     InstanceRegistrationConflictError,
     MissingReceiptError,
+    ReceiptOverwriteRejectedError,
 )
 from odoo_forge.ports.instance_registry import InstanceRegistry
 from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
@@ -53,6 +54,9 @@ class _ConformingInstanceRegistry:
 
     def store(self, record: InstanceRecord) -> InstanceRecord:
         key = _key(record.pointer)
+        existing = self._records.get(key)
+        if existing is not None and existing.receipt is not None:
+            raise ReceiptOverwriteRejectedError(record.pointer)
         self._records[key] = record
         return record
 
@@ -198,6 +202,15 @@ def test_register_requires_a_receipt() -> None:
 
     with pytest.raises(MissingReceiptError):
         registry.register(_record("instance-1"))
+
+
+def test_store_rejects_overwriting_a_receipt_bearing_row() -> None:
+    registry = _ConformingInstanceRegistry()
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    registry.register(record)
+
+    with pytest.raises(ReceiptOverwriteRejectedError):
+        registry.store(_record("instance-1"))
 
 
 def test_register_rejects_reuse_of_the_same_pointer_under_a_new_operation_id() -> None:

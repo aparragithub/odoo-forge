@@ -147,6 +147,7 @@ def test_instance_registry_exports_only_the_public_domain_contract() -> None:
         "InstanceRegistrationConflictError",
         "InstanceRegistryError",
         "MissingReceiptError",
+        "ReceiptOverwriteRejectedError",
     }
     assert all(
         "image" not in name.lower() and "ghcr" not in name.lower()

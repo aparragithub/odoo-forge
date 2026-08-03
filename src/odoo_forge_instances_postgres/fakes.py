@@ -8,6 +8,7 @@ from odoo_forge.instance_registry import (
     InstanceRecordNotFoundError,
     InstanceRegistrationConflictError,
     MissingReceiptError,
+    ReceiptOverwriteRejectedError,
 )
 from odoo_forge.ports.instance_registry import InstanceRegistry
 from odoo_forge.tenancy import ProjectScope
@@ -26,6 +27,9 @@ class FakeInstanceRegistry(InstanceRegistry):
             record.pointer.scope.project_id,
             record.pointer.instance_id.value,
         )
+        existing = self._records.get(key)
+        if existing is not None and existing.receipt is not None:
+            raise ReceiptOverwriteRejectedError(record.pointer)
         self._records[key] = record
         return self._records[key]
 

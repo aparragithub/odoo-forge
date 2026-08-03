@@ -13,7 +13,13 @@ class InstanceRegistry(Protocol):
     """Store, retrieve, and list immutable instance records."""
 
     def store(self, record: InstanceRecord) -> InstanceRecord:
-        """Create or replace a record and return the authoritative value."""
+        """Create or replace a record and return the authoritative value.
+
+        Rejects overwriting a row that already carries a receipt: a
+        receipt-bearing row is authoritative lineage evidence from
+        `register()`, and this plain create-or-replace write has no lineage
+        semantics of its own to preserve or extend it safely.
+        """
         pass
 
     def get(self, pointer: InstancePointer) -> InstanceRecord:

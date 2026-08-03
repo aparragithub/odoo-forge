@@ -12,6 +12,7 @@ from odoo_forge.instance_registry import (
     InstanceRecordNotFoundError,
     InstanceRegistrationConflictError,
     MissingReceiptError,
+    ReceiptOverwriteRejectedError,
 )
 from odoo_forge.resource_ownership import OwnershipReceipt, ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
@@ -163,6 +164,26 @@ def test_register_rejects_a_conflicting_reuse_of_the_operation_identity() -> Non
     assert fake.get(record.pointer) == record
     with pytest.raises(InstanceRecordNotFoundError):
         fake.get(conflicting.pointer)
+
+
+def test_store_rejects_overwriting_a_receipt_bearing_row() -> None:
+    """`store()` must never invalidate a canonical registration's lineage.
+
+    Rewriting a receipt-bearing row's resource fields while leaving its
+    receipt columns untouched would produce a row whose lineage evidence
+    contradicts its own content. `store()` is fenced off from those rows
+    entirely rather than silently clearing the receipt, since the spec
+    requires accepted-registration evidence to be retained, not erased.
+    """
+    fake = FakeInstanceRegistry()
+    record = _record("instance-1").model_copy(update={"receipt": _receipt()})
+    fake.register(record)
+    replacement = _record("instance-1", identifier="replacement")
+
+    with pytest.raises(ReceiptOverwriteRejectedError):
+        fake.store(replacement)
+
+    assert fake.get(record.pointer) == record
 
 
 def test_register_rejects_reuse_of_the_same_pointer_under_a_new_operation_id() -> None:
