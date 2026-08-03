@@ -13,7 +13,7 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-import psycopg  # type: ignore[import-not-found]
+import psycopg
 import pytest
 
 from odoo_forge_instances_postgres.adapter import PostgresInstanceRegistry
