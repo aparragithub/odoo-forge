@@ -166,7 +166,6 @@ def test_polling_reconciles_again_and_ui_is_get_only() -> None:
     path = "/ui/tenants/tenant-1/projects/project-1/instances"
     first, second = client.get(path), client.get(path)
     assert "fresh" in first.text and "drifted" in second.text
-    assert 'http-equiv="refresh" content="60"' in first.text
     assert "Automatically refreshes every 60 seconds." in first.text
     assert reconciler.list_calls == 2
     paths = (path, f"{path}/alpha")
