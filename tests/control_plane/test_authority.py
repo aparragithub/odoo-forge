@@ -106,6 +106,23 @@ class _FlakyRegistry:
         return self._inner.register(record)
 
 
+class _AmbiguouslyCommittingRegistry(_FlakyRegistry):
+    """Commit the row and THEN fail, the ambiguous external-call outcome.
+
+    A connection dropped after a successful write looks like a failure to the
+    caller while the row is already present, so the retry collides with the
+    request's own committed row.
+    """
+
+    def register(self, record: InstanceRecord) -> InstanceRecord:
+        self.register_calls += 1
+        if self._remaining_failures > 0:
+            self._remaining_failures -= 1
+            self._inner.register(record)
+            raise RuntimeError("connection dropped after the row was committed")
+        return self._inner.register(record)
+
+
 def test_meaning_mismatch_is_rejected_without_touching_custody_or_registry() -> None:
     request = _request(request_digest="wrong-digest")
     custody = _FakeCustody()
@@ -194,6 +211,26 @@ def test_commit_failure_after_custody_success_retries_the_registry_write_once() 
     assert result.pointer == request.pointer
     assert registry.register_calls == 2
     assert len(custody.calls) == 1
+
+
+def test_retry_after_an_ambiguous_commit_converges_instead_of_conflicting() -> None:
+    """An already-landed write must not surface as a conflict on retry.
+
+    The first attempt commits and then reports failure, so the retry collides
+    with the request's own row. That is evidence of success, not of a
+    competing registration.
+    """
+    request = _request()
+    custody = _FakeCustody()
+    registry = _AmbiguouslyCommittingRegistry(FakeInstanceRegistry(), failures=1)
+
+    result = ControlPlaneAuthority(custody, registry).register(request)
+
+    assert result.pointer == request.pointer
+    assert result.receipt is not None
+    assert registry.register_calls == 2
+    assert len(custody.calls) == 1
+    assert len(registry.list(request.pointer.scope)) == 1
 
 
 def test_persistent_commit_failure_propagates_after_one_bounded_retry() -> None:
