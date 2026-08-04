@@ -26,6 +26,7 @@ from odoo_forge.database.errors import (
     DatabaseProviderError,
     DatabaseReadinessError,
     IncompleteCleanupError,
+    InvalidDatabaseRequestError,
     OwnershipRefusedError,
     ResourceUnavailableError,
 )
@@ -58,6 +59,8 @@ _RESOURCE_KIND_LABEL = "io.odoo-forge.resource-kind"
 _CREATOR_TOKEN_LABEL = "io.odoo-forge.creator-token"
 _PROVIDER_NAME = "postgres-docker"
 _OPERATION_PREFIX = "postgres-docker:"
+_ALLOWED_ENV_KEYS = frozenset({"POSTGRES_DB", "POSTGRES_USER"})
+_ALLOWED_LABEL_KEYS = frozenset({"com.odoo-forge.role"})
 
 
 class DockerCommandTimeoutError(DatabaseOperationError):
@@ -209,6 +212,7 @@ class DockerPostgresqlDatabaseProvider:
         return object.__new__(RuntimeOwnershipEvidence)
 
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
+        self._validate_caller_metadata(spec)
         creation: DatabaseCreation | None = None
         try:
             with self._credential_target_file(credentials) as injection:
@@ -229,6 +233,17 @@ class DockerPostgresqlDatabaseProvider:
             raise
         assert creation is not None
         return creation
+
+    @staticmethod
+    def _validate_caller_metadata(spec: DatabaseSpec) -> None:
+        for category, metadata, allowed_keys in (
+            ("env", spec.env, _ALLOWED_ENV_KEYS),
+            ("labels", spec.labels, _ALLOWED_LABEL_KEYS),
+        ):
+            if any(key not in allowed_keys for key in metadata):
+                failure = InvalidDatabaseRequestError()
+                failure.add_note(f"rejected {category} metadata")
+                raise failure
 
     def _provision(
         self, spec: DatabaseSpec, injection: PostgreSQLSecretInjection
