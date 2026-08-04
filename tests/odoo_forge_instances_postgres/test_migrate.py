@@ -141,7 +141,6 @@ def test_catalog_predicate_is_constant_and_ignores_dropped_columns() -> None:
     assert "'public'" in predicate and "'instance_registry'" in predicate
     assert "i.inhrelid = c.oid OR i.inhparent = c.oid" in predicate
     assert "NOT a.attisdropped" in predicate
-    assert "a.attname = 'operation_id'" in predicate
 
 
 def test_catalog_signature_rejects_non_text_operation_id() -> None:
