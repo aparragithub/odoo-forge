@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import traceback
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from inspect import getsource
 from pathlib import Path
@@ -1303,29 +1303,31 @@ def test_topology_fields_apply_network_volume_env_and_label_argv_tokens() -> Non
     assert "com.odoo-forge.role=backend" in run_call
 
 
-@pytest.mark.parametrize("mutated_field", ["env", "labels"])
-def test_provision_serializes_the_metadata_snapshots_taken_before_validation(
-    mutated_field: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    env = {"POSTGRES_DB": "odoo", "POSTGRES_USER": "odoo"}
-    labels = {"com.odoo-forge.role": "backend"}
-    spec = DatabaseSpec(name="database-42", env=env, labels=labels)
-    validate = DockerPostgresqlDatabaseProvider._validate_caller_metadata
+def test_provision_serializes_caller_mapping_snapshots_before_forwarding() -> None:
+    class MutatingMapping(Mapping[str, str]):
+        def __init__(self, values: dict[str, str], mutated_key: str, mutated_value: str) -> None:
+            self._values = values
+            self._keys = tuple(values)
+            self._mutated_key = mutated_key
+            self._mutated_value = mutated_value
 
-    def mutate_after_validation(
-        snapshot_env: dict[str, str], snapshot_labels: dict[str, str]
-    ) -> None:
-        validate(snapshot_env, snapshot_labels)
-        if mutated_field == "env":
-            env["POSTGRES_DB"] = "mutated-db"
-        else:
-            labels["com.odoo-forge.role"] = "mutated-role"
+        def __getitem__(self, key: str) -> str:
+            value = self._values[key]
+            if key == self._keys[-1]:
+                self._values[self._mutated_key] = self._mutated_value
+            return value
 
-    monkeypatch.setattr(
-        DockerPostgresqlDatabaseProvider,
-        "_validate_caller_metadata",
-        staticmethod(mutate_after_validation),
-    )
+        def __iter__(self) -> Iterator[str]:
+            return iter(self._keys)
+
+        def __len__(self) -> int:
+            return len(self._keys)
+
+    env_values = {"POSTGRES_DB": "odoo", "POSTGRES_USER": "odoo"}
+    labels_values = {"com.odoo-forge.role": "backend"}
+    env = MutatingMapping(env_values, "POSTGRES_DB", "mutated-db")
+    labels = MutatingMapping(labels_values, "com.odoo-forge.role", "mutated-role")
+    spec = DatabaseSpec.model_construct(name="database-42", env=env, labels=labels)
     calls: list[tuple[str, ...]] = []
 
     def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
@@ -1344,22 +1346,23 @@ def test_provision_serializes_the_metadata_snapshots_taken_before_validation(
     assert "com.odoo-forge.role=backend" in run_call
     assert "POSTGRES_DB=mutated-db" not in run_call
     assert "com.odoo-forge.role=mutated-role" not in run_call
+    assert env_values["POSTGRES_DB"] == "mutated-db"
+    assert labels_values["com.odoo-forge.role"] == "mutated-role"
 
-    if mutated_field == "env":
-        readiness_call = next(call for call in calls if call[:2] == ("docker", "exec"))
-        assert readiness_call == (
-            "docker",
-            "exec",
-            "database-42",
-            "psql",
-            "-U",
-            "odoo",
-            "-d",
-            "odoo",
-            "-tAc",
-            "SELECT 1",
-        )
-        assert "mutated-db" not in readiness_call
+    readiness_call = next(call for call in calls if call[:2] == ("docker", "exec"))
+    assert readiness_call == (
+        "docker",
+        "exec",
+        "database-42",
+        "psql",
+        "-U",
+        "odoo",
+        "-d",
+        "odoo",
+        "-tAc",
+        "SELECT 1",
+    )
+    assert "mutated-db" not in readiness_call
 
 
 @pytest.mark.parametrize(
