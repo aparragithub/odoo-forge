@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import traceback
 from collections.abc import Iterator, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from inspect import getsource
@@ -1302,6 +1303,65 @@ def test_topology_fields_apply_network_volume_env_and_label_argv_tokens() -> Non
     assert "com.odoo-forge.role=backend" in run_call
 
 
+@pytest.mark.parametrize("mutated_field", ["env", "labels"])
+def test_provision_serializes_the_metadata_snapshots_taken_before_validation(
+    mutated_field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env = {"POSTGRES_DB": "odoo", "POSTGRES_USER": "odoo"}
+    labels = {"com.odoo-forge.role": "backend"}
+    spec = DatabaseSpec(name="database-42", env=env, labels=labels)
+    validate = DockerPostgresqlDatabaseProvider._validate_caller_metadata
+
+    def mutate_after_validation(
+        snapshot_env: dict[str, str], snapshot_labels: dict[str, str]
+    ) -> None:
+        validate(snapshot_env, snapshot_labels)
+        if mutated_field == "env":
+            env["POSTGRES_DB"] = "mutated-db"
+        else:
+            labels["com.odoo-forge.role"] = "mutated-role"
+
+    monkeypatch.setattr(
+        DockerPostgresqlDatabaseProvider,
+        "_validate_caller_metadata",
+        staticmethod(mutate_after_validation),
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(spec, CredentialHandle("opaque"))
+
+    run_call = next(call for call in calls if call[:2] == ("docker", "run"))
+    assert "POSTGRES_DB=odoo" in run_call
+    assert "POSTGRES_USER=odoo" in run_call
+    assert "com.odoo-forge.role=backend" in run_call
+    assert "POSTGRES_DB=mutated-db" not in run_call
+    assert "com.odoo-forge.role=mutated-role" not in run_call
+
+    if mutated_field == "env":
+        readiness_call = next(call for call in calls if call[:2] == ("docker", "exec"))
+        assert readiness_call == (
+            "docker",
+            "exec",
+            "database-42",
+            "psql",
+            "-U",
+            "odoo",
+            "-d",
+            "odoo",
+            "-tAc",
+            "SELECT 1",
+        )
+        assert "mutated-db" not in readiness_call
+
+
 @pytest.mark.parametrize(
     ("field", "key"),
     [
@@ -1327,9 +1387,10 @@ def test_disallowed_metadata_is_rejected_with_category_only_redacted_failure(
         calls.append(tuple(argv))
         return subprocess.CompletedProcess(argv, 0, "", "")
 
+    value = {key: sensitive_marker}
     spec = DatabaseSpec(
         name="database-42",
-        **cast("dict[str, Any]", {field: {key: sensitive_marker}}),
+        **cast("dict[str, Any]", {field: value}),
     )
 
     with pytest.raises(InvalidDatabaseRequestError) as excinfo:
@@ -1339,11 +1400,15 @@ def test_disallowed_metadata_is_rejected_with_category_only_redacted_failure(
 
     failure = excinfo.value
     assert failure.detail == "database request is invalid"
-    assert field in " ".join(getattr(failure, "__notes__", ()))
-    assert sensitive_marker not in str(failure)
-    assert sensitive_marker not in failure.detail
-    assert sensitive_marker not in " ".join(getattr(failure, "__notes__", ()))
-    assert sensitive_marker not in repr(failure)
+    diagnostics = (
+        str(failure),
+        failure.detail,
+        repr(failure),
+        "".join(traceback.format_exception_only(type(failure), failure)),
+    )
+    assert field in diagnostics[-1]
+    for supplied_value in value.values():
+        assert all(supplied_value not in diagnostic for diagnostic in diagnostics)
     assert calls == []
 
 
@@ -1452,10 +1517,14 @@ def test_allowed_metadata_values_are_rejected_before_any_provider_collaborator(
         ).provision(spec, CredentialHandle("opaque"))
 
     failure = excinfo.value
-    assert "caller-secret-marker" not in str(failure)
-    assert "caller-secret-marker" not in failure.detail
-    assert "caller-secret-marker" not in " ".join(getattr(failure, "__notes__", ()))
-    assert "caller-secret-marker" not in repr(failure)
+    diagnostics = (
+        str(failure),
+        failure.detail,
+        repr(failure),
+        "".join(traceback.format_exception_only(type(failure), failure)),
+    )
+    for supplied_value in value.values():
+        assert all(supplied_value not in diagnostic for diagnostic in diagnostics)
     assert calls == []
     assert materialized == []
     assert injected == []
