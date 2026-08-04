@@ -136,6 +136,42 @@ def test_meaning_mismatch_is_rejected_without_touching_custody_or_registry() -> 
         registry.get(request.pointer)
 
 
+@pytest.mark.parametrize(
+    "missing_path",
+    [
+        ("pointer", "scope", "tenant"),
+        ("pointer", "scope", "project_id"),
+        ("pointer", "instance_id"),
+        ("resource", "identifier"),
+    ],
+)
+def test_missing_required_scope_or_identity_is_rejected_before_authority_side_effects(
+    missing_path: tuple[str, ...],
+) -> None:
+    valid_request = _request()
+    payload = valid_request.model_dump(mode="json")
+    current = payload
+    for key in missing_path[:-1]:
+        current = current[key]
+    del current[missing_path[-1]]
+    custody = _FakeCustody()
+    registry = FakeInstanceRegistry()
+    malformed_request = RegistrationRequest.model_construct(
+        operation=valid_request.operation,
+        pointer=payload["pointer"],
+        resource=payload["resource"],
+        resource_name=valid_request.resource_name,
+        resource_id=valid_request.resource_id,
+    )
+
+    with pytest.raises(RegistrationValidationError):
+        ControlPlaneAuthority(custody, registry).register(malformed_request)
+
+    assert custody.calls == []
+    with pytest.raises(InstanceRecordNotFoundError):
+        registry.get(_POINTER)
+
+
 @pytest.mark.parametrize("error", [CustodyTransitionConflictError(), CustodyUnverifiableError()])
 def test_custody_failure_is_fail_closed_and_writes_no_registry_row(error: Exception) -> None:
     request = _request()

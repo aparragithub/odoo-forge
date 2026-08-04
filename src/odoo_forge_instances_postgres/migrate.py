@@ -46,7 +46,10 @@ SELECT c.relkind, c.relpersistence, c.relrowsecurity, c.relforcerowsecurity,
   EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid
          AND a.attnum > 0 AND NOT a.attisdropped AND a.attgenerated <> '')   AS generated,
   EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid
-         AND a.attnum > 0 AND NOT a.attisdropped AND a.attidentity <> '')    AS identity
+         AND a.attnum > 0 AND NOT a.attisdropped AND a.attidentity <> '')    AS identity,
+  EXISTS(SELECT 1 FROM pg_catalog.pg_attribute a WHERE a.attrelid = c.oid
+         AND a.attname = 'operation_id' AND a.attnum > 0 AND NOT a.attisdropped
+         AND a.atttypid <> 'text'::regtype) AS operation_id_type_invalid
 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relname = 'instance_registry';
 """
@@ -95,9 +98,18 @@ def _verify_catalog_signature(row: tuple[object, ...] | None) -> None:
     if row is None:
         raise CatalogVerificationError("catalog verification found no matching relation")
 
-    (relkind, relpersistence, rls, force_rls, inherited, triggered, ruled, generated, identity) = (
-        row
-    )
+    (
+        relkind,
+        relpersistence,
+        rls,
+        force_rls,
+        inherited,
+        triggered,
+        ruled,
+        generated,
+        identity,
+        operation_id_type_invalid,
+    ) = row
 
     if relkind == "p":
         raise RegistryTableRejectedError("rejected variant: partitioned table")
@@ -123,6 +135,8 @@ def _verify_catalog_signature(row: tuple[object, ...] | None) -> None:
         raise RegistryTableRejectedError("rejected variant: generated column present")
     if identity:
         raise RegistryTableRejectedError("rejected variant: identity column present")
+    if operation_id_type_invalid:
+        raise RegistryTableRejectedError("rejected schema: operation_id must have type text")
 
 
 def run_migration(conn: Connection) -> None:

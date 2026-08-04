@@ -16,7 +16,18 @@ from odoo_forge_instances_postgres.migrate import (
     run_migration,
 )
 
-ACCEPTING_ROW: tuple[object, ...] = ("r", "p", False, False, False, False, False, False, False)
+ACCEPTING_ROW: tuple[object, ...] = (
+    "r",
+    "p",
+    False,
+    False,
+    False,
+    False,
+    False,
+    False,
+    False,
+    False,
+)
 
 
 class ScriptedLockTimeout(Exception):
@@ -130,6 +141,21 @@ def test_catalog_predicate_is_constant_and_ignores_dropped_columns() -> None:
     assert "'public'" in predicate and "'instance_registry'" in predicate
     assert "i.inhrelid = c.oid OR i.inhparent = c.oid" in predicate
     assert "NOT a.attisdropped" in predicate
+    assert "a.attname = 'operation_id'" in predicate
+
+
+def test_catalog_signature_rejects_non_text_operation_id() -> None:
+    row = (*ACCEPTING_ROW[:-1], True)
+    with pytest.raises(RegistryTableRejectedError, match="operation_id"):
+        run_migration(FakeConnection(FakeCursor(tuple(row))))
+
+
+def test_catalog_signature_accepts_text_operation_id() -> None:
+    connection = FakeConnection(FakeCursor(ACCEPTING_ROW))
+
+    run_migration(connection)
+
+    assert connection.committed and not connection.rolled_back
 
 
 @pytest.mark.parametrize(
