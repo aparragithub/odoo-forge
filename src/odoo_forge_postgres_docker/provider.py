@@ -26,6 +26,7 @@ from odoo_forge.database.errors import (
     DatabaseProviderError,
     DatabaseReadinessError,
     IncompleteCleanupError,
+    InvalidDatabaseRequestError,
     OwnershipRefusedError,
     ResourceUnavailableError,
 )
@@ -58,6 +59,8 @@ _RESOURCE_KIND_LABEL = "io.odoo-forge.resource-kind"
 _CREATOR_TOKEN_LABEL = "io.odoo-forge.creator-token"
 _PROVIDER_NAME = "postgres-docker"
 _OPERATION_PREFIX = "postgres-docker:"
+_ALLOWED_ENV_KEYS = frozenset({"POSTGRES_DB", "POSTGRES_USER"})
+_ALLOWED_LABEL_KEYS = frozenset({"com.odoo-forge.role"})
 
 
 class DockerCommandTimeoutError(DatabaseOperationError):
@@ -209,10 +212,13 @@ class DockerPostgresqlDatabaseProvider:
         return object.__new__(RuntimeOwnershipEvidence)
 
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
+        env_snapshot = dict(spec.env)
+        labels_snapshot = dict(spec.labels)
+        self._validate_caller_metadata(env_snapshot, labels_snapshot)
         creation: DatabaseCreation | None = None
         try:
             with self._credential_target_file(credentials) as injection:
-                creation = self._provision(spec, injection)
+                creation = self._provision(spec, injection, env_snapshot, labels_snapshot)
         except Exception as exc:
             rollback_incomplete = self._rollback_incomplete(exc)
             if rollback_incomplete is not None:
@@ -230,15 +236,37 @@ class DockerPostgresqlDatabaseProvider:
         assert creation is not None
         return creation
 
+    @staticmethod
+    def _validate_caller_metadata(env: Mapping[str, str], labels: Mapping[str, str]) -> None:
+        for category, metadata, allowed_keys in (
+            ("env", env, _ALLOWED_ENV_KEYS),
+            ("labels", labels, _ALLOWED_LABEL_KEYS),
+        ):
+            # `POSTGRES_DB` and `POSTGRES_USER` are forwarded to both Docker
+            # argv and the readiness `docker exec`; caller role labels are
+            # inspectable identity values. Reuse the adapter's existing
+            # lowercase identifier contract for all three non-secret values.
+            if any(
+                key not in allowed_keys or _IDENTIFIER.fullmatch(value) is None
+                for key, value in metadata.items()
+            ):
+                failure = InvalidDatabaseRequestError()
+                failure.add_note(f"rejected {category} metadata")
+                raise failure
+
     def _provision(
-        self, spec: DatabaseSpec, injection: PostgreSQLSecretInjection
+        self,
+        spec: DatabaseSpec,
+        injection: PostgreSQLSecretInjection,
+        env: Mapping[str, str],
+        labels: Mapping[str, str],
     ) -> DatabaseCreation:
         self._validate_identifier(spec.name)
         if spec.network is not None:
             self._validate_identifier(spec.network)
         if spec.data_volume is not None:
             self._validate_identifier(spec.data_volume)
-        self._reject_reserved_label_collisions(spec.labels)
+        self._reject_reserved_label_collisions(labels)
         receipt = self.creation_receipt(spec.name)
         data_volume_ownership = ResourceOwnership.CREATED
         created_volume: str | None = None
@@ -250,11 +278,11 @@ class DockerPostgresqlDatabaseProvider:
                     operation=receipt.operation,
                     owned_resource_ids=(*receipt.owned_resource_ids, spec.data_volume),
                 )
-        labels = self.labels_for(receipt.operation, resource_kind="container")
-        # `spec.labels` collisions with the reserved `io.odoo-forge.*`
+        provider_labels = self.labels_for(receipt.operation, resource_kind="container")
+        # Caller label collisions with the reserved `io.odoo-forge.*`
         # namespace are already rejected above, so this merge can never
         # override the ownership proof labels.
-        merged_labels = {**labels, **spec.labels}
+        merged_labels = {**provider_labels, **labels}
         created: list[str] = []
         try:
             self._ownership_authority.reserve(receipt.operation.value, spec.name)
@@ -270,12 +298,12 @@ class DockerPostgresqlDatabaseProvider:
             if spec.data_volume is not None:
                 argv.extend(("-v", f"{spec.data_volume}:/var/lib/postgresql/data"))
             argv.extend(injection.docker_args())
-            # `spec.env`/`spec.labels` flow directly into `docker run` argv and
+            # Caller env/labels flow directly into `docker run` argv and
             # are visible via `docker inspect`; they MUST NOT carry secret
             # material (documented non-goal). Postgres credentials are
             # delivered exclusively through `PostgreSQLSecretInjection`
             # (bind-mounted `POSTGRES_PASSWORD_FILE`), never via env/labels.
-            for key, value in spec.env.items():
+            for key, value in env.items():
                 argv.extend(("-e", f"{key}={value}"))
             argv.extend(
                 item for pair in merged_labels.items() for item in ("--label", "=".join(pair))
@@ -311,7 +339,7 @@ class DockerPostgresqlDatabaseProvider:
             self.assert_live_ownership(receipt, spec.name, live_labels, resource_kind="container")
             self._ownership_authority.bind(receipt.operation.value, spec.name, docker_id)
             self._ownership_authority.activate(receipt.operation.value, spec.name, docker_id)
-            self._wait_ready(spec.name, spec.env)
+            self._wait_ready(spec.name, env)
         except DatabaseProviderError as exc:
             self._raise_after_rollback(exc, receipt, created, created_volume=created_volume)
             raise
@@ -332,7 +360,7 @@ class DockerPostgresqlDatabaseProvider:
     def _reject_reserved_label_collisions(self, labels: Mapping[str, str]) -> None:
         """Fail closed when caller labels collide with the reserved namespace.
 
-        Caller-supplied `spec.labels` MUST NOT be able to spoof or erase the
+        Caller-supplied labels MUST NOT be able to spoof or erase the
         `io.odoo-forge.*` ownership/proof labels. Checked before any docker
         call and before `merged_labels` is built.
         """

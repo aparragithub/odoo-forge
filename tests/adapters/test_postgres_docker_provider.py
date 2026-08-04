@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Iterator, Sequence
+import traceback
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from inspect import getsource
 from pathlib import Path
@@ -28,6 +29,7 @@ from odoo_forge.database.errors import (
     CredentialUnavailableError,
     DatabaseOperationError,
     DatabaseReadinessError,
+    InvalidDatabaseRequestError,
     OwnershipRefusedError,
 )
 from odoo_forge.database.readiness import GateReadinessEvidence, evaluate_gate_readiness
@@ -1301,6 +1303,275 @@ def test_topology_fields_apply_network_volume_env_and_label_argv_tokens() -> Non
     assert "com.odoo-forge.role=backend" in run_call
 
 
+def test_provision_serializes_caller_mapping_snapshots_before_forwarding() -> None:
+    class MutatingMapping(Mapping[str, str]):
+        def __init__(self, values: dict[str, str], mutated_key: str, mutated_value: str) -> None:
+            self._values = values
+            self._keys = tuple(values)
+            self._mutated_key = mutated_key
+            self._mutated_value = mutated_value
+
+        def __getitem__(self, key: str) -> str:
+            value = self._values[key]
+            if key == self._keys[-1]:
+                self._values[self._mutated_key] = self._mutated_value
+            return value
+
+        def __iter__(self) -> Iterator[str]:
+            return iter(self._keys)
+
+        def __len__(self) -> int:
+            return len(self._keys)
+
+    env_values = {"POSTGRES_DB": "odoo", "POSTGRES_USER": "odoo"}
+    labels_values = {"com.odoo-forge.role": "backend"}
+    env = MutatingMapping(env_values, "POSTGRES_DB", "mutated-db")
+    labels = MutatingMapping(labels_values, "com.odoo-forge.role", "mutated-role")
+    spec = DatabaseSpec.model_construct(name="database-42", env=env, labels=labels)
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner, token_factory=lambda: "token-42", credential_target=_credential_target
+    ).provision(spec, CredentialHandle("opaque"))
+
+    run_call = next(call for call in calls if call[:2] == ("docker", "run"))
+    assert "POSTGRES_DB=odoo" in run_call
+    assert "POSTGRES_USER=odoo" in run_call
+    assert "com.odoo-forge.role=backend" in run_call
+    assert "POSTGRES_DB=mutated-db" not in run_call
+    assert "com.odoo-forge.role=mutated-role" not in run_call
+    assert env_values["POSTGRES_DB"] == "mutated-db"
+    assert labels_values["com.odoo-forge.role"] == "mutated-role"
+
+    readiness_call = next(call for call in calls if call[:2] == ("docker", "exec"))
+    assert readiness_call == (
+        "docker",
+        "exec",
+        "database-42",
+        "psql",
+        "-U",
+        "odoo",
+        "-d",
+        "odoo",
+        "-tAc",
+        "SELECT 1",
+    )
+    assert "mutated-db" not in readiness_call
+
+
+@pytest.mark.parametrize(
+    ("field", "key"),
+    [
+        ("env", "POSTGRES_PASSWORD"),
+        ("env", "PASSWORD"),
+        ("env", "SECRET"),
+        ("env", "TOKEN"),
+        ("labels", "POSTGRES_PASSWORD"),
+        ("labels", "PASSWORD"),
+        ("labels", "SECRET"),
+        ("labels", "TOKEN"),
+        ("env", "UNEXPECTED_ENV"),
+        ("labels", "com.example.unexpected"),
+    ],
+)
+def test_disallowed_metadata_is_rejected_with_category_only_redacted_failure(
+    field: str, key: str
+) -> None:
+    sensitive_marker = "caller-sensitive-marker"
+    calls: list[tuple[str, ...]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    value = {key: sensitive_marker}
+    spec = DatabaseSpec(
+        name="database-42",
+        **cast("dict[str, Any]", {field: value}),
+    )
+
+    with pytest.raises(InvalidDatabaseRequestError) as excinfo:
+        DockerPostgresqlDatabaseProvider(runner=runner).provision(
+            spec, CredentialHandle(sensitive_marker)
+        )
+
+    failure = excinfo.value
+    assert failure.detail == "database request is invalid"
+    diagnostics = (
+        str(failure),
+        failure.detail,
+        repr(failure),
+        "".join(traceback.format_exception_only(type(failure), failure)),
+    )
+    assert field in diagnostics[-1]
+    for supplied_value in value.values():
+        assert all(supplied_value not in diagnostic for diagnostic in diagnostics)
+    assert calls == []
+
+
+@pytest.mark.parametrize("field", ["env", "labels"])
+def test_disallowed_metadata_is_rejected_before_any_provider_collaborator(
+    field: str, tmp_path: Path
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    materialized: list[CredentialHandle] = []
+    injected: list[CredentialInjectionDescriptor] = []
+    reserved: list[tuple[str, str]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def materialize(credentials: CredentialHandle) -> CredentialInjectionDescriptor:
+        materialized.append(credentials)
+        return CredentialInjectionDescriptor(
+            handle=credentials,
+            target_kind="database",
+            store_ref="sops://opaque",
+            redaction_label="SOPS credential",
+        )
+
+    def inject(descriptor: CredentialInjectionDescriptor) -> None:
+        injected.append(descriptor)
+
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.reserve = lambda operation, name: reserved.append((operation, name))  # type: ignore[method-assign]
+    if field == "env":
+        spec = DatabaseSpec(
+            name="database-42",
+            data_volume="pgdata-42",
+            env={"POSTGRES_PASSWORD": "secret"},
+        )
+    else:
+        spec = DatabaseSpec(
+            name="database-42",
+            data_volume="pgdata-42",
+            labels={"TOKEN": "secret"},
+        )
+
+    with pytest.raises(InvalidDatabaseRequestError):
+        DockerPostgresqlDatabaseProvider(
+            runner=runner,
+            credential_materializer=materialize,
+            credential_injector=inject,
+            ownership_authority=authority,
+        ).provision(spec, CredentialHandle("opaque"))
+
+    assert calls == []
+    assert materialized == []
+    assert injected == []
+    assert reserved == []
+    assert not (tmp_path / "authority").exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("env", {"POSTGRES_DB": "database-42/caller-secret-marker"}),
+        ("env", {"POSTGRES_USER": "user with spaces"}),
+        ("labels", {"com.odoo-forge.role": "backend/caller-secret-marker"}),
+    ],
+)
+def test_allowed_metadata_values_are_rejected_before_any_provider_collaborator(
+    field: str, value: dict[str, str], tmp_path: Path
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    materialized: list[CredentialHandle] = []
+    injected: list[CredentialInjectionDescriptor] = []
+    reserved: list[tuple[str, str]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def materialize(credentials: CredentialHandle) -> CredentialInjectionDescriptor:
+        materialized.append(credentials)
+        return CredentialInjectionDescriptor(
+            handle=credentials,
+            target_kind="database",
+            store_ref="sops://opaque",
+            redaction_label="SOPS credential",
+        )
+
+    def inject(descriptor: CredentialInjectionDescriptor) -> None:
+        injected.append(descriptor)
+
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.reserve = lambda operation, name: reserved.append((operation, name))  # type: ignore[method-assign]
+    spec = DatabaseSpec(
+        name="database-42",
+        data_volume="pgdata-42",
+        env=value if field == "env" else {},
+        labels=value if field == "labels" else {},
+    )
+
+    with pytest.raises(InvalidDatabaseRequestError) as excinfo:
+        DockerPostgresqlDatabaseProvider(
+            runner=runner,
+            credential_materializer=materialize,
+            credential_injector=inject,
+            ownership_authority=authority,
+        ).provision(spec, CredentialHandle("opaque"))
+
+    failure = excinfo.value
+    diagnostics = (
+        str(failure),
+        failure.detail,
+        repr(failure),
+        "".join(traceback.format_exception_only(type(failure), failure)),
+    )
+    for supplied_value in value.values():
+        assert all(supplied_value not in diagnostic for diagnostic in diagnostics)
+    assert calls == []
+    assert materialized == []
+    assert injected == []
+    assert reserved == []
+    assert not (tmp_path / "authority").exists()
+
+
+def test_allowed_metadata_preserves_provider_labels_and_secret_injection() -> None:
+    secret = "postgres-password-secret"
+    calls: list[tuple[str, ...]] = []
+
+    @contextmanager
+    def credential_target(_descriptor: CredentialInjectionDescriptor) -> Iterator[str]:
+        yield secret
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        if argv[:2] == ["docker", "inspect"]:
+            return subprocess.CompletedProcess(argv, 0, _OWNED_INSPECT, "")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    DockerPostgresqlDatabaseProvider(
+        runner=runner,
+        token_factory=lambda: "token-42",
+        credential_target=credential_target,
+    ).provision(
+        DatabaseSpec(
+            name="database-42",
+            env={"POSTGRES_DB": "odoo", "POSTGRES_USER": "odoo"},
+            labels={"com.odoo-forge.role": "backend"},
+        ),
+        CredentialHandle("opaque"),
+    )
+
+    run_call = next(call for call in calls if call[:2] == ("docker", "run"))
+    assert "POSTGRES_DB=odoo" in run_call
+    assert "POSTGRES_USER=odoo" in run_call
+    assert "com.odoo-forge.role=backend" in run_call
+    assert "io.odoo-forge.provider=postgres-docker" in run_call
+    assert "io.odoo-forge.operation=postgres-docker:token-42" in run_call
+    assert "POSTGRES_PASSWORD_FILE=/run/secrets/postgres-password" in run_call
+    assert secret not in " ".join(run_call)
+
+
 @pytest.mark.parametrize(
     ("field", "unsafe_value"),
     [
@@ -1812,7 +2083,7 @@ def test_reserved_namespace_label_collision_is_rejected_before_docker_run() -> N
     spec = DatabaseSpec(name="database-42", labels={"io.odoo-forge.creator-token": "spoofed-token"})
     provider = DockerPostgresqlDatabaseProvider(runner=runner, credential_target=_credential_target)
 
-    with pytest.raises(DatabaseOperationError):
+    with pytest.raises(InvalidDatabaseRequestError):
         provider.provision(spec, CredentialHandle("opaque"))
 
     assert calls == []
