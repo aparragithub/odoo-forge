@@ -240,7 +240,14 @@ class DockerPostgresqlDatabaseProvider:
             ("env", spec.env, _ALLOWED_ENV_KEYS),
             ("labels", spec.labels, _ALLOWED_LABEL_KEYS),
         ):
-            if any(key not in allowed_keys for key in metadata):
+            # `POSTGRES_DB` and `POSTGRES_USER` are forwarded to both Docker
+            # argv and the readiness `docker exec`; caller role labels are
+            # inspectable identity values. Reuse the adapter's existing
+            # lowercase identifier contract for all three non-secret values.
+            if any(
+                key not in allowed_keys or _IDENTIFIER.fullmatch(value) is None
+                for key, value in metadata.items()
+            ):
                 failure = InvalidDatabaseRequestError()
                 failure.add_note(f"rejected {category} metadata")
                 raise failure

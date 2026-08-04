@@ -1402,6 +1402,67 @@ def test_disallowed_metadata_is_rejected_before_any_provider_collaborator(
     assert not (tmp_path / "authority").exists()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("env", {"POSTGRES_DB": "database-42/caller-secret-marker"}),
+        ("env", {"POSTGRES_USER": "user with spaces"}),
+        ("labels", {"com.odoo-forge.role": "backend/caller-secret-marker"}),
+    ],
+)
+def test_allowed_metadata_values_are_rejected_before_any_provider_collaborator(
+    field: str, value: dict[str, str], tmp_path: Path
+) -> None:
+    calls: list[tuple[str, ...]] = []
+    materialized: list[CredentialHandle] = []
+    injected: list[CredentialInjectionDescriptor] = []
+    reserved: list[tuple[str, str]] = []
+
+    def runner(argv: Sequence[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        calls.append(tuple(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    def materialize(credentials: CredentialHandle) -> CredentialInjectionDescriptor:
+        materialized.append(credentials)
+        return CredentialInjectionDescriptor(
+            handle=credentials,
+            target_kind="database",
+            store_ref="sops://opaque",
+            redaction_label="SOPS credential",
+        )
+
+    def inject(descriptor: CredentialInjectionDescriptor) -> None:
+        injected.append(descriptor)
+
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.reserve = lambda operation, name: reserved.append((operation, name))  # type: ignore[method-assign]
+    spec = DatabaseSpec(
+        name="database-42",
+        data_volume="pgdata-42",
+        env=value if field == "env" else {},
+        labels=value if field == "labels" else {},
+    )
+
+    with pytest.raises(InvalidDatabaseRequestError) as excinfo:
+        DockerPostgresqlDatabaseProvider(
+            runner=runner,
+            credential_materializer=materialize,
+            credential_injector=inject,
+            ownership_authority=authority,
+        ).provision(spec, CredentialHandle("opaque"))
+
+    failure = excinfo.value
+    assert "caller-secret-marker" not in str(failure)
+    assert "caller-secret-marker" not in failure.detail
+    assert "caller-secret-marker" not in " ".join(getattr(failure, "__notes__", ()))
+    assert "caller-secret-marker" not in repr(failure)
+    assert calls == []
+    assert materialized == []
+    assert injected == []
+    assert reserved == []
+    assert not (tmp_path / "authority").exists()
+
+
 def test_allowed_metadata_preserves_provider_labels_and_secret_injection() -> None:
     secret = "postgres-password-secret"
     calls: list[tuple[str, ...]] = []
