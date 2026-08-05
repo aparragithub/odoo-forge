@@ -10,8 +10,8 @@ _HOSTNAME_TEXT = re.compile(
 )
 _CREDENTIAL_SHAPED_TEXT = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
 _SECRET_OR_CONNECTION_TEXT = re.compile(
-    r"(?:\b(?:[a-z0-9]+[_-]+)*(?:api[_-]?(?:key|token)|authorization|bearer|credential|"
-    r"password|passwd|secret|token)(?:[_-]+[a-z0-9]+)*\b\s*[=:]?|://|@)",
+    r"(?:(?<![a-z0-9])(?:[a-z0-9]+[_-]+)*(?:api[_-]?(?:key|token)|authorization|bearer|credential|"
+    r"password|passwd|secret|token)(?:[_-]+[a-z0-9]+)*(?![a-z0-9])\s*[=:]?|://|@)",
     re.IGNORECASE,
 )
 

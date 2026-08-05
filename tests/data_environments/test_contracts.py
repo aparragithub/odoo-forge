@@ -22,6 +22,7 @@ from odoo_forge.tenancy import ProjectScope, TenantId
 
 _COMPOUND_SECRET_NAMES = (
     "MY_SECRET",
+    "_SECRET",
     "ODOO_API_KEY",
     "secret__value",
     "authorization_code",
