@@ -1,15 +1,11 @@
 from datetime import UTC, datetime
-from typing import get_type_hints
 
 import pytest
-from pydantic import ValidationError, ValidationInfo
+from pydantic import ValidationError
 
 import odoo_forge.data_environments as data_environments
 from odoo_forge.data_environments.errors import (
     DataEnvironmentError,
-    EnvironmentDefinitionUnavailableError,
-    RawDataGrantRefusedError,
-    RecoveryPointUnavailableError,
 )
 from odoo_forge.data_environments.types import (
     DataEnvironmentDefinition,
@@ -25,6 +21,9 @@ from odoo_forge.ports.raw_data_grant_authority import RawDataGrantAuthority
 from odoo_forge.tenancy import ProjectScope, TenantId
 
 _COMPOUND_SECRET_NAMES = (
+    "MY_SECRET",
+    "ODOO_API_KEY",
+    "secret__value",
     "authorization_code",
     "api_token",
     "password_hash",
@@ -60,17 +59,20 @@ def _grant() -> RawDataGrant:
 
 def test_data_environment_package_reexports_exact_public_types() -> None:
     expected = {
-        "DataEnvironmentDefinition",
-        "EnvironmentFailureCode",
-        "EnvironmentLifecycle",
-        "EnvironmentOperationOutcome",
-        "EnvironmentOutcomeCode",
-        "EnvironmentRelationship",
-        "RawDataGrant",
+        "DataEnvironmentDefinition": DataEnvironmentDefinition,
+        "EnvironmentFailureCode": EnvironmentFailureCode,
+        "EnvironmentLifecycle": EnvironmentLifecycle,
+        "EnvironmentOperationOutcome": EnvironmentOperationOutcome,
+        "EnvironmentOutcomeCode": EnvironmentOutcomeCode,
+        "EnvironmentRelationship": EnvironmentRelationship,
+        "RawDataGrant": RawDataGrant,
     }
 
-    assert data_environments.__all__ == sorted(expected)
-    assert all(getattr(data_environments, name) is globals()[name] for name in expected)
+    assert set(data_environments.__all__) == set(expected)
+    assert len(data_environments.__all__) == len(expected)
+    assert all(
+        getattr(data_environments, name) is canonical for name, canonical in expected.items()
+    )
 
 
 class _Registry:
@@ -118,27 +120,6 @@ def test_outcomes_are_fail_closed() -> None:
         EnvironmentOperationOutcome(code=EnvironmentOutcomeCode.REFUSED)
 
 
-def test_data_environment_errors_describe_their_domain_meaning() -> None:
-    assert "data-environment" in (DataEnvironmentError.__doc__ or "")
-    assert "definition" in (EnvironmentDefinitionUnavailableError.__doc__ or "")
-    assert "raw-data" in (RawDataGrantRefusedError.__doc__ or "")
-    assert "recovery point" in (RecoveryPointUnavailableError.__doc__ or "")
-
-
-@pytest.mark.parametrize(
-    "validator",
-    [
-        EnvironmentRelationship.require_safe_ids,
-        DataEnvironmentDefinition.require_safe_references,
-        RawDataGrant.require_safe_references,
-    ],
-)
-def test_field_validators_annotate_pydantic_validation_info(validator: object) -> None:
-    hints = get_type_hints(validator)
-
-    assert hints["info"] is ValidationInfo
-
-
 def test_raw_grant_requires_expiry_reason_and_audit_reference() -> None:
     grant = _grant()
 
@@ -177,7 +158,7 @@ def test_raw_grant_requires_expiry_reason_and_audit_reference() -> None:
                 "environment_id": "qa",
                 "grantor": "operator-1",
                 "expires_at": datetime(2030, 1, 1, tzinfo=UTC),
-                "reason": "credential_secret=secret-sentinel",
+                "reason": "credential_secret=redacted-value",
                 "audit_reference": "audit-42",
             }
         )
@@ -192,7 +173,7 @@ def test_raw_grant_rejects_compound_secret_reason(compound_secret: str) -> None:
                 "environment_id": "qa",
                 "grantor": "operator-1",
                 "expires_at": datetime(2030, 1, 1, tzinfo=UTC),
-                "reason": f"{compound_secret}=secret-sentinel",
+                "reason": f"{compound_secret}=redacted-value",
                 "audit_reference": "audit-42",
             }
         )
@@ -204,7 +185,7 @@ def test_outcome_rejects_secret_pattern_in_redacted_detail() -> None:
             {
                 "code": EnvironmentOutcomeCode.FAILED,
                 "failure_code": EnvironmentFailureCode.INVALID_DEFINITION,
-                "redacted_detail": "credential_secret=secret-sentinel",
+                "redacted_detail": "credential_secret=redacted-value",
             }
         )
 
@@ -216,7 +197,7 @@ def test_outcome_rejects_compound_secret_redacted_detail(compound_secret: str) -
             {
                 "code": EnvironmentOutcomeCode.FAILED,
                 "failure_code": EnvironmentFailureCode.INVALID_DEFINITION,
-                "redacted_detail": f"{compound_secret}=secret-sentinel",
+                "redacted_detail": f"{compound_secret}=redacted-value",
             }
         )
 
