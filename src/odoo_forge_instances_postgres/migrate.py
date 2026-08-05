@@ -23,6 +23,7 @@ __all__ = [
     "RegistryTableRejectedError",
     "CatalogVerificationError",
     "run_migration",
+    "run_environment_migration",
 ]
 
 ADVISORY_LOCK_KEY_1 = 1329876815
@@ -79,6 +80,14 @@ def _migration_sql() -> str:
     return (
         importlib.resources.files("odoo_forge_instances_postgres.migrations")
         .joinpath("0001_instance_registry.sql")
+        .read_text(encoding="utf-8")
+    )
+
+
+def _environment_migration_sql() -> str:
+    return (
+        importlib.resources.files("odoo_forge_instances_postgres.migrations")
+        .joinpath("0002_data_environments.sql")
         .read_text(encoding="utf-8")
     )
 
@@ -168,4 +177,21 @@ def run_migration(conn: Connection) -> None:
         conn.rollback()
         raise
 
+    conn.commit()
+
+
+def run_environment_migration(conn: Connection) -> None:
+    """Create only the two separately owned data-environment authority tables."""
+
+    if conn.autocommit is not False:
+        raise MigrationAutocommitError(
+            "run_environment_migration requires a connection with autocommit disabled"
+        )
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(_environment_migration_sql())
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()
