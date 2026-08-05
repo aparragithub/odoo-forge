@@ -1,3 +1,4 @@
+# mypy: disable-error-code=assignment
 from __future__ import annotations
 
 import inspect

@@ -21,7 +21,7 @@ def _definition() -> DataEnvironmentDefinition:
     return DataEnvironmentDefinition(
         environment_id="qa",
         owner="platform",
-        scope={"tenant": {"value": "tenant-1"}, "project_id": "project-1"},
+        scope={"tenant": {"value": "tenant-1"}, "project_id": "project-1"},  # type: ignore[arg-type]
         lifecycle=EnvironmentLifecycle.ACTIVE,
         policy_ref="policy-qa",
         relationships=(
