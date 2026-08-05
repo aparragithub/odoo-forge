@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         DatabaseRef,
         DatabaseSpec,
         OperationIdentity,
+        RecoveryPoint,
     )
 
 
@@ -44,4 +45,21 @@ class DatabaseProvider(Protocol):
     def cleanup(self, receipt: CreationReceipt) -> CleanupReport: ...
 
 
-__all__ = ["DatabaseProvider"]
+@runtime_checkable
+class DatabaseRecoveryPointCapability(DatabaseProvider, Protocol):
+    """Optional provider capability for safe existing-target mutation."""
+
+    def acquire_recovery_point(self, ref: DatabaseRef) -> RecoveryPoint:
+        """Acquire an opaque recovery point before mutating an existing target."""
+        ...
+
+    def restore_recovery_point(self, ref: DatabaseRef, point: RecoveryPoint) -> None:
+        """Restore an opaque recovery point without exposing provider payloads."""
+        ...
+
+    def verify_recovery_point(self, ref: DatabaseRef, point: RecoveryPoint) -> bool:
+        """Verify the target matches an opaque recovery point after restoration."""
+        ...
+
+
+__all__ = ["DatabaseProvider", "DatabaseRecoveryPointCapability"]

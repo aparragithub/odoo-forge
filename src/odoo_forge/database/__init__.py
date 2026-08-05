@@ -5,6 +5,7 @@ from odoo_forge.database.types import (
     DatabaseRef,
     DatabaseSpec,
     OperationIdentity,
+    RecoveryPoint,
     ResourceOwnership,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "DatabaseRef",
     "DatabaseSpec",
     "OperationIdentity",
+    "RecoveryPoint",
     "ResourceOwnership",
 ]

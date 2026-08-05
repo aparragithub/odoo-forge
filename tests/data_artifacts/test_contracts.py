@@ -16,6 +16,8 @@ from odoo_forge.data_artifacts import (
     ValidationFailureCode,
 )
 
+_COMPOUND_SECRET_NAMES = ("MY_SECRET", "ODOO_API_KEY", "secret__value")
+
 
 def _component(kind: ArtifactComponentKind) -> RestoreSetComponent:
     return RestoreSetComponent(
@@ -92,6 +94,27 @@ def test_opaque_and_redacted_contract_fields_reject_connection_details_and_secre
             manifest=None,
             failure_code=ValidationFailureCode.UNAVAILABLE,
             redacted_detail="source [2001:db8::1]:5432 unavailable",
+        )
+
+
+@pytest.mark.parametrize("secret_name", _COMPOUND_SECRET_NAMES)
+def test_data_artifact_redacted_details_reject_compound_secret_assignments(
+    secret_name: str,
+) -> None:
+    detail = f"{secret_name}=redacted-value"
+
+    with pytest.raises(ValidationError):
+        RestoreReadiness(
+            ready=False,
+            manifest=None,
+            failure_code=ValidationFailureCode.UNAVAILABLE,
+            redacted_detail=detail,
+        )
+    with pytest.raises(ValidationError):
+        DiscardOutcome(
+            code=DiscardOutcomeCode.RESIDUAL_FAILURE,
+            residual_ids=("cleanup-42",),
+            redacted_detail=detail,
         )
 
 

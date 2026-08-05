@@ -14,10 +14,11 @@ from odoo_forge.database import (
     DatabaseRef,
     DatabaseSpec,
     OperationIdentity,
+    RecoveryPoint,
     ResourceOwnership,
 )
 from odoo_forge.database.errors import IncompleteCleanupError, OwnershipRefusedError
-from odoo_forge.ports.database_provider import DatabaseProvider
+from odoo_forge.ports.database_provider import DatabaseProvider, DatabaseRecoveryPointCapability
 
 
 def _creation() -> DatabaseCreation:
@@ -30,7 +31,7 @@ def _creation() -> DatabaseCreation:
     )
 
 
-class _ConformingDatabaseProvider:
+class _BaseDatabaseProvider:
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
         return _creation()
 
@@ -53,6 +54,17 @@ class _ConformingDatabaseProvider:
 
     def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
         return CleanupReport()
+
+
+class _ConformingDatabaseProvider(_BaseDatabaseProvider):
+    def acquire_recovery_point(self, ref: DatabaseRef) -> RecoveryPoint:
+        return RecoveryPoint("recovery-42")
+
+    def restore_recovery_point(self, ref: DatabaseRef, point: RecoveryPoint) -> None:
+        return None
+
+    def verify_recovery_point(self, ref: DatabaseRef, point: RecoveryPoint) -> bool:
+        return True
 
 
 class _MissingCleanupProvider:
@@ -145,6 +157,44 @@ def test_conforming_provider_satisfies_the_runtime_protocol() -> None:
     assert isinstance(provider, DatabaseProvider)
     assert provider.reconcile(OperationIdentity(value="retry-42")) == _creation()
     assert provider.cleanup(_creation().receipt) == CleanupReport()
+    assert isinstance(provider, DatabaseRecoveryPointCapability)
+    assert provider.acquire_recovery_point(_creation().ref) == RecoveryPoint("recovery-42")
+    assert provider.verify_recovery_point(_creation().ref, RecoveryPoint("recovery-42"))
+
+
+def test_recovery_point_contract_is_opaque_and_ordered() -> None:
+    assert RecoveryPoint("recovery-42") == "recovery-42"
+    assert list(
+        inspect.signature(DatabaseRecoveryPointCapability.acquire_recovery_point).parameters
+    ) == [
+        "self",
+        "ref",
+    ]
+    assert list(
+        inspect.signature(DatabaseRecoveryPointCapability.restore_recovery_point).parameters
+    ) == [
+        "self",
+        "ref",
+        "point",
+    ]
+    assert list(
+        inspect.signature(DatabaseRecoveryPointCapability.verify_recovery_point).parameters
+    ) == [
+        "self",
+        "ref",
+        "point",
+    ]
+    assert (
+        "opaque" in (DatabaseRecoveryPointCapability.acquire_recovery_point.__doc__ or "").lower()
+    )
+
+
+def test_provider_without_recovery_capability_is_rejected() -> None:
+    class _LegacyProvider(_BaseDatabaseProvider):
+        pass
+
+    assert isinstance(_LegacyProvider(), DatabaseProvider)
+    assert not isinstance(_LegacyProvider(), DatabaseRecoveryPointCapability)
 
 
 def test_provider_credential_inputs_are_documented_as_opaque_handles() -> None:

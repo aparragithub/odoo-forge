@@ -10,6 +10,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from odoo_forge.data_artifacts.types import require_safe_opaque_identifier
 from odoo_forge.resource_ownership.types import (
     CreationReceipt,
     OperationIdentity,
@@ -53,6 +54,14 @@ class DatabaseRef(_ProviderValue):
 
     identifier: str
     ownership: ResourceOwnership
+
+
+class RecoveryPoint(str):
+    """Opaque provider-owned recovery-point handle; it never carries database bytes."""
+
+    def __new__(cls, value: str) -> "RecoveryPoint":
+        require_safe_opaque_identifier(value, "recovery point")
+        return str.__new__(cls, value)
 
 
 class DatabaseCreation(_ProviderValue):
@@ -103,4 +112,5 @@ __all__ = [
     "DatabaseSpec",
     "OperationIdentity",
     "ResourceOwnership",
+    "RecoveryPoint",
 ]
