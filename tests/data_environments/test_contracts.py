@@ -4,6 +4,7 @@ from typing import get_type_hints
 import pytest
 from pydantic import ValidationError, ValidationInfo
 
+import odoo_forge.data_environments as data_environments
 from odoo_forge.data_environments.errors import (
     DataEnvironmentError,
     EnvironmentDefinitionUnavailableError,
@@ -22,6 +23,15 @@ from odoo_forge.data_environments.types import (
 from odoo_forge.ports.data_environment_registry import DataEnvironmentRegistry
 from odoo_forge.ports.raw_data_grant_authority import RawDataGrantAuthority
 from odoo_forge.tenancy import ProjectScope, TenantId
+
+_COMPOUND_SECRET_NAMES = (
+    "authorization_code",
+    "api_token",
+    "password_hash",
+    "authorization-code",
+    "api-token",
+    "password-hash",
+)
 
 
 def _definition() -> DataEnvironmentDefinition:
@@ -46,6 +56,21 @@ def _grant() -> RawDataGrant:
         reason="approved fixture refresh",
         audit_reference="audit-42",
     )
+
+
+def test_data_environment_package_reexports_exact_public_types() -> None:
+    expected = {
+        "DataEnvironmentDefinition",
+        "EnvironmentFailureCode",
+        "EnvironmentLifecycle",
+        "EnvironmentOperationOutcome",
+        "EnvironmentOutcomeCode",
+        "EnvironmentRelationship",
+        "RawDataGrant",
+    }
+
+    assert data_environments.__all__ == sorted(expected)
+    assert all(getattr(data_environments, name) is globals()[name] for name in expected)
 
 
 class _Registry:
@@ -158,6 +183,21 @@ def test_raw_grant_requires_expiry_reason_and_audit_reference() -> None:
         )
 
 
+@pytest.mark.parametrize("compound_secret", _COMPOUND_SECRET_NAMES)
+def test_raw_grant_rejects_compound_secret_reason(compound_secret: str) -> None:
+    with pytest.raises(ValidationError):
+        RawDataGrant.model_validate(
+            {
+                "operation_id": "refresh-42",
+                "environment_id": "qa",
+                "grantor": "operator-1",
+                "expires_at": datetime(2030, 1, 1, tzinfo=UTC),
+                "reason": f"{compound_secret}=secret-sentinel",
+                "audit_reference": "audit-42",
+            }
+        )
+
+
 def test_outcome_rejects_secret_pattern_in_redacted_detail() -> None:
     with pytest.raises(ValidationError):
         EnvironmentOperationOutcome.model_validate(
@@ -165,6 +205,18 @@ def test_outcome_rejects_secret_pattern_in_redacted_detail() -> None:
                 "code": EnvironmentOutcomeCode.FAILED,
                 "failure_code": EnvironmentFailureCode.INVALID_DEFINITION,
                 "redacted_detail": "credential_secret=secret-sentinel",
+            }
+        )
+
+
+@pytest.mark.parametrize("compound_secret", _COMPOUND_SECRET_NAMES)
+def test_outcome_rejects_compound_secret_redacted_detail(compound_secret: str) -> None:
+    with pytest.raises(ValidationError):
+        EnvironmentOperationOutcome.model_validate(
+            {
+                "code": EnvironmentOutcomeCode.FAILED,
+                "failure_code": EnvironmentFailureCode.INVALID_DEFINITION,
+                "redacted_detail": f"{compound_secret}=secret-sentinel",
             }
         )
 
