@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 from enum import StrEnum
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 
 from odoo_forge.data_artifacts.types import (
     _SECRET_OR_CONNECTION_TEXT,
@@ -45,8 +45,8 @@ class EnvironmentRelationship(_ArtifactValue):
 
     @field_validator("source_environment_id", "target_environment_id")
     @classmethod
-    def require_safe_ids(cls, value: str, info: object) -> str:
-        return _identifier(value, str(getattr(info, "field_name", "environment id")))
+    def require_safe_ids(cls, value: str, info: ValidationInfo) -> str:
+        return _identifier(value, info.field_name or "environment id")
 
     @model_validator(mode="after")
     def require_distinct_environments(self) -> EnvironmentRelationship:
@@ -67,8 +67,8 @@ class DataEnvironmentDefinition(_ArtifactValue):
 
     @field_validator("environment_id", "policy_ref")
     @classmethod
-    def require_safe_references(cls, value: str, info: object) -> str:
-        return _identifier(value, str(getattr(info, "field_name", "reference")))
+    def require_safe_references(cls, value: str, info: ValidationInfo) -> str:
+        return _identifier(value, info.field_name or "reference")
 
     @field_validator("owner")
     @classmethod
@@ -88,8 +88,8 @@ class RawDataGrant(_ArtifactValue):
 
     @field_validator("operation_id", "environment_id", "audit_reference")
     @classmethod
-    def require_safe_references(cls, value: str, info: object) -> str:
-        return _identifier(value, str(getattr(info, "field_name", "reference")))
+    def require_safe_references(cls, value: str, info: ValidationInfo) -> str:
+        return _identifier(value, info.field_name or "reference")
 
     @field_validator("grantor")
     @classmethod

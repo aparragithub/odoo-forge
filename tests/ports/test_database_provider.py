@@ -1,4 +1,3 @@
-# mypy: disable-error-code=assignment
 from __future__ import annotations
 
 import inspect
@@ -32,7 +31,7 @@ def _creation() -> DatabaseCreation:
     )
 
 
-class _ConformingDatabaseProvider:
+class _BaseDatabaseProvider:
     def provision(self, spec: DatabaseSpec, credentials: CredentialHandle) -> DatabaseCreation:
         return _creation()
 
@@ -56,6 +55,8 @@ class _ConformingDatabaseProvider:
     def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
         return CleanupReport()
 
+
+class _ConformingDatabaseProvider(_BaseDatabaseProvider):
     def acquire_recovery_point(self, ref: DatabaseRef) -> RecoveryPoint:
         return RecoveryPoint("recovery-42")
 
@@ -111,15 +112,6 @@ class _IncompatibleSignatureProvider:
 
     def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
         return CleanupReport()
-
-    def acquire_recovery_point(self, ref: DatabaseRef) -> RecoveryPoint:
-        return RecoveryPoint("recovery-42")
-
-    def restore_recovery_point(self, ref: DatabaseRef, point: RecoveryPoint) -> None:
-        return None
-
-    def verify_recovery_point(self, ref: DatabaseRef, point: RecoveryPoint) -> bool:
-        return True
 
 
 class _OwnershipSafeDatabaseProvider:
@@ -198,10 +190,8 @@ def test_recovery_point_contract_is_opaque_and_ordered() -> None:
 
 
 def test_provider_without_recovery_capability_is_rejected() -> None:
-    class _LegacyProvider(_ConformingDatabaseProvider):
-        acquire_recovery_point = None
-        restore_recovery_point = None
-        verify_recovery_point = None
+    class _LegacyProvider(_BaseDatabaseProvider):
+        pass
 
     assert isinstance(_LegacyProvider(), DatabaseProvider)
     assert not isinstance(_LegacyProvider(), DatabaseRecoveryPointCapability)
