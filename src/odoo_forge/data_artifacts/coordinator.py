@@ -106,6 +106,7 @@ if TYPE_CHECKING:
     from odoo_forge.credentials.types import CredentialHandle
     from odoo_forge.data_artifacts.capture import CaptureSource, DataArtifactCaptureCapability
     from odoo_forge.data_artifacts.contracts import DataArtifactCapability
+    from odoo_forge.data_environments.types import RawDataGrant
     from odoo_forge.database.types import DatabaseCreation, DatabaseSpec
     from odoo_forge.durable_operations.service import DurableCheckpoint
     from odoo_forge.durable_operations.types import DurableOperationIdentity
@@ -214,6 +215,7 @@ class DataArtifactCopyCoordinator:
         operation: DurableOperationIdentity,
         request_raw_delivery: bool = False,
         retain_staged: bool = False,
+        raw_grant: RawDataGrant | None = None,
     ) -> CoordinatedCopyResult:
         """Capture, anonymize (or gate raw delivery), verify integrity, then deliver."""
         state, revision = advance_lifecycle(
@@ -239,7 +241,15 @@ class DataArtifactCopyCoordinator:
             )
 
             if request_raw_delivery:
-                grant = self._audited_exception_lookup(captured_manifest.lineage_id)
+                grant = (
+                    RedactedEvidence(
+                        event="anonymization_exception",
+                        summary="approved raw-data exception",
+                        references=(captured_manifest.lineage_id, str(raw_grant.audit_reference)),
+                    )
+                    if raw_grant is not None
+                    else self._audited_exception_lookup(captured_manifest.lineage_id)
+                )
                 if not _is_matching_audited_grant(grant, captured_manifest.lineage_id):
                     raise RawDeliveryRefusedError()
                 assert grant is not None
