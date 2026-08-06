@@ -1,4 +1,4 @@
-"""Manifest-lifecycle commands: `validate`, `onboard`, `lock`, `project`,
+"""Manifest-lifecycle commands: `configure`, `validate`, `onboard`, `lock`, `project`,
 `unlock`.
 
 Helper modules (`_composition`, `_support`, `_presentation`) are imported and
@@ -17,6 +17,7 @@ from odoo_forge.backend.plan import plan_backend
 from odoo_forge.credentials.errors import CredentialError
 from odoo_forge.credentials.types import BackendCredentialBindings, CredentialHandle
 from odoo_forge.image_registry import RegistryError
+from odoo_forge.manifest.authoring import validate_draft
 from odoo_forge.manifest.composition import compose
 from odoo_forge.manifest.drift import detect_drift
 from odoo_forge.manifest.errors import LockfileError, ManifestError, ResolutionError
@@ -41,6 +42,181 @@ from odoo_forge_cli.enterprise_credential import (
     _make_enterprise_credential_resolver,
     _preflight_enterprise_source_credential,
 )
+
+
+def _prompt_text(message: str, default: str | None = None) -> str:
+    if default is None:
+        return str(typer.prompt(message))
+    return str(typer.prompt(message, default=default, show_default=bool(default)))
+
+
+def _optional_number(value: str) -> object:
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _collect_git_layer() -> dict[str, object]:
+    name = _prompt_text("Layer name")
+    category = _prompt_text("Layer category", "custom")
+    repos: list[dict[str, str]] = []
+    while True:
+        repos.append(
+            {
+                "url": _prompt_text("Repository URL"),
+                "ref": _prompt_text("Repository ref"),
+            }
+        )
+        if not typer.confirm("Add another repository?", default=False):
+            break
+    return {
+        "type": "git",
+        "name": name,
+        "repos": repos,
+        "category": category,
+    }
+
+
+def _collect_published_layer() -> dict[str, object]:
+    return {
+        "type": "published",
+        "name": _prompt_text("Published layer name"),
+        "source": _prompt_text("Published layer source"),
+        "version": _prompt_text("Published layer version"),
+        "category": _prompt_text("Published layer category", "custom"),
+        "requires_enterprise": typer.confirm("Published layer requires enterprise", default=False),
+    }
+
+
+def _collect_layers() -> list[dict[str, object]]:
+    layers: list[dict[str, object]] = []
+    while typer.confirm("Add a layer?" if not layers else "Add another layer?", default=False):
+        layer_type = _prompt_text("Layer type (git or published)").lower()
+        while layer_type not in {"git", "published"}:
+            typer.echo("error: layer type must be 'git' or 'published'", err=True)
+            layer_type = _prompt_text("Layer type (git or published)").lower()
+        layers.append(_collect_git_layer() if layer_type == "git" else _collect_published_layer())
+    return layers
+
+
+def _collect_overrides() -> list[dict[str, str]]:
+    overrides: list[dict[str, str]] = []
+    while typer.confirm(
+        "Add an override?" if not overrides else "Add another override?", default=False
+    ):
+        overrides.append(
+            {
+                "layer": _prompt_text("Override layer"),
+                "repo": _prompt_text("Override repository"),
+                "fork": _prompt_text("Override fork"),
+                "ref": _prompt_text("Override ref"),
+            }
+        )
+    return overrides
+
+
+def _collect_mount_priority(layers: list[dict[str, object]]) -> list[str]:
+    categories = {str(layer["category"]) for layer in layers if layer.get("category")}
+    roots = ["worktrees", "community", "enterprise"] + [
+        f"custom/{'default' if category == 'custom' else category}"
+        for category in sorted(categories)
+    ]
+    priority: list[str] = []
+    while typer.confirm(
+        "Add mount priority?" if not priority else "Add another mount priority?", default=False
+    ):
+        priority.append(_prompt_text(f"Mount priority root (choose from {', '.join(roots)})"))
+    return priority
+
+
+def _collect_draft() -> dict[str, object]:
+    name = _prompt_text("Project name")
+    odoo_version = _prompt_text("Odoo version")
+    edition = _prompt_text("Edition (community or enterprise)").lower()
+    draft: dict[str, object] = {
+        "name": name,
+        "odoo_version": odoo_version,
+        "edition": edition,
+    }
+    core_url = _prompt_text("Core URL override", "")
+    core_ref = _prompt_text("Core ref override", "")
+    if core_url or core_ref:
+        draft["core"] = {
+            "type": "core",
+            **({"url": core_url} if core_url else {}),
+            **({"ref": core_ref} if core_ref else {}),
+        }
+    if edition == "enterprise":
+        enterprise_url = _prompt_text("Enterprise URL override", "")
+        enterprise_ref = _prompt_text("Enterprise ref override", "")
+        if enterprise_url or enterprise_ref:
+            draft["enterprise"] = {
+                "type": "enterprise",
+                **({"url": enterprise_url} if enterprise_url else {}),
+                **({"ref": enterprise_ref} if enterprise_ref else {}),
+            }
+
+    layers = _collect_layers()
+    draft["layers"] = layers
+    addons_path = _prompt_text("Client addons path")
+    requirements = _prompt_text("Python requirements path", "")
+    client: dict[str, object] = {"addons_path": addons_path}
+    if requirements:
+        client["python_requirements"] = requirements
+    draft["client"] = client
+    draft["overrides"] = _collect_overrides()
+
+    if typer.confirm("Configure workspace", default=False):
+        draft["workspace"] = {
+            "checkout_timeout_seconds": _optional_number(_prompt_text("Workspace checkout timeout"))
+        }
+    if typer.confirm("Configure backend", default=False):
+        odoo: dict[str, object] = {}
+        port = _optional_number(_prompt_text("Odoo HTTP port", ""))
+        bind_host = _prompt_text("Odoo bind host", "127.0.0.1")
+        if port is not None:
+            odoo["http_port"] = port
+        if bind_host != "127.0.0.1":
+            odoo["bind_host"] = bind_host
+        draft["backend"] = {"odoo": odoo}
+    draft["mount_priority"] = _collect_mount_priority(layers)
+    return draft
+
+
+def configure(
+    manifest: Path = typer.Option(
+        Path("project.yaml"), "--manifest", help="Path to the new project.yaml manifest"
+    ),
+) -> None:
+    """Guide creation of a new project.yaml without entering execution scope."""
+    if manifest.exists():
+        typer.echo(f"error: target already exists: {manifest}", err=True)
+        raise typer.Exit(code=1)
+
+    result = validate_draft(_collect_draft())
+    if result.manifest is None:
+        for issue in result.issues:
+            typer.echo(f"error: {issue.path}: {issue.message}", err=True)
+        raise typer.Exit(code=1)
+
+    content = _support.serialize_manifest(result.manifest)
+    typer.echo("YAML preview:")
+    typer.echo(content, nl=False)
+    if not typer.confirm("Create this project.yaml?", default=False):
+        typer.echo("cancelled; no file was created")
+        raise typer.Exit(code=0)
+    try:
+        _support._write_manifest_create_only(manifest, content)
+    except FileExistsError:
+        typer.echo(f"error: target already exists: {manifest}", err=True)
+        raise typer.Exit(code=1) from None
+    except OSError as exc:
+        typer.echo(f"error: cannot create '{manifest}': {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"created {manifest}")
 
 
 def validate(
@@ -458,6 +634,7 @@ def unlock(
 
 def register(app: typer.Typer) -> None:
     """Bind manifest commands onto `app`, byte-identical names."""
+    app.command(name="configure")(configure)
     app.command(name="validate")(validate)
     app.command(name="onboard")(onboard)
     app.command(name="lock")(lock)
