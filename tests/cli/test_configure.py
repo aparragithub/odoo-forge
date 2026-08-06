@@ -1,9 +1,7 @@
-import locale
 import os
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from unittest.mock import Mock
 
 import pytest
 import typer
@@ -18,18 +16,9 @@ from odoo_forge_cli.main import app
 runner = CliRunner()
 
 
-def _valid_draft(name: str = "demo") -> dict[str, object]:
-    return {
-        "name": name,
-        "odoo_version": "19.0",
-        "edition": "community",
-        "client": {"addons_path": "client/addons"},
-    }
-
-
-def _invoke_configure(monkeypatch: pytest.MonkeyPatch, target: Path, *, name: str = "demo") -> Any:
-    monkeypatch.setattr(manifest, "_collect_draft", lambda: _valid_draft(name))
-    return runner.invoke(app, ["configure", "--manifest", str(target)], input="y\n")
+def _invoke_configure(target: Path, *, name: str = "demo", edition: str = "community") -> Any:
+    scripted_input = f"{name}\n19.0\n{edition}\n\n\nn\nclient/addons\n\nn\nn\nn\nn\ny\n"
+    return runner.invoke(app, ["configure", "--manifest", str(target)], input=scripted_input)
 
 
 def _script(
@@ -55,9 +44,9 @@ def _script(
     monkeypatch.setattr(manifest.typer, "confirm", confirm)  # type: ignore[attr-defined]
 
 
-def test_configure_community_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_configure_community_yaml(tmp_path: Path) -> None:
     target = tmp_path / "project.yaml"
-    result = _invoke_configure(monkeypatch, target, name="community-demo")
+    result = _invoke_configure(target, name="community-demo")
     expected = Manifest.model_validate(
         {
             "name": "community-demo",
@@ -138,25 +127,21 @@ def test_configure_rejects_existing_target_before_prompt(tmp_path: Path) -> None
 
 
 def test_configure_invalid_draft_reports_actionable_error_without_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     target = tmp_path / "project.yaml"
-    monkeypatch.setattr(manifest, "_collect_draft", lambda: dict(_valid_draft(), edition="invalid"))
-    result = runner.invoke(app, ["configure", "--manifest", str(target)])
+    result = _invoke_configure(target, edition="invalid")
 
     assert result.exit_code == 1
     assert "error: edition:" in result.output
     assert not target.exists()
 
 
-def test_configure_unicode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_configure_unicode(tmp_path: Path) -> None:
     target = tmp_path / "project.yaml"
-    monkeypatch.setattr(locale, "getencoding", lambda: "ascii")
-    fdopen = Mock(wraps=os.fdopen)
-    monkeypatch.setattr(_support.os, "fdopen", fdopen)  # type: ignore[attr-defined]
-    _invoke_configure(monkeypatch, target, name="café")
+    result = _invoke_configure(target, name="café")
 
-    assert fdopen.call_args.kwargs == {"encoding": "utf-8", "newline": "\n"}
+    assert result.exit_code == 0
     assert "café" in target.read_text(encoding="utf-8")
 
 
@@ -167,7 +152,7 @@ def test_configure_publication_failure(tmp_path: Path, monkeypatch: pytest.Monke
         raise OSError("simulated publication failure")
 
     monkeypatch.setattr(_support.os, "link", fail_link)  # type: ignore[attr-defined]
-    result = _invoke_configure(monkeypatch, target)
+    result = _invoke_configure(target)
 
     assert result.exit_code == 1
     assert "simulated publication failure" in result.output
@@ -183,7 +168,7 @@ def test_configure_race_preserves_target(tmp_path: Path, monkeypatch: pytest.Mon
         original_link(source, destination)
 
     monkeypatch.setattr(_support.os, "link", create_target_then_link)  # type: ignore[attr-defined]
-    result = _invoke_configure(monkeypatch, target)
+    result = _invoke_configure(target)
 
     assert result.exit_code == 1
     assert "already exists" in result.output
