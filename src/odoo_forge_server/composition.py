@@ -13,6 +13,7 @@ from fastapi import FastAPI
 
 from odoo_forge.control_plane.authority import ControlPlaneAuthority
 from odoo_forge.control_plane.reconcile import Reconciler
+from odoo_forge.data_environments.service import DataEnvironmentService
 from odoo_forge.ports.instance_registry import InstanceRegistry
 from odoo_forge.ports.resource_custody import ResourceCustodyAdapter
 from odoo_forge.provider_catalog import (
@@ -27,6 +28,8 @@ from odoo_forge_instances_postgres.adapter import (
     ConnectionAcquirer,
     PostgresInstanceRegistry,
 )
+from odoo_forge_instances_postgres.data_environment_registry import PostgresDataEnvironmentRegistry
+from odoo_forge_instances_postgres.raw_data_grant_authority import PostgresRawDataGrantAuthority
 from odoo_forge_postgres_docker.authority import (
     DockerResourceCustodyAdapter,
     LocalOwnershipAuthority,
@@ -65,6 +68,7 @@ def create_production_app(
     acquire_connection: Callable[[], AbstractContextManager[Connection]] | None = None,
     ui_runtime: UiRuntime | None = None,
     custody_adapter: ResourceCustodyAdapter | None = None,
+    data_environment_service: DataEnvironmentService | None = None,
 ) -> FastAPI:
     """Compose approved adapters while injecting only the backend status callable.
 
@@ -93,6 +97,9 @@ def create_production_app(
     app.state.control_plane_authority = ControlPlaneAuthority(
         custody_adapter or _default_custody_adapter(), registry
     )
+    app.state.data_environment_registry = PostgresDataEnvironmentRegistry(acquirer)
+    app.state.raw_data_grant_authority = PostgresRawDataGrantAuthority(acquirer)
+    app.state.data_environment_service = data_environment_service
     return app
 
 
