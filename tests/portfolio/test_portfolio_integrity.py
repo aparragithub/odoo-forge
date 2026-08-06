@@ -1906,6 +1906,31 @@ def test_live_plan_decomposition_ids_are_exact(live_plan: dict[str, Any]) -> Non
     assert tuple(entry["id"] for entry in live_plan["decompositions"]) == EXPECTED_DECOMPOSITION_IDS
 
 
+def test_guided_manifest_authoring_item_is_exact(live_plan: dict[str, Any]) -> None:
+    """Pin the guided manifest-authoring outcome by value.
+
+    The outcome exists so `project.yaml` can be produced through a guided
+    wizard instead of hand-editing. It is pinned here — kind, owner, status,
+    acceptance ids, and lineage — so a rename, a silent status promotion, or a
+    dropped surface fails before the roadmap projection can drift from it.
+    """
+    items = {item["id"]: item for item in live_plan["items"]}
+    item = items["SP-MANIFEST-AUTHORING"]
+
+    assert item["kind"] == "sp"
+    assert item["title"] == "Guided Manifest Authoring"
+    assert item["owner_role"] == "Experience"
+    assert item["status"] == "proposed"
+    assert item["evidence_date"] is None
+    assert tuple(entry["id"] for entry in item["acceptance"]) == (
+        "AC-SP-MANIFEST-AUTHORING-TUI",
+        "AC-SP-MANIFEST-AUTHORING-WEB",
+    )
+    assert all(entry["gaps"] == ["G0"] and entry["evidence"] == [] for entry in item["acceptance"])
+    assert tuple(item["predecessors"]) == ("CAP-MANIFEST",)
+    assert tuple(item["successors"]) == ("SP-OPERATIONS-UI",)
+
+
 def test_live_plan_is_byte_stable_under_canonical_reserialization() -> None:
     """Permanent hard-abort gate: any portfolio.json mutation MUST preserve this.
 

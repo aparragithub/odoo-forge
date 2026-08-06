@@ -36,12 +36,17 @@ They become user-visible when the subprojects below consume them.
 
 ## 🔜 Next
 
-The nearest planned subproject, in proposal stage:
+The nearest planned subprojects, in proposal stage:
 
 - **Managed data environments** (`SP-DATA-ENVIRONMENTS`) — request a database
   environment (empty, masked copy, or restored artifact) as a managed flow
   instead of hand-run commands. This is the first consumer of the data
   artifacts, durable operations, and ownership foundations.
+- **Guided manifest authoring** (`SP-MANIFEST-AUTHORING`) — produce a valid
+  `project.yaml` through a step-by-step wizard instead of hand-editing YAML.
+  Ships first as a TUI; the same flow later becomes a guided path inside the
+  operations UI. The wizard consumes the schema and validator already delivered
+  by the manifest core rather than restating validation rules of its own.
 
 ## 🎯 Target state
 
@@ -53,7 +58,8 @@ Direction, in intended order — each depends on the previous layers:
 4. **Platform access (RBAC)** — roles and identity for teams, not a single operator
 5. **Delivery automation** — CI-driven build/publish/deploy flows
 6. **Production governance, resource lifecycle, data recovery** — the operational disciplines around real customer data
-7. **Operations UI** — a web surface once the flows beneath it are stable
+7. **Operations UI** — a web surface once the flows beneath it are stable,
+   including the guided manifest wizard's web form
 
 ## Out of scope (for now)
 
