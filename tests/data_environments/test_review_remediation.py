@@ -6,7 +6,7 @@ from odoo_forge.data_environments.types import EnvironmentFailureCode
 
 def test_verifier_exception_restores_and_verifies_recovery_point() -> None:
     service = object.__new__(DataEnvironmentService)
-    service._preflight = Mock(return_value=(Mock(), None, None, None, Mock()))
+    object.__setattr__(service, "_preflight", Mock(return_value=(Mock(), None, None, None, Mock())))
     service._coordinator = Mock()
     service._verify_operation = Mock(side_effect=RuntimeError())
     service._provider = Mock()
