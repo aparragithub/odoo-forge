@@ -25,6 +25,7 @@ from odoo_forge_instances_postgres.data_environment_registry import (
 )
 from odoo_forge_instances_postgres.migrate import (
     AuthorityTableRejectedError,
+    MigrationLockTimeoutError,
     run_environment_migration,
     run_migration,
 )
@@ -46,14 +47,23 @@ class _Cursor:
         *,
         authority_rows: tuple[tuple[object, ...], ...] = (),
         fail: bool = False,
+        fail_on_contains: str | None = None,
+        fail_exception: Exception | None = None,
     ) -> None:
         self.row = row
         self.authority_rows = authority_rows
         self.fail = fail
+        self.executed: list[str] = []
+        self.fail_on_contains = fail_on_contains
+        self.fail_exception = fail_exception
 
     def execute(self, query: str, parameters: tuple[object, ...] = ()) -> object:
         if self.fail:
             raise RuntimeError("scripted migration failure")
+        if self.fail_on_contains and self.fail_on_contains in query:
+            assert self.fail_exception is not None
+            raise self.fail_exception
+        self.executed.append(query)
         return None
 
     def fetchone(self) -> tuple[object, ...] | None:
@@ -70,8 +80,16 @@ class _Connection:
         *,
         authority_rows: tuple[tuple[object, ...], ...] = (),
         cursor_fails: bool = False,
+        fail_on_contains: str | None = None,
+        fail_exception: Exception | None = None,
     ) -> None:
-        self.cursor_instance = _Cursor(row, authority_rows=authority_rows, fail=cursor_fails)
+        self.cursor_instance = _Cursor(
+            row,
+            authority_rows=authority_rows,
+            fail=cursor_fails,
+            fail_on_contains=fail_on_contains,
+            fail_exception=fail_exception,
+        )
         self.autocommit = False
         self.committed = False
         self.rolled_back = False
@@ -196,6 +214,39 @@ _COMPATIBLE_AUTHORITY_ROWS = _compatible_rows(
     "raw_data_grants",
     "operation_id|text|1;environment_id|text|2;grantor|text|0;expires_at|timestamp with time zone|0;reason|text|0;audit_reference|text|0",  # noqa: E501
 )
+
+
+class ScriptedLockTimeout(Exception):
+    sqlstate = "55P03"
+
+
+def test_environment_migration_guards_ddl_with_timeout_and_advisory_order() -> None:
+    connection = _Connection(None, authority_rows=_COMPATIBLE_AUTHORITY_ROWS)
+
+    run_environment_migration(connection)
+
+    executed = connection.cursor_instance.executed
+    assert "LOCK_TIMEOUT" in executed[0].upper()
+    assert "PG_ADVISORY_XACT_LOCK" in executed[1].upper()
+    assert "CREATE TABLE" in executed[2].upper()
+    assert "PG_CATALOG.PG_CLASS" in executed[3].upper()
+
+
+@pytest.mark.parametrize("blocked_statement", ["pg_advisory_xact_lock", "CREATE TABLE"])
+def test_environment_migration_lock_timeout_rolls_back(blocked_statement: str) -> None:
+    connection = _Connection(
+        None,
+        authority_rows=_COMPATIBLE_AUTHORITY_ROWS,
+        fail_on_contains=blocked_statement,
+        fail_exception=ScriptedLockTimeout(),
+    )
+
+    with pytest.raises(MigrationLockTimeoutError):
+        run_environment_migration(connection)
+
+    assert connection.rolled_back
+    assert not connection.committed
+    assert not any("CREATE TABLE" in query.upper() for query in connection.cursor_instance.executed)
 
 
 def test_environment_migration_uses_one_bounded_transaction() -> None:

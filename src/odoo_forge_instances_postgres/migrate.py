@@ -230,7 +230,9 @@ def run_environment_migration(conn: Connection) -> None:
 
     cursor = conn.cursor()
     try:
-        cursor.execute(_environment_migration_sql())
+        cursor.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
+        _execute_guarding_timeout(cursor, _ADVISORY_LOCK_SQL)
+        _execute_guarding_timeout(cursor, _environment_migration_sql())
         cursor.execute(_AUTHORITY_CATALOG_SQL)
         _verify_authority_catalog(cursor.fetchall())
     except Exception:
