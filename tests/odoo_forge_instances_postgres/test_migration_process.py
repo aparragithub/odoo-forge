@@ -34,7 +34,7 @@ def _assert_clean_exit(code: str) -> None:
     [
         "import odoo_forge_instances_postgres as p; "
         "assert p.__all__ == ['MigrationAutocommitError', 'MigrationLockTimeoutError', "
-        "'RegistryTableRejectedError', 'CatalogVerificationError']",
+        "'RegistryTableRejectedError', 'AuthorityTableRejectedError', 'CatalogVerificationError']",
         "import odoo_forge_instances_postgres.migrations as p; assert p.__all__ == []",
         "import odoo_forge_instances_postgres.migrate as m; assert callable(m.run_migration)",
     ],
