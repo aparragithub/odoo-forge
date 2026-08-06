@@ -252,10 +252,15 @@ def test_runtime_attestation_requires_a_live_ready_docker_container() -> None:
         attestation = provider.verify_runtime_ownership(creation)
         result = evaluate_gate_readiness(
             GateReadinessEvidence(
-                approved_proposal_id="proposal-42",
-                approved_specification_id="spec-42",
-                approved_design_id="design-42",
-                verification_receipt_id="verification-42",
+                wf_data_copy_closure_id="#4406",
+                wf_data_copy_acceptance_id="#4396",
+                wf_data_copy_verification_id="#4398",
+                control_plane_archive_id="#4469",
+                control_plane_verification_id="#4463",
+                approved_decision_id="#4500",
+                current_evidence_ids=frozenset(
+                    {"#4406", "#4396", "#4398", "#4469", "#4463", "#4500"}
+                ),
                 runtime_ownership_evidence=attestation,
             )
         )
