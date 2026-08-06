@@ -37,6 +37,8 @@ class EnvironmentFailureCode(StrEnum):
     RECOVERY_POINT_UNAVAILABLE = "recovery_point_unavailable"
     RECOVERY_RESTORE_FAILED = "recovery_restore_failed"
     RECOVERY_VERIFICATION_FAILED = "recovery_verification_failed"
+    MUTATION_FAILED = "mutation_failed"
+    OPERATION_VERIFICATION_FAILED = "operation_verification_failed"
 
 
 class EnvironmentRelationship(_ArtifactValue):

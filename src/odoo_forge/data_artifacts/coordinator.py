@@ -75,6 +75,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from odoo_forge.anonymization.apply import apply_anonymization
@@ -106,6 +107,7 @@ if TYPE_CHECKING:
     from odoo_forge.credentials.types import CredentialHandle
     from odoo_forge.data_artifacts.capture import CaptureSource, DataArtifactCaptureCapability
     from odoo_forge.data_artifacts.contracts import DataArtifactCapability
+    from odoo_forge.data_environments.types import RawDataGrant
     from odoo_forge.database.types import DatabaseCreation, DatabaseSpec
     from odoo_forge.durable_operations.service import DurableCheckpoint
     from odoo_forge.durable_operations.types import DurableOperationIdentity
@@ -214,6 +216,8 @@ class DataArtifactCopyCoordinator:
         operation: DurableOperationIdentity,
         request_raw_delivery: bool = False,
         retain_staged: bool = False,
+        raw_grant: RawDataGrant | None = None,
+        raw_grant_environment_id: str | None = None,
     ) -> CoordinatedCopyResult:
         """Capture, anonymize (or gate raw delivery), verify integrity, then deliver."""
         state, revision = advance_lifecycle(
@@ -239,7 +243,21 @@ class DataArtifactCopyCoordinator:
             )
 
             if request_raw_delivery:
-                grant = self._audited_exception_lookup(captured_manifest.lineage_id)
+                if raw_grant is None or (
+                    raw_grant.operation_id != operation.operation_id
+                    or raw_grant.environment_id != raw_grant_environment_id
+                    or raw_grant.expires_at <= datetime.now(UTC)
+                ):
+                    raise RawDeliveryRefusedError()
+                grant = (
+                    RedactedEvidence(
+                        event="anonymization_exception",
+                        summary="approved raw-data exception",
+                        references=(captured_manifest.lineage_id, str(raw_grant.audit_reference)),
+                    )
+                    if raw_grant is not None
+                    else self._audited_exception_lookup(captured_manifest.lineage_id)
+                )
                 if not _is_matching_audited_grant(grant, captured_manifest.lineage_id):
                     raise RawDeliveryRefusedError()
                 assert grant is not None
