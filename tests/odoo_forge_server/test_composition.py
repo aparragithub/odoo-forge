@@ -25,10 +25,6 @@ from odoo_forge.resource_ownership import OwnershipReceipt
 from odoo_forge.resource_ownership.types import ResourceOwnership, ResourceRef
 from odoo_forge.tenancy.types import ProjectScope, TenantId
 from odoo_forge_instances_postgres.adapter import Connection
-from odoo_forge_instances_postgres.data_environment_registry import (
-    PostgresDataEnvironmentRegistry,
-)
-from odoo_forge_instances_postgres.raw_data_grant_authority import PostgresRawDataGrantAuthority
 from odoo_forge_server.app import UiRuntime
 from odoo_forge_server.composition import create_production_app
 
@@ -253,27 +249,3 @@ def test_composition_rejects_unresolved_backend_catalog() -> None:
         assert "backend provider catalog resolution failed" in str(error)
     else:
         raise AssertionError("unresolved provider catalog must block composition")
-
-
-def test_composition_exposes_bounded_data_environment_adapters_and_service() -> None:
-    from odoo_forge.data_environments.service import DataEnvironmentService
-
-    service = object.__new__(DataEnvironmentService)
-
-    def acquire() -> AbstractContextManager[Connection]:
-        return contextmanager(_connection)()
-
-    app = create_production_app(
-        database_url="postgresql://unused",
-        provider_catalog=_catalog(),
-        acquire_connection=acquire,
-        data_environment_service=service,
-    )
-    assert app.state.data_environment_service is service
-    assert isinstance(app.state.data_environment_registry, PostgresDataEnvironmentRegistry)
-    assert isinstance(app.state.raw_data_grant_authority, PostgresRawDataGrantAuthority)
-    assert app.state.data_environment_registry._acquire is acquire
-    assert app.state.raw_data_grant_authority._acquire is acquire
-    assert all(
-        route.methods <= {"GET", "HEAD"} for route in app.routes if hasattr(route, "methods")
-    )

@@ -45,32 +45,19 @@ class _RecoveryFailure(Exception):
         self.code = code
 
 
+@dataclass(kw_only=True, eq=False, repr=False)
 class DataEnvironmentOperationRequest:
-    def __init__(
-        self,
-        *,
-        operation: DurableOperationIdentity,
-        source_environment_id: str,
-        target_environment_id: str,
-        target_pointer: InstancePointer,
-        target_ref: DatabaseRef | None,
-        source: CaptureSource,
-        spec: DatabaseSpec,
-        credentials: CredentialHandle,
-        actor: str,
-        intent: str,
-        request_raw_delivery: bool = False,
-    ) -> None:
-        self.operation = operation
-        self.source_environment_id = source_environment_id
-        self.target_environment_id = target_environment_id
-        self.target_pointer = target_pointer
-        self.target_ref = target_ref
-        self.source = source
-        self.spec = spec
-        self.credentials = credentials
-        self.actor, self.intent = actor, intent
-        self.request_raw_delivery = request_raw_delivery
+    operation: DurableOperationIdentity
+    source_environment_id: str
+    target_environment_id: str
+    target_pointer: InstancePointer
+    target_ref: DatabaseRef | None
+    source: CaptureSource
+    spec: DatabaseSpec
+    credentials: CredentialHandle
+    actor: str
+    intent: str
+    request_raw_delivery: bool = False
 
 
 @dataclass(frozen=True)
@@ -136,6 +123,7 @@ class DataEnvironmentService:
                 operation=request.operation,
                 request_raw_delivery=request.request_raw_delivery,
                 raw_grant=grant,
+                raw_grant_environment_id=definition.environment_id,
             )
         except Exception:
             return self._after_mutation_failure(
@@ -145,7 +133,11 @@ class DataEnvironmentService:
                 definition.policy_ref,
                 grant,
             )
-        if not self._verify_operation(copy_result):
+        try:
+            verified = self._verify_operation(copy_result)
+        except Exception:
+            verified = False
+        if not verified:
             return self._after_mutation_failure(
                 request,
                 point,

@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 
 from odoo_forge.anonymization.policy import AnonymizationPolicy, AnonymizationRule, MaskStrategy
@@ -20,6 +22,7 @@ from odoo_forge.data_artifacts.coordinator import (
     RawDeliveryRefusedError,
 )
 from odoo_forge.data_artifacts.types import DataArtifactRef
+from odoo_forge.data_environments.types import RawDataGrant
 from odoo_forge.database.types import (
     CleanupReport,
     CreationReceipt,
@@ -200,7 +203,27 @@ def test_happy_path_captures_anonymizes_and_delivers_with_checkpoints() -> None:
     assert result.creation.ref.identifier == "database-42"
 
 
-def test_raw_delivery_refused_without_a_matching_audited_grant() -> None:
+def _raw_grant(**updates: object) -> RawDataGrant:
+    return RawDataGrant(
+        operation_id="operation-42",
+        environment_id="qa",
+        grantor="operator",
+        expires_at=datetime(2030, 1, 1, tzinfo=UTC),
+        reason="approved",
+        audit_reference="audit-42",
+    ).model_copy(update=updates)
+
+
+@pytest.mark.parametrize(
+    "grant",
+    [
+        None,
+        _raw_grant(operation_id="other"),
+        _raw_grant(environment_id="other"),
+        _raw_grant(expires_at=datetime(2020, 1, 1, tzinfo=UTC)),
+    ],
+)
+def test_raw_delivery_refused_without_a_valid_grant(grant: RawDataGrant | None) -> None:
     capture_capability = _FakeCaptureCapability(_manifest())
     artifact_capability = _FakeArtifactCapability(_ready_readiness())
     database_provider = _FakeDatabaseProvider(_creation())
@@ -220,6 +243,8 @@ def test_raw_delivery_refused_without_a_matching_audited_grant() -> None:
             credentials=CredentialHandle("target-credential"),
             operation=_operation(),
             request_raw_delivery=True,
+            raw_grant=grant,
+            raw_grant_environment_id="qa",
         )
 
     assert database_provider.restore_calls == []

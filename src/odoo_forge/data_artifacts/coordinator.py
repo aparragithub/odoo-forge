@@ -75,6 +75,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from odoo_forge.anonymization.apply import apply_anonymization
@@ -216,6 +217,7 @@ class DataArtifactCopyCoordinator:
         request_raw_delivery: bool = False,
         retain_staged: bool = False,
         raw_grant: RawDataGrant | None = None,
+        raw_grant_environment_id: str | None = None,
     ) -> CoordinatedCopyResult:
         """Capture, anonymize (or gate raw delivery), verify integrity, then deliver."""
         state, revision = advance_lifecycle(
@@ -241,6 +243,12 @@ class DataArtifactCopyCoordinator:
             )
 
             if request_raw_delivery:
+                if raw_grant is not None and (
+                    raw_grant.operation_id != operation.operation_id
+                    or raw_grant.environment_id != raw_grant_environment_id
+                    or raw_grant.expires_at <= datetime.now(UTC)
+                ):
+                    raise RawDeliveryRefusedError()
                 grant = (
                     RedactedEvidence(
                         event="anonymization_exception",
