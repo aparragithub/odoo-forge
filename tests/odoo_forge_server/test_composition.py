@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, contextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -61,6 +62,23 @@ _REGISTERED_ROW = (
     ["container-1"],
     True,
 )
+_ENVIRONMENT_ROW = (
+    "qa",
+    "platform",
+    "tenant-1",
+    "project-1",
+    "active",
+    "policy-qa",
+    [{"source_environment_id": "production", "target_environment_id": "qa"}],
+)
+_GRANT_ROW = (
+    "refresh-42",
+    "qa",
+    "operator-1",
+    datetime(2030, 1, 1, tzinfo=UTC),
+    "approved refresh",
+    "audit-42",
+)
 _REGISTERED_POINTER = InstancePointer(
     scope=ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1"),
     instance_id=InstanceId(value="alpha"),
@@ -105,14 +123,19 @@ class _Cursor:
     def __init__(self) -> None:
         self._inserting = False
         self._register_lookup = False
+        self._authority_row: tuple[object, ...] | None = None
 
     def execute(self, query: str, parameters: tuple[object, ...]) -> None:
         normalized = " ".join(query.split()).upper()
         self._inserting = normalized.startswith("INSERT")
         self._register_lookup = "OPERATION_ID = " in normalized
+        if "FROM PUBLIC.DATA_ENVIRONMENT_REGISTRY" in normalized:
+            self._authority_row = _ENVIRONMENT_ROW
+        elif "FROM PUBLIC.RAW_DATA_GRANTS" in normalized:
+            self._authority_row = _GRANT_ROW
 
     def fetchone(self) -> tuple[object, ...] | None:
-        return _REGISTERED_ROW if self._inserting else None
+        return _REGISTERED_ROW if self._inserting else self._authority_row
 
     def fetchall(self) -> list[tuple[object, ...]]:
         if self._inserting or self._register_lookup:
@@ -249,3 +272,31 @@ def test_composition_rejects_unresolved_backend_catalog() -> None:
         assert "backend provider catalog resolution failed" in str(error)
     else:
         raise AssertionError("unresolved provider catalog must block composition")
+
+
+def test_composition_exposes_bounded_data_environment_adapters_and_service() -> None:
+    from odoo_forge.data_environments.service import DataEnvironmentService
+
+    service, acquired = object.__new__(DataEnvironmentService), []
+
+    def acquire() -> AbstractContextManager[Connection]:
+        acquired.append(True)
+        return contextmanager(_connection)()
+
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        acquire_connection=acquire,
+        data_environment_service=service,
+    )
+
+    assert app.state.data_environment_service is service
+    assert app.state.data_environment_registry.resolve("qa").environment_id == "qa"
+    assert (
+        app.state.raw_data_grant_authority.authorize("refresh-42", "qa").audit_reference
+        == "audit-42"
+    )
+    assert acquired == [True, True]
+    assert all(
+        route.methods <= {"GET", "HEAD"} for route in app.routes if hasattr(route, "methods")
+    )
