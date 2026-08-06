@@ -63,6 +63,9 @@ class FakeCursor:
             return ("public.instance_registry",) if self._relation_exists else (None,)
         return self._catalog_row
 
+    def fetchall(self) -> list[tuple[object, ...]]:
+        return []
+
 
 class FakeConnection:
     def __init__(self, cursor: FakeCursor, autocommit: bool = False) -> None:

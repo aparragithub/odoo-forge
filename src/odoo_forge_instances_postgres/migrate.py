@@ -11,6 +11,7 @@ import importlib.resources
 from typing import Protocol
 
 from .errors import (
+    AuthorityTableRejectedError,
     CatalogVerificationError,
     MigrationAutocommitError,
     MigrationLockTimeoutError,
@@ -21,8 +22,10 @@ __all__ = [
     "MigrationAutocommitError",
     "MigrationLockTimeoutError",
     "RegistryTableRejectedError",
+    "AuthorityTableRejectedError",
     "CatalogVerificationError",
     "run_migration",
+    "run_environment_migration",
 ]
 
 ADVISORY_LOCK_KEY_1 = 1329876815
@@ -53,6 +56,28 @@ SELECT c.relkind, c.relpersistence, c.relrowsecurity, c.relforcerowsecurity,
 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public' AND c.relname = 'instance_registry';
 """
+_AUTHORITY_CATALOG_SQL = """
+SELECT c.relname, c.relkind, a.attname, format_type(a.atttypid, a.atttypmod),
+  a.attnotnull, COALESCE(pk.ordinality, 0)
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
+  AND a.attnum > 0 AND NOT a.attisdropped
+LEFT JOIN LATERAL (
+  SELECT key.ordinality
+  FROM pg_catalog.pg_constraint con
+  CROSS JOIN LATERAL unnest(con.conkey) WITH ORDINALITY key(attnum, ordinality)
+  WHERE con.conrelid = c.oid AND con.contype = 'p' AND key.attnum = a.attnum
+) pk ON TRUE
+WHERE n.nspname = 'public' AND c.relname IN
+  ('data_environment_registry', 'raw_data_grants')
+ORDER BY c.relname, a.attnum;
+"""
+
+_AUTHORITY_SIGNATURES = {
+    "data_environment_registry": "r|environment_id|text|True|1;r|owner|text|True|0;r|tenant_id|text|True|0;r|project_id|text|True|0;r|lifecycle|text|True|0;r|policy_ref|text|True|0;r|relationships|jsonb|True|0",  # noqa: E501
+    "raw_data_grants": "r|operation_id|text|True|1;r|environment_id|text|True|2;r|grantor|text|True|0;r|expires_at|timestamp with time zone|True|0;r|reason|text|True|0;r|audit_reference|text|True|0",  # noqa: E501
+}
 
 
 class Connection(Protocol):
@@ -74,11 +99,21 @@ class Cursor(Protocol):
 
     def fetchone(self) -> tuple[object, ...] | None: ...
 
+    def fetchall(self) -> list[tuple[object, ...]]: ...
+
 
 def _migration_sql() -> str:
     return (
         importlib.resources.files("odoo_forge_instances_postgres.migrations")
         .joinpath("0001_instance_registry.sql")
+        .read_text(encoding="utf-8")
+    )
+
+
+def _environment_migration_sql() -> str:
+    return (
+        importlib.resources.files("odoo_forge_instances_postgres.migrations")
+        .joinpath("0002_data_environments.sql")
         .read_text(encoding="utf-8")
     )
 
@@ -139,6 +174,20 @@ def _verify_catalog_signature(row: tuple[object, ...] | None) -> None:
         raise RegistryTableRejectedError("rejected schema: operation_id must have type text")
 
 
+def _verify_authority_catalog(rows: list[tuple[object, ...]]) -> None:
+    observed: dict[str, list[str]] = {}
+    for row in rows:
+        table, relkind, column, postgres_type, not_null, primary_key_order = row
+        signature = "|".join(
+            map(str, (relkind, column, postgres_type, not_null, primary_key_order))
+        )
+        observed.setdefault(str(table), []).append(signature)
+
+    for table, expected in _AUTHORITY_SIGNATURES.items():
+        if ";".join(observed.get(table, ())) != expected:
+            raise AuthorityTableRejectedError(f"rejected schema: {table} is not exactly compatible")
+
+
 def run_migration(conn: Connection) -> None:
     """Apply the instance registry schema, verifying it is safe to own.
 
@@ -168,4 +217,25 @@ def run_migration(conn: Connection) -> None:
         conn.rollback()
         raise
 
+    conn.commit()
+
+
+def run_environment_migration(conn: Connection) -> None:
+    """Create only the two separately owned data-environment authority tables."""
+
+    if conn.autocommit is not False:
+        raise MigrationAutocommitError(
+            "run_environment_migration requires a connection with autocommit disabled"
+        )
+
+    cursor = conn.cursor()
+    try:
+        cursor.execute(f"SET LOCAL lock_timeout = '{LOCK_TIMEOUT}'")
+        _execute_guarding_timeout(cursor, _ADVISORY_LOCK_SQL)
+        _execute_guarding_timeout(cursor, _environment_migration_sql())
+        cursor.execute(_AUTHORITY_CATALOG_SQL)
+        _verify_authority_catalog(cursor.fetchall())
+    except Exception:
+        conn.rollback()
+        raise
     conn.commit()

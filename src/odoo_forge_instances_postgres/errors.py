@@ -6,6 +6,7 @@ __all__ = [
     "MigrationAutocommitError",
     "MigrationLockTimeoutError",
     "RegistryTableRejectedError",
+    "AuthorityTableRejectedError",
     "CatalogVerificationError",
 ]
 
@@ -20,6 +21,10 @@ class MigrationLockTimeoutError(Exception):
 
 class RegistryTableRejectedError(Exception):
     """Raised when the existing registry table fails the catalog predicate."""
+
+
+class AuthorityTableRejectedError(Exception):
+    """Raised when an authority table is not exactly compatible with its owner."""
 
 
 class CatalogVerificationError(Exception):

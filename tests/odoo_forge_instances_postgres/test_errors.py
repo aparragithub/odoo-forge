@@ -9,6 +9,7 @@ ERROR_NAMES = [
     "MigrationAutocommitError",
     "MigrationLockTimeoutError",
     "RegistryTableRejectedError",
+    "AuthorityTableRejectedError",
     "CatalogVerificationError",
 ]
 ERRORS = tuple(getattr(errors, name) for name in ERROR_NAMES)
