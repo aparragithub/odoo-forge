@@ -3,8 +3,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from odoo_forge.manifest.authoring import serialize_manifest, validate_draft
+from odoo_forge.manifest.authoring import DraftIssue, DraftResult, manifest_document, validate_draft
 from odoo_forge.manifest.schema import Manifest
+from odoo_forge_cli._support import serialize_manifest
 
 
 def _complete_draft() -> dict[str, object]:
@@ -60,6 +61,18 @@ def test_validate_draft_accepts_complete_manifest_surface() -> None:
     assert result.issues == ()
 
 
+def test_draft_result_rejects_manifest_with_issues() -> None:
+    manifest = Manifest.model_validate(_complete_draft())
+
+    with pytest.raises(ValueError, match="exactly one valid state"):
+        DraftResult(manifest=manifest, issues=(DraftIssue(path="name", message="invalid"),))
+
+
+def test_draft_result_rejects_missing_manifest_without_issues() -> None:
+    with pytest.raises(ValueError, match="exactly one valid state"):
+        DraftResult(manifest=None)
+
+
 @pytest.mark.parametrize(
     ("draft", "path"),
     [
@@ -105,6 +118,18 @@ def test_serialize_manifest_is_canonical_and_round_trips_paths_and_unicode() -> 
     assert "café-project" in serialized
     assert "addons_path: client/addons" in serialized
     assert reloaded == result.manifest
+
+
+def test_manifest_document_is_normalized_before_adapter_serialization() -> None:
+    manifest = Manifest.model_validate(_complete_draft())
+
+    document = manifest_document(manifest)
+
+    assert document["name"] == "café-project"
+    assert document["client"] == {
+        "addons_path": "client/addons",
+        "python_requirements": "client/requirements.txt",
+    }
 
 
 def test_equivalent_manifests_have_identical_yaml_bytes() -> None:
