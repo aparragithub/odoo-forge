@@ -14,6 +14,7 @@ from pathlib import Path
 import yaml
 from pydantic import ValidationError
 
+from odoo_forge.manifest.authoring import manifest_document
 from odoo_forge.manifest.errors import LockfileError, ManifestInputError, ModuleDependencyError
 from odoo_forge.manifest.lockfile import Lockfile
 from odoo_forge.manifest.module_deps import build_module_index, find_missing_dependencies
@@ -76,6 +77,19 @@ def _read_manifest_data(path: Path) -> object:
         return yaml.safe_load(text)
     except yaml.YAMLError as exc:
         raise ManifestInputError(f"malformed YAML in manifest '{path}': {exc}") from exc
+
+
+def serialize_manifest(manifest: Manifest) -> str:
+    """Serialize the core manifest document as deterministic human-readable YAML."""
+    return (
+        yaml.safe_dump(
+            manifest_document(manifest),
+            sort_keys=False,
+            default_flow_style=False,
+            allow_unicode=True,
+        ).rstrip("\n")
+        + "\n"
+    )
 
 
 def _load_lock(path: Path) -> Lockfile | None:
