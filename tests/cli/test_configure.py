@@ -56,7 +56,14 @@ def test_configure_community_yaml(tmp_path: Path) -> None:
         }
     )
 
-    assert target.read_text() == _support.serialize_manifest(expected)
+    expected_yaml = """name: community-demo
+odoo_version: '19.0'
+edition: community
+client:
+  addons_path: client/addons
+"""
+
+    assert target.read_text() == expected_yaml
     assert result.output.endswith(f"created {target}\n")
     assert Manifest.model_validate(yaml.safe_load(target.read_text())) == expected
 
@@ -134,7 +141,7 @@ def test_configure_invalid_draft_reports_actionable_error_without_write(
 
     assert result.exit_code == 1
     assert "error: edition:" in result.output
-    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_configure_unicode(tmp_path: Path) -> None:
