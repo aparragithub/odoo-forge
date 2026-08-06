@@ -1,5 +1,9 @@
+import locale
+import os
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
+from unittest.mock import Mock
 
 import pytest
 import typer
@@ -12,6 +16,20 @@ from odoo_forge_cli.commands import manifest
 from odoo_forge_cli.main import app
 
 runner = CliRunner()
+
+
+def _valid_draft(name: str = "demo") -> dict[str, object]:
+    return {
+        "name": name,
+        "odoo_version": "19.0",
+        "edition": "community",
+        "client": {"addons_path": "client/addons"},
+    }
+
+
+def _invoke_configure(monkeypatch: pytest.MonkeyPatch, target: Path, *, name: str = "demo") -> Any:
+    monkeypatch.setattr(manifest, "_collect_draft", lambda: _valid_draft(name))
+    return runner.invoke(app, ["configure", "--manifest", str(target)], input="y\n")
 
 
 def _script(
@@ -37,33 +55,9 @@ def _script(
     monkeypatch.setattr(manifest.typer, "confirm", confirm)  # type: ignore[attr-defined]
 
 
-def test_configure_community_previews_exact_yaml_and_creates_manifest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_configure_community_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "project.yaml"
-    _script(
-        monkeypatch,
-        {
-            "Project name": "community-demo",
-            "Odoo version": "19.0",
-            "Edition": "community",
-            "Core URL override": "",
-            "Core ref override": "",
-            "Client addons path": "client/addons",
-            "Python requirements path": "",
-        },
-        {
-            "Add a layer": False,
-            "Add an override": False,
-            "Configure workspace": False,
-            "Configure backend": False,
-            "Add mount priority": False,
-            "Create this project.yaml": True,
-        },
-    )
-
-    manifest.configure(target)
-
+    result = _invoke_configure(monkeypatch, target, name="community-demo")
     expected = Manifest.model_validate(
         {
             "name": "community-demo",
@@ -72,9 +66,9 @@ def test_configure_community_previews_exact_yaml_and_creates_manifest(
             "client": {"addons_path": "client/addons"},
         }
     )
+
     assert target.read_text() == _support.serialize_manifest(expected)
-    output = capsys.readouterr().out
-    assert output.endswith(_support.serialize_manifest(expected) + "created " + str(target) + "\n")
+    assert result.output.endswith(f"created {target}\n")
     assert Manifest.model_validate(yaml.safe_load(target.read_text())) == expected
 
 
@@ -144,60 +138,54 @@ def test_configure_rejects_existing_target_before_prompt(tmp_path: Path) -> None
 
 
 def test_configure_invalid_draft_reports_actionable_error_without_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target = tmp_path / "project.yaml"
-    _script(
-        monkeypatch,
-        {
-            "Project name": "invalid-demo",
-            "Odoo version": "19.0",
-            "Edition": "not-an-edition",
-            "Core URL override": "",
-            "Core ref override": "",
-            "Client addons path": "client/addons",
-            "Python requirements path": "",
-        },
-        {
-            "Add a layer": False,
-            "Add an override": False,
-            "Configure workspace": False,
-            "Configure backend": False,
-            "Add mount priority": False,
-        },
-    )
+    monkeypatch.setattr(manifest, "_collect_draft", lambda: dict(_valid_draft(), edition="invalid"))
+    result = runner.invoke(app, ["configure", "--manifest", str(target)])
 
-    with pytest.raises(typer.Exit) as raised:
-        manifest.configure(target)
-
-    assert raised.value.exit_code == 1
-    assert "error: edition:" in capsys.readouterr().err
+    assert result.exit_code == 1
+    assert "error: edition:" in result.output
     assert not target.exists()
 
 
-def test_create_only_writer_cleans_temporary_file_on_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_configure_unicode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    target = tmp_path / "project.yaml"
+    monkeypatch.setattr(locale, "getencoding", lambda: "ascii")
+    fdopen = Mock(wraps=os.fdopen)
+    monkeypatch.setattr(_support.os, "fdopen", fdopen)  # type: ignore[attr-defined]
+    _invoke_configure(monkeypatch, target, name="café")
+
+    assert fdopen.call_args.kwargs == {"encoding": "utf-8", "newline": "\n"}
+    assert "café" in target.read_text(encoding="utf-8")
+
+
+def test_configure_publication_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "project.yaml"
 
     def fail_link(_source: Path, _destination: Path) -> None:
         raise OSError("simulated publication failure")
 
     monkeypatch.setattr(_support.os, "link", fail_link)  # type: ignore[attr-defined]
+    result = _invoke_configure(monkeypatch, target)
 
-    with pytest.raises(OSError, match="simulated publication failure"):
-        _support._write_manifest_create_only(target, "name: demo\n")
-
-    assert not target.exists()
+    assert result.exit_code == 1
+    assert "simulated publication failure" in result.output
     assert list(tmp_path.iterdir()) == []
 
 
-def test_create_only_writer_preserves_racing_target(tmp_path: Path) -> None:
+def test_configure_race_preserves_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     target = tmp_path / "project.yaml"
-    target.write_text("racing\n")
+    original_link = os.link
 
-    with pytest.raises(FileExistsError):
-        _support._write_manifest_create_only(target, "name: replacement\n")
+    def create_target_then_link(source: Path, destination: Path) -> None:
+        destination.write_text("racing\n", encoding="utf-8")
+        original_link(source, destination)
 
-    assert target.read_text() == "racing\n"
+    monkeypatch.setattr(_support.os, "link", create_target_then_link)  # type: ignore[attr-defined]
+    result = _invoke_configure(monkeypatch, target)
+
+    assert result.exit_code == 1
+    assert "already exists" in result.output
+    assert target.read_text(encoding="utf-8") == "racing\n"
     assert list(tmp_path.iterdir()) == [target]

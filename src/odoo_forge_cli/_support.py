@@ -138,7 +138,7 @@ def _write_manifest_create_only(path: Path, content: str) -> None:
     tmp_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     tmp_path = Path(tmp_name)
     try:
-        with os.fdopen(tmp_fd, "w") as tmp_file:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as tmp_file:
             tmp_file.write(content)
             tmp_file.flush()
             os.fsync(tmp_file.fileno())
