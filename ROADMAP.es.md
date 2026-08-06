@@ -36,12 +36,18 @@ Se vuelven visibles para los usuarios cuando los subproyectos siguientes las con
 
 ## 🔜 Próximo
 
-El subproyecto planificado más cercano, en etapa de propuesta:
+Los subproyectos planificados más cercanos, en etapa de propuesta:
 
 - **Entornos de datos administrados** (`SP-DATA-ENVIRONMENTS`) — solicitar un entorno
   de base de datos (vacío, copia enmascarada o artefacto restaurado) como un flujo
   administrado en lugar de mediante comandos ejecutados a mano. Este es el primer
   consumidor de las bases de artefactos de datos, operaciones durables y propiedad.
+- **Creación guiada de manifests** (`SP-MANIFEST-AUTHORING`) — producir un
+  `project.yaml` válido mediante un asistente paso a paso en lugar de editar YAML a
+  mano. Se entrega primero como TUI; el mismo flujo se convierte después en un
+  recorrido guiado dentro de la UI de operaciones. El asistente consume el esquema y
+  el validador que ya entrega el núcleo de manifests, en lugar de reformular sus
+  propias reglas de validación.
 
 ## 🎯 Estado objetivo
 
@@ -53,7 +59,8 @@ Dirección, en el orden previsto; cada elemento depende de las capas anteriores:
 4. **Acceso a la plataforma (RBAC)** — roles e identidad para equipos, no para un único operador
 5. **Automatización de entregas** — flujos de build, publicación y despliegue impulsados por CI
 6. **Gobernanza de producción, ciclo de vida de recursos y recuperación de datos** — las disciplinas operativas en torno a datos reales de clientes
-7. **UI de operaciones** — una superficie web una vez que los flujos subyacentes sean estables
+7. **UI de operaciones** — una superficie web una vez que los flujos subyacentes sean
+   estables, incluido el formulario web del asistente guiado de manifests
 
 ## Fuera de alcance (por ahora)
 
