@@ -1,5 +1,3 @@
-"""Fail-closed orchestration for one policy-governed data-environment copy."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -30,19 +28,11 @@ PolicyResolver = Callable[[str], AnonymizationPolicy]
 OperationVerifier = Callable[[CoordinatedCopyResult], bool]
 
 
+@dataclass
 class _PreflightFailure(Exception):
-    def __init__(
-        self,
-        code: EnvironmentFailureCode,
-        policy: str | None = None,
-        raw_grant: RawDataGrant | None = None,
-    ):
-        self.code, self.policy, self.raw_grant = code, policy, raw_grant
-
-
-class _RecoveryFailure(Exception):
-    def __init__(self, code: EnvironmentFailureCode):
-        self.code = code
+    code: EnvironmentFailureCode
+    policy: str | None = None
+    raw_grant: RawDataGrant | None = None
 
 
 @dataclass(kw_only=True, eq=False, repr=False)
@@ -79,8 +69,6 @@ class DataEnvironmentOperationResult:
 
 
 class DataEnvironmentService:
-    """Run preflight completely before delegating to the accepted copy workflow."""
-
     def __init__(
         self,
         *,
@@ -251,35 +239,14 @@ class DataEnvironmentService:
             try:
                 self._provider.restore_recovery_point(target_ref, point)
             except Exception:
-                return self._result(
-                    request,
-                    EnvironmentOutcomeCode.FAILED,
-                    EnvironmentFailureCode.RECOVERY_RESTORE_FAILED,
-                    policy,
-                    point,
-                    raw_grant,
-                )
-            try:
-                if not self._provider.verify_recovery_point(target_ref, point):
-                    raise _RecoveryFailure(EnvironmentFailureCode.RECOVERY_VERIFICATION_FAILED)
-            except _RecoveryFailure as failure:
-                return self._result(
-                    request,
-                    EnvironmentOutcomeCode.FAILED,
-                    failure.code,
-                    policy,
-                    point,
-                    raw_grant,
-                )
-            except Exception:
-                return self._result(
-                    request,
-                    EnvironmentOutcomeCode.FAILED,
-                    EnvironmentFailureCode.RECOVERY_VERIFICATION_FAILED,
-                    policy,
-                    point,
-                    raw_grant,
-                )
+                failure_code = EnvironmentFailureCode.RECOVERY_RESTORE_FAILED
+            else:
+                try:
+                    recovered = self._provider.verify_recovery_point(target_ref, point)
+                except Exception:
+                    recovered = False
+                if not recovered:
+                    failure_code = EnvironmentFailureCode.RECOVERY_VERIFICATION_FAILED
         return self._result(
             request,
             EnvironmentOutcomeCode.FAILED,

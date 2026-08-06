@@ -232,7 +232,11 @@ def test_raw_delivery_refused_without_a_valid_grant(grant: RawDataGrant | None) 
         artifact_capability=artifact_capability,
         database_provider=database_provider,
         mask_transform=_identity_mask_transform,
-        audited_exception_lookup=lambda lineage_id: None,
+        audited_exception_lookup=lambda lineage_id: RedactedEvidence(
+            event="anonymization_exception",
+            summary="legacy unscoped evidence",
+            references=(lineage_id,),
+        ),
     )
 
     with pytest.raises(RawDeliveryRefusedError):
@@ -274,6 +278,8 @@ def test_raw_delivery_permitted_with_a_matching_audited_grant() -> None:
         credentials=CredentialHandle("target-credential"),
         operation=_operation(),
         request_raw_delivery=True,
+        raw_grant=_raw_grant(),
+        raw_grant_environment_id="qa",
     )
 
     assert result.checkpoints[1].evidence.event == "anonymization_exception"

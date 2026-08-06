@@ -243,7 +243,7 @@ class DataArtifactCopyCoordinator:
             )
 
             if request_raw_delivery:
-                if raw_grant is not None and (
+                if raw_grant is None or (
                     raw_grant.operation_id != operation.operation_id
                     or raw_grant.environment_id != raw_grant_environment_id
                     or raw_grant.expires_at <= datetime.now(UTC)
