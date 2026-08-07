@@ -123,6 +123,8 @@ class QuarantineHistory(_LifecycleValue):
     resource: DatabaseRef
     operation: DurableOperationIdentity
     evidence_digest: str
+    resource_class: ResourceClass
+    quarantined_at: datetime
 
 
 class LifecycleJournalEvent(_LifecycleValue):

@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
@@ -266,6 +267,8 @@ def _history() -> QuarantineHistory:
         resource=_database_ref(),
         operation=RECEIPT.operation,
         evidence_digest="digest-1",
+        resource_class=ResourceClass.DEV,
+        quarantined_at=NOW - timedelta(days=2),
     )
 
 
@@ -442,8 +445,8 @@ def test_quarantine_history_reuses_exact_pointer_and_preserves_lineage() -> None
     journal = _AppendOnlyJournal()
     service = _service(registry, gateway, journal)
 
-    service.run(SCOPE, POLICY, AUTHORIZATION)
-    service.run(SCOPE, POLICY, AUTHORIZATION)
+    service.run(SCOPE, POLICY, AUTHORIZATION, now=NOW)
+    service.run(SCOPE, POLICY, AUTHORIZATION, now=NOW)
 
     history = journal.events()[1].history
     assert history == QuarantineHistory(
@@ -452,6 +455,8 @@ def test_quarantine_history_reuses_exact_pointer_and_preserves_lineage() -> None
         resource=_database_ref(),
         operation=RECEIPT.operation,
         evidence_digest="digest-1",
+        resource_class=ResourceClass.DEV,
+        quarantined_at=NOW,
     )
     assert registry.get_calls[-1] == POINTER
 
@@ -533,6 +538,145 @@ def test_confirmed_zombie_delete_revalidates_before_mutating_delete() -> None:
     assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
     assert result.residuals[0].code == "not-confirmed-zombie"
     assert gateway.calls == ["quarantine"]
+
+
+@pytest.mark.parametrize(
+    "returned",
+    [
+        RECORD.model_copy(
+            update={"resource": ResourceRef(
+                identifier="other-database",
+                resource_kind="database",
+                ownership=ResourceOwnership.CREATED,
+            )}
+        ),
+        RECORD.model_copy(
+            update={
+                "receipt": RECEIPT.model_copy(
+                    update={"operation": DurableOperationIdentity(
+                        operation_id="other-operation", request_digest="other-digest"
+                    )}
+                )
+            }
+        ),
+    ],
+)
+def test_history_rejects_returned_identity_or_operation_mismatch_without_mutation(
+    returned: InstanceRecord,
+) -> None:
+    journal = _history_journal()
+    gateway = _ProviderOnlyGateway(())
+
+    result = _service(_Registry((), returned, returned), gateway, journal).run(
+        SCOPE, POLICY, AUTHORIZATION
+    )[0]
+
+    assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
+    assert result.residuals[0].code == "history-mismatch"
+    assert gateway.calls == []
+
+
+def test_prod_history_cannot_be_classified_as_a_zombie() -> None:
+    journal = _history_journal(_history().model_copy(update={"resource_class": ResourceClass.PROD}))
+    gateway = _ProviderOnlyGateway(())
+    policy = POLICY.model_copy(
+        update={
+            "approved_classes": frozenset(
+                {ResourceClass.DEV, ResourceClass.QA, ResourceClass.PROD}
+            )
+        }
+    )
+
+    result = _service(_Registry(()), gateway, journal).run(SCOPE, policy, AUTHORIZATION)[0]
+
+    assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
+    assert result.residuals[0].code == "not-confirmed-zombie"
+    assert gateway.calls == []
+
+
+def _history_without_quarantine_timestamp() -> QuarantineHistory:
+    construct = cast(Callable[..., QuarantineHistory], QuarantineHistory.model_construct)
+    return construct(
+        pointer=POINTER,
+        scope=SCOPE,
+        resource=_database_ref(),
+        operation=RECEIPT.operation,
+        evidence_digest="digest-1",
+        resource_class=ResourceClass.DEV,
+    )
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        _history().model_copy(update={"quarantined_at": NOW + timedelta(minutes=1)}),
+        _history().model_copy(update={"quarantined_at": datetime(2026, 1, 8)}),
+        _history_without_quarantine_timestamp(),
+    ],
+)
+def test_history_delete_requires_valid_elapsed_quarantine_timestamp(
+    history: QuarantineHistory,
+) -> None:
+    journal = _history_journal(history)
+    gateway = _ProviderOnlyGateway(())
+
+    result = _service(_Registry(()), gateway, journal).run(
+        SCOPE,
+        POLICY,
+        AUTHORIZATION,
+        delete=True,
+        wait=timedelta(days=1),
+        now=NOW,
+    )[0]
+
+    assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
+    assert result.residuals[0].code == "quarantine-wait"
+    assert gateway.calls == []
+
+
+def test_history_delete_requires_elapsed_wait_before_mutating() -> None:
+    journal = _history_journal()
+    gateway = _ProviderOnlyGateway((), ())
+
+    result = _service(_Registry(()), gateway, journal).run(
+        SCOPE,
+        POLICY,
+        AUTHORIZATION,
+        delete=True,
+        wait=timedelta(days=1),
+        now=NOW,
+    )[0]
+
+    assert result.outcome is RecoveryOutcome.DELETED
+    assert gateway.calls == ["quarantine", "delete", "cleanup"]
+
+
+def test_qa_confirmed_zombie_history_requires_concordant_class() -> None:
+    qa_history = _history().model_copy(update={"resource_class": ResourceClass.QA})
+    journal = _history_journal(qa_history)
+    gateway = _ProviderOnlyGateway(
+        (_observation(resource_class=ResourceClass.QA, presence=ProviderPresence.INVALID),)
+    )
+
+    result = _service(_Registry(()), gateway, journal).run(
+        SCOPE, POLICY, AUTHORIZATION
+    )[0]
+
+    assert result.outcome is RecoveryOutcome.QUARANTINED
+    assert gateway.calls == ["quarantine"]
+    history_event = next(event for event in journal.events() if event.history is not None)
+    assert history_event.history is not None
+    assert history_event.history.resource_class is ResourceClass.QA
+
+    contradictory_gateway = _ProviderOnlyGateway(
+        (_observation(resource_class=ResourceClass.DEV, presence=ProviderPresence.INVALID),)
+    )
+    contradictory_result = _service(
+        _Registry(()), contradictory_gateway, _history_journal(qa_history)
+    ).run(SCOPE, POLICY, AUTHORIZATION)[0]
+
+    assert contradictory_result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
+    assert contradictory_gateway.calls == []
 
 
 def test_action_audit_contains_each_mutating_action_and_residuals() -> None:
