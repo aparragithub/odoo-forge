@@ -61,8 +61,7 @@ class LifecycleService:
         results: list[RecoveryResult] = []
         for key in sorted(set(record_keys) | set(observation_keys)):
             if record_keys.count(key) > 1 or observation_keys.count(key) > 1:
-                results.append(self._human(policy, authorization, "duplicate-evidence"))
-                continue
+                results.append(self._human(policy, authorization, "duplicate-evidence")); continue  # fmt: skip  # noqa: E501,E702
             record = next((r for r, item in zip(records, record_keys, strict=True) if item == key), None)  # fmt: skip  # noqa: E501
             observation = next((o for o, item in zip(observations, observation_keys, strict=True) if item == key), None)  # fmt: skip  # noqa: E501
             results.append(self._recover(scope, policy, authorization, record, observation, delete, wait, now))  # fmt: skip  # noqa: E501
@@ -79,22 +78,16 @@ class LifecycleService:
         wait: timedelta,
         now: datetime | None,
     ) -> RecoveryResult:
-        if not authorization.approved:
-            return self._human(policy, authorization, "unauthorized")
+        if not authorization.approved: return self._human(policy, authorization, "unauthorized")  # fmt: skip  # noqa: E501,E701
         if observation is not None:
-            if observation.scope != scope:
-                return self._human(policy, authorization, "scope-mismatch")
-            if not _eligible(observation, policy, now):
-                return self._human(policy, authorization, "ineligible", observation.evidence_digest)
+            if observation.scope != scope: return self._human(policy, authorization, "scope-mismatch")  # fmt: skip  # noqa: E501,E701
+            if not _eligible(observation, policy, now): return self._human(policy, authorization, "ineligible", observation.evidence_digest)  # fmt: skip  # noqa: E501,E701
         if record is None:
-            if observation is None or not observation.ownership_valid:
-                return self._human(policy, authorization, "invalid-ownership")
-            current = _matching(self.gateway.observe(observation.scope), observation)
-            if current is None or not current.ownership_valid:
-                return self._human(policy, authorization, "invalid-ownership")
-            if current.evidence_digest != observation.evidence_digest:
-                return self._human(policy, authorization, "evidence-drift", current.evidence_digest)
-            self.gateway.quarantine(observation.ref); self.gateway.adopt(observation.ref)  # fmt: skip  # noqa: E501,E702
+            if observation is None or not observation.ownership_valid: return self._human(policy, authorization, "invalid-ownership")  # fmt: skip  # noqa: E501,E701
+            failure = self._revalidate(scope, policy, record, observation, now)
+            if failure: return self._human(policy, authorization, *failure)  # fmt: skip  # noqa: E501,E701
+            quarantined = self.gateway.quarantine(observation.ref)
+            self.gateway.adopt(quarantined)
             return self._finish(
                 policy,
                 authorization,
@@ -103,38 +96,23 @@ class LifecycleService:
                 observation.evidence_digest,
             )
         if observation is None:
+            if not self._registry_matches(record):
+                return self._human(policy, authorization, "registry-drift")
             self.gateway.reconcile(_operation(record))
             return self._finish(policy, authorization, "registry-only", RecoveryOutcome.RECONCILED)
-        if not observation.ownership_valid:
-            return self._human(
-                policy, authorization, "invalid-ownership", observation.evidence_digest
-            )
-        if not _lineage_matches(record, observation):
-            return self._human(
-                policy, authorization, "lineage-mismatch", observation.evidence_digest
-            )
-        try:
-            current_record = self.registry.get(record.pointer)
-        except InstanceRecordNotFoundError:
-            return self._human(policy, authorization, "registry-drift", observation.evidence_digest)
-        current = _matching(self.gateway.observe(scope), observation)
-        if current_record != record or current is None:
-            return self._human(policy, authorization, "evidence-drift", observation.evidence_digest)
-        if not current.ownership_valid:
-            return self._human(policy, authorization, "invalid-ownership", current.evidence_digest)
-        if not _lineage_matches(record, current):
-            return self._human(policy, authorization, "lineage-mismatch", current.evidence_digest)
-        if current.evidence_digest != observation.evidence_digest:
-            return self._human(policy, authorization, "evidence-drift", current.evidence_digest)
+        if not observation.ownership_valid: return self._human(policy, authorization, "invalid-ownership", observation.evidence_digest)  # fmt: skip  # noqa: E501,E701
+        if not _lineage_matches(record, observation): return self._human(policy, authorization, "lineage-mismatch", observation.evidence_digest)  # fmt: skip  # noqa: E501,E701
+        failure = self._revalidate(scope, policy, record, observation, now)
+        if failure: return self._human(policy, authorization, *failure)  # fmt: skip  # noqa: E501,E701
         quarantined = self.gateway.quarantine(observation.ref)
         if not delete:
             return self._finish(policy, authorization, "quarantined", RecoveryOutcome.QUARANTINED)
-        if wait > timedelta():
-            return self._finish(policy, authorization, "quarantine-wait", RecoveryOutcome.QUARANTINED, residuals=("wait",))  # fmt: skip  # noqa: E501
-        changed = _matching(self.gateway.observe(scope), observation)
-        if changed is None or changed.evidence_digest != observation.evidence_digest:
-            digest = changed.evidence_digest if changed is not None else "missing"
-            return self._finish(policy, authorization, "evidence-changed", RecoveryOutcome.CANCELLED, digest)  # fmt: skip  # noqa: E501
+        if wait > timedelta(): return self._finish(policy, authorization, "quarantine-wait", RecoveryOutcome.QUARANTINED, residuals=("wait",))  # fmt: skip  # noqa: E501,E701
+        failure = self._revalidate(scope, policy, record, observation, now)
+        if failure:
+            code, digest = failure
+            if code == "evidence-drift": return self._finish(policy, authorization, "evidence-changed", RecoveryOutcome.CANCELLED, digest)  # fmt: skip  # noqa: E501,E701
+            return self._human(policy, authorization, code, digest)
         creation = DatabaseCreation(ref=quarantined, receipt=CreationReceipt(operation=_operation(record), owned_resource_ids=(quarantined.identifier,)))  # fmt: skip  # noqa: E501
         self.gateway.delete(creation)
         residuals = self._cleanup(creation.receipt)
@@ -142,15 +120,36 @@ class LifecycleService:
             return self._finish(policy, authorization, "partial-cleanup", RecoveryOutcome.HUMAN_INTERVENTION, residuals=residuals)  # fmt: skip  # noqa: E501
         return self._finish(policy, authorization, "deleted", RecoveryOutcome.DELETED)
 
+    def _registry_matches(self, record: InstanceRecord) -> bool:
+        try: return self.registry.get(record.pointer) == record  # fmt: skip  # noqa: E701
+        except InstanceRecordNotFoundError: return False  # fmt: skip  # noqa: E701
+
+    def _revalidate(
+        self,
+        scope: ProjectScope,
+        policy: LifecyclePolicy,
+        record: InstanceRecord | None,
+        expected: DatabaseObservation,
+        now: datetime | None,
+    ) -> tuple[str, str] | None:
+        if record is not None and not self._registry_matches(record): return "registry-drift", expected.evidence_digest  # fmt: skip  # noqa: E501,E701
+        current = _matching(self.gateway.observe(scope), expected)
+        if current is None: return "evidence-drift", "missing"  # fmt: skip  # noqa: E701
+        if current.scope != scope: return "scope-mismatch", current.evidence_digest  # fmt: skip  # noqa: E501,E701
+        if not _eligible(current, policy, now): return "ineligible", current.evidence_digest  # fmt: skip  # noqa: E501,E701
+        if not current.ownership_valid: return "invalid-ownership", current.evidence_digest  # fmt: skip  # noqa: E501,E701
+        if record is not None and not _lineage_matches(record, current): return "lineage-mismatch", current.evidence_digest  # fmt: skip  # noqa: E501,E701
+        if record is None and current.receipt != expected.receipt: return "lineage-mismatch", current.evidence_digest  # fmt: skip  # noqa: E501,E701
+        if current.evidence_digest != expected.evidence_digest: return "evidence-drift", current.evidence_digest  # fmt: skip  # noqa: E501,E701
+        return None
+
     def _cleanup(self, receipt: CreationReceipt) -> tuple[str, ...]:
         for _ in range(self.max_cleanup_retries + 1):
             residuals = self.gateway.cleanup(receipt).residual_failures
             if not residuals: return ()  # fmt: skip  # noqa: E701
         return residuals
 
-    def _human(
-        self, p: LifecyclePolicy, a: LifecycleAuthorization, code: str, digest: str = "registry"
-    ) -> RecoveryResult:
+    def _human(self, p: LifecyclePolicy, a: LifecycleAuthorization, code: str, digest: str = "registry") -> RecoveryResult:  # fmt: skip  # noqa: E501
         return self._finish(p, a, code, RecoveryOutcome.HUMAN_INTERVENTION, digest)
 
     def _finish(
@@ -163,8 +162,7 @@ class LifecycleService:
         residuals: tuple[str, ...] = (),
     ) -> RecoveryResult:
         values = tuple(LifecycleResidual(code=code, detail=value) for value in residuals)
-        if not values and code not in {"adopted", "quarantined", "registry-only", "deleted"}:
-            values = (LifecycleResidual(code=code, detail=code),)
+        if not values and code not in {"adopted", "quarantined", "registry-only", "deleted"}: values = (LifecycleResidual(code=code, detail=code),)  # fmt: skip  # noqa: E501,E701
         self.journal.append(LifecycleJournalEvent(policy=policy, evidence=LifecycleEvidence(source="lifecycle", digest=digest), authorization=authorization, outcome=outcome, residuals=values))  # fmt: skip  # noqa: E501
         return RecoveryResult(outcome=outcome, residuals=values)
 
@@ -172,25 +170,20 @@ class LifecycleService:
 def _matching(
     observations: tuple[DatabaseObservation, ...], expected: DatabaseObservation
 ) -> DatabaseObservation | None:
-    matches = tuple(item for item in observations if item.ref.identifier == expected.ref.identifier)
-    return matches[0] if len(matches) == 1 else None
+    return (matches[0] if len(matches) == 1 else None) if (matches := tuple(item for item in observations if item.ref.identifier == expected.ref.identifier)) else None  # fmt: skip  # noqa: E501
 
 
 def _eligible(
     observation: DatabaseObservation, policy: LifecyclePolicy, now: datetime | None
 ) -> bool:
-    if observation.last_activity is None:
-        return False
+    if observation.last_activity is None: return False  # fmt: skip  # noqa: E701
     decision = evaluate_expiration(LifecycleResource(resource_id=observation.ref.identifier, resource_class=observation.resource_class, last_activity=observation.last_activity), now or datetime.now(UTC), policy)  # fmt: skip  # noqa: E501
     return decision.eligible and decision.mutation_allowed
 
 
 def _lineage_matches(record: InstanceRecord, observation: DatabaseObservation) -> bool:
-    if record.receipt is None or observation.receipt is None:
-        return False
-    return record.receipt.operation == observation.receipt.operation and observation.ref.identifier in record.receipt.owned_resource_ids and observation.ref.identifier in observation.receipt.owned_resource_ids  # fmt: skip  # noqa: E501
+    return (record_receipt := record.receipt) is not None and (observation_receipt := observation.receipt) is not None and record_receipt.operation == observation_receipt.operation and observation.ref.identifier in record_receipt.owned_resource_ids and observation.ref.identifier in observation_receipt.owned_resource_ids  # fmt: skip  # noqa: E501
 
 
 def _operation(record: InstanceRecord) -> OperationIdentity:
-    value = record.receipt.operation.operation_id if record.receipt else record.pointer.instance_id.value  # fmt: skip  # noqa: E501
-    return OperationIdentity(value=value)
+    return OperationIdentity(value=record.receipt.operation.operation_id if record.receipt else record.pointer.instance_id.value)  # fmt: skip  # noqa: E501

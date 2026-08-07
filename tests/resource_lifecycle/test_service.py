@@ -12,6 +12,7 @@ from odoo_forge.database import (
     ResourceOwnership,
 )
 from odoo_forge.durable_operations.types import DurableOperationIdentity
+from odoo_forge.instance_registry.errors import InstanceRecordNotFoundError
 from odoo_forge.instance_registry.types import InstanceId, InstancePointer, InstanceRecord
 from odoo_forge.ports.instance_registry import InstanceRegistry
 from odoo_forge.ports.resource_lifecycle import (
@@ -171,20 +172,21 @@ def _database_ref() -> DatabaseRef:
 class _ProviderOnlyGateway:
     def __init__(self, *observations: tuple[DatabaseObservation, ...]) -> None:
         self.calls: list[str] = []
+        self.adopted_ref: DatabaseRef | None = None
+        self.quarantined_ref: DatabaseRef | None = None
         self.cleanup_reports: list[CleanupReport] = [CleanupReport()]
-        self.observations = list(observations) or [
-            (DatabaseObservation(ref=_database_ref(), scope=SCOPE, evidence_digest="digest-1"),)
-        ]
+        self.observations = list(observations) or [(DatabaseObservation(ref=_database_ref(), scope=SCOPE, evidence_digest="digest-1"),)]  # fmt: skip  # noqa: E501
 
     def observe(self, scope: ProjectScope) -> tuple[DatabaseObservation, ...]:
         return self.observations.pop(0) if len(self.observations) > 1 else self.observations[0]
 
     def quarantine(self, ref: DatabaseRef) -> DatabaseRef:
         self.calls.append("quarantine")
-        return ref
+        return self.quarantined_ref or ref
 
     def adopt(self, ref: DatabaseRef) -> DatabaseRef:
         self.calls.append("adopt")
+        self.adopted_ref = ref
         return ref
 
     def reconcile(self, operation: OperationIdentity) -> DatabaseCreation:
@@ -198,11 +200,7 @@ class _ProviderOnlyGateway:
 
     def cleanup(self, receipt: CreationReceipt) -> CleanupReport:
         self.calls.append("cleanup")
-        return (
-            self.cleanup_reports.pop(0)
-            if len(self.cleanup_reports) > 1
-            else self.cleanup_reports[0]
-        )
+        return self.cleanup_reports.pop(0) if len(self.cleanup_reports) > 1 else self.cleanup_reports[0]  # fmt: skip  # noqa: E501
 
 
 def test_gateway_is_provider_only_and_keeps_registry_out_of_the_port() -> None:
@@ -229,6 +227,7 @@ def test_gateway_exposes_observation_and_typed_provider_lifecycle_verbs() -> Non
     assert gateway.cleanup(creation.receipt) == CleanupReport()
 
 
+# fmt: off
 SCOPE = ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1")
 POINTER = InstancePointer(scope=SCOPE, instance_id=InstanceId(value="db-1"))
 RECEIPT = OwnershipReceipt(operation=DurableOperationIdentity(operation_id="operation-1", request_digest="digest-1"), owned_resource_ids=("database-1",))  # fmt: skip  # noqa: E501
@@ -237,18 +236,17 @@ POLICY = LifecyclePolicy(ttl=timedelta(days=7), grace=timedelta(days=1))
 AUTHORIZATION = LifecycleAuthorization(actor="operator-1", reason="approved recovery")
 
 
-def _observation(identifier: str = "database-1", digest: str = "digest-1", *, valid: bool = True, resource_class: ResourceClass = ResourceClass.DEV, last_activity: datetime = NOW - timedelta(days=10), receipt: OwnershipReceipt | None = RECEIPT) -> DatabaseObservation:  # fmt: skip  # noqa: E501
-    return DatabaseObservation(ref=DatabaseRef(identifier=identifier, ownership=ResourceOwnership.CREATED), scope=SCOPE, evidence_digest=digest, ownership_valid=valid, resource_class=resource_class, last_activity=last_activity, receipt=receipt)  # fmt: skip  # noqa: E501
+def _observation(identifier: str = "database-1", digest: str = "digest-1", *, scope: ProjectScope = SCOPE, valid: bool = True, resource_class: ResourceClass = ResourceClass.DEV, last_activity: datetime = NOW - timedelta(days=10), receipt: OwnershipReceipt | None = RECEIPT) -> DatabaseObservation:  # fmt: skip  # noqa: E501
+    return DatabaseObservation(ref=DatabaseRef(identifier=identifier, ownership=ResourceOwnership.CREATED), scope=scope, evidence_digest=digest, ownership_valid=valid, resource_class=resource_class, last_activity=last_activity, receipt=receipt)  # fmt: skip  # noqa: E501
 
 
-# fmt: off
 class _Registry:
-    def __init__(self, records: tuple[InstanceRecord, ...]): self.records = records  # fmt: skip  # noqa: E501,E701
+    def __init__(self, records: tuple[InstanceRecord, ...], *current: InstanceRecord | None): self.records, self.current = records, list(current) or list(records)  # fmt: skip  # noqa: E501,E701
     def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]: return self.records  # fmt: skip  # noqa: E501,E701
-    def get(self, pointer: InstancePointer) -> InstanceRecord: return self.records[0]  # fmt: skip  # noqa: E501,E701
-# fmt: on
-
-
+    def get(self, pointer: InstancePointer) -> InstanceRecord:
+        current = self.current.pop(0) if self.current else self.records[0]
+        if current is None: raise InstanceRecordNotFoundError(pointer)  # fmt: skip  # noqa: E701
+        return current
 def _service(registry: _Registry, gateway: _ProviderOnlyGateway, journal: LifecycleJournal, retries: int = 2) -> LifecycleService:  # fmt: skip  # noqa: E501
     return LifecycleService(registry=cast(InstanceRegistry, registry), gateway=gateway, journal=journal, max_cleanup_retries=retries)  # fmt: skip  # noqa: E501
 
@@ -265,11 +263,8 @@ def _run(registry: _Registry, gateway: _ProviderOnlyGateway, *, journal: Lifecyc
         ((RECORD,), ((),), RecoveryOutcome.RECONCILED, ["reconcile"]),
     ],
 )
-def test_registry_provider_outcomes(
-    records: tuple[InstanceRecord, ...],
-    observations: tuple[tuple[DatabaseObservation, ...], ...],
-    outcome: RecoveryOutcome,
-    calls: list[str],
+def test_registry_provider_outcomes(  # fmt: skip
+    records: tuple[InstanceRecord, ...], observations: tuple[tuple[DatabaseObservation, ...], ...], outcome: RecoveryOutcome, calls: list[str]  # fmt: skip  # noqa: E501
 ) -> None:
     gateway = _ProviderOnlyGateway(*observations)
     result = _run(_Registry(records), gateway)
@@ -277,20 +272,37 @@ def test_registry_provider_outcomes(
     assert gateway.calls == calls
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # fmt: skip
     ("reobservation", "code"),
     [
         ((_observation(digest="digest-2"),), "evidence-drift"),
         ((_observation(valid=False),), "invalid-ownership"),
+        ((_observation(scope=ProjectScope(tenant=TenantId(value="tenant-2"), project_id="project-1")),), "scope-mismatch"),  # noqa: E501
+        ((_observation(last_activity=NOW - timedelta(days=7)),), "ineligible"),
+        ((_observation(receipt=RECEIPT.model_copy(update={"operation": DurableOperationIdentity(operation_id="other-operation", request_digest="digest-1")})),), "lineage-mismatch"),  # noqa: E501
     ],
 )
-def test_digest_drift_or_ownership_contradiction_fails_closed_without_mutation(
+def test_revalidation_contradiction_fails_closed_without_mutation(
     reobservation: tuple[DatabaseObservation, ...], code: str
 ) -> None:
     gateway = _ProviderOnlyGateway((_observation(),), reobservation)
-    result = _run(_Registry((RECORD,)), gateway)
+    result = _run(_Registry((RECORD,)), gateway, now=NOW)
     assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
     assert gateway.calls == [] and result.residuals[0].code == code
+
+
+def test_adoption_uses_ref_returned_by_quarantine() -> None:
+    gateway = _ProviderOnlyGateway((_observation(),))
+    gateway.quarantined_ref = DatabaseRef(identifier="quarantined", ownership=ResourceOwnership.CREATED)  # fmt: skip  # noqa: E501
+    result = _run(_Registry(()), gateway)
+    assert result.outcome is RecoveryOutcome.ADOPTED and gateway.adopted_ref == gateway.quarantined_ref  # fmt: skip  # noqa: E501
+
+
+@pytest.mark.parametrize("delete,current", [(True, None), (True, RECORD.model_copy(update={"receipt": None})), (False, None), (False, RECORD.model_copy(update={"receipt": None}))])  # fmt: skip  # noqa: E501
+def test_registry_drift_or_removal_prevents_mutation(delete: bool, current: InstanceRecord | None) -> None:  # fmt: skip  # noqa: E501
+    gateway = _ProviderOnlyGateway((_observation(),) if delete else ())
+    result = _run(_Registry((RECORD,), *(RECORD, current) if delete else (current,)), gateway, delete=delete)  # noqa: E501
+    assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION and gateway.calls == (["quarantine"] if delete else [])  # fmt: skip  # noqa: E501
 
 
 @pytest.mark.parametrize(
@@ -308,9 +320,7 @@ def test_digest_drift_or_ownership_contradiction_fails_closed_without_mutation(
         ),
     ],
 )
-def test_cleanup_retries_are_bounded_and_escalate(
-    reports: list[CleanupReport], outcome: RecoveryOutcome, code: str | None
-) -> None:
+def test_cleanup_retries_are_bounded_and_escalate(reports: list[CleanupReport], outcome: RecoveryOutcome, code: str | None) -> None:  # fmt: skip  # noqa: E501
     gateway = _ProviderOnlyGateway((_observation(),))
     gateway.cleanup_reports = reports
     result = _run(_Registry((RECORD,)), gateway, delete=True)
@@ -332,11 +342,7 @@ def test_deletion_cancellation_appends_changed_evidence_and_makes_no_delete_call
 
 def test_unapproved_authorization_has_zero_mutation_calls() -> None:
     gateway = _ProviderOnlyGateway((_observation(),))
-    result = _run(
-        _Registry((RECORD,)),
-        gateway,
-        authorization=AUTHORIZATION.model_copy(update={"approved": False}),
-    )
+    result = _run(_Registry((RECORD,)), gateway, authorization=AUTHORIZATION.model_copy(update={"approved": False}))  # fmt: skip  # noqa: E501
     assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION and gateway.calls == []
 
 
@@ -344,13 +350,11 @@ def test_unapproved_authorization_has_zero_mutation_calls() -> None:
     ("records", "observations"),
     [((RECORD, RECORD), (_observation(),)), ((RECORD,), (_observation(), _observation()))],
 )
-def test_duplicate_evidence_is_contradictory_without_mutation(
-    records: tuple[InstanceRecord, ...], observations: tuple[DatabaseObservation, ...]
+def test_duplicate_evidence_is_contradictory_without_mutation(  # fmt: skip
+    records: tuple[InstanceRecord, ...], observations: tuple[DatabaseObservation, ...]  # fmt: skip  # noqa: E501
 ) -> None:
     gateway = _ProviderOnlyGateway(observations)
-    result = _service(_Registry(records), gateway, _AppendOnlyJournal()).run(
-        SCOPE, POLICY, AUTHORIZATION
-    )
+    result = _service(_Registry(records), gateway, _AppendOnlyJournal()).run(SCOPE, POLICY, AUTHORIZATION)  # fmt: skip  # noqa: E501
     assert len(result) == 1 and result[0].residuals[0].code == "duplicate-evidence"
     assert result[0].outcome is RecoveryOutcome.HUMAN_INTERVENTION and gateway.calls == []
 
@@ -387,3 +391,4 @@ def test_positive_wait_keeps_resource_quarantined_without_deletion() -> None:
     gateway = _ProviderOnlyGateway((_observation(),))
     result = _run(_Registry((RECORD,)), gateway, delete=True, wait=timedelta(days=1), now=NOW)
     assert result.outcome is RecoveryOutcome.QUARANTINED and result.residuals[0].code == "quarantine-wait" and gateway.calls == ["quarantine"]  # fmt: skip  # noqa: E501
+# fmt: on
