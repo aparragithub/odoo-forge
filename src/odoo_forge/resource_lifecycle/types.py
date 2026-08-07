@@ -4,6 +4,8 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from odoo_forge.database.types import DatabaseRef
+from odoo_forge.durable_operations.types import DurableOperationIdentity
+from odoo_forge.instance_registry.types import InstancePointer
 from odoo_forge.resource_ownership.types import OwnershipReceipt
 from odoo_forge.tenancy.types import ProjectScope
 
@@ -32,6 +34,13 @@ class LifecycleOutcome(StrEnum):
     DELETED = "deleted"
     CANCELLED = "cancelled"
     HUMAN_INTERVENTION = "human_intervention"
+
+
+class ProviderPresence(StrEnum):
+    ABSENT = "absent"
+    INVALID = "invalid"
+    PRESENT = "present"
+    UNVERIFIABLE = "unverifiable"
 
 
 class ResourceOverride(_LifecycleValue):
@@ -108,12 +117,22 @@ class LifecycleResidual(_LifecycleValue):
     detail: str
 
 
+class QuarantineHistory(_LifecycleValue):
+    pointer: InstancePointer
+    scope: ProjectScope
+    resource: DatabaseRef
+    operation: DurableOperationIdentity
+    evidence_digest: str
+
+
 class LifecycleJournalEvent(_LifecycleValue):
     policy: LifecyclePolicy
     evidence: LifecycleEvidence
     authorization: LifecycleAuthorization
     outcome: LifecycleOutcome
     residuals: tuple[LifecycleResidual, ...] = ()
+    history: QuarantineHistory | None = None
+    kind: str = "action"
 
 
 class DatabaseObservation(_LifecycleValue):
@@ -124,6 +143,7 @@ class DatabaseObservation(_LifecycleValue):
     resource_class: ResourceClass = ResourceClass.DEV
     last_activity: datetime | None = None
     receipt: OwnershipReceipt | None = None
+    presence: ProviderPresence = ProviderPresence.PRESENT
 
 
 __all__ = [
@@ -137,6 +157,8 @@ __all__ = [
     "LifecyclePolicy",
     "LifecycleResource",
     "LifecycleResidual",
+    "ProviderPresence",
+    "QuarantineHistory",
     "ResourceClass",
     "ResourceOverride",
     "evaluate_expiration",
