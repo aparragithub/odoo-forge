@@ -66,6 +66,8 @@ class LifecycleService:
         wait: timedelta = timedelta(),
         now: datetime | None = None,
     ) -> tuple[RecoveryResult, ...]:
+        if wait < timedelta():
+            raise ValueError("wait must not be negative")
         records = tuple(self.registry.list(scope))
         observations = tuple(self.gateway.observe(scope))
         histories = tuple(

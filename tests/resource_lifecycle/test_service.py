@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from typing import cast
 
 import pytest
+from pydantic import ValidationError
 
 from odoo_forge.database import (
     CleanupReport,
@@ -422,6 +423,35 @@ def test_positive_wait_keeps_resource_quarantined_without_deletion() -> None:
     gateway = _ProviderOnlyGateway((_observation(),))
     result = _run(_Registry((RECORD,)), gateway, delete=True, wait=timedelta(days=1), now=NOW)
     assert result.outcome is RecoveryOutcome.QUARANTINED and result.residuals[0].code == "quarantine-wait" and gateway.calls == ["quarantine"]  # fmt: skip  # noqa: E501
+
+
+@pytest.mark.parametrize("wait", [timedelta(seconds=-1), timedelta(days=-1)])
+def test_negative_wait_is_rejected_before_lifecycle_processing(wait: timedelta) -> None:
+    journal = _AppendOnlyJournal()
+    gateway = _ProviderOnlyGateway((_observation(),))
+
+    with pytest.raises(ValueError, match="wait must not be negative"):
+        _service(_Registry((RECORD,)), gateway, journal).run(
+            SCOPE, POLICY, AUTHORIZATION, delete=True, wait=wait, now=NOW
+        )
+
+    assert gateway.calls == []
+    assert journal.events() == ()
+
+
+def test_quarantine_history_rejects_naive_timestamp_on_normal_construction() -> None:
+    with pytest.raises(ValidationError):
+        QuarantineHistory(
+            pointer=POINTER,
+            scope=SCOPE,
+            resource=_database_ref(),
+            operation=RECEIPT.operation,
+            evidence_digest="digest-1",
+            resource_class=ResourceClass.DEV,
+            quarantined_at=datetime(2026, 1, 8),
+        )
+
+
 class _HistoryRegistry:
     def __init__(self) -> None:
         self.records = [(RECORD,), ()]
@@ -657,6 +687,9 @@ def test_qa_confirmed_zombie_history_requires_concordant_class() -> None:
     gateway = _ProviderOnlyGateway(
         (_observation(resource_class=ResourceClass.QA, presence=ProviderPresence.INVALID),)
     )
+    gateway.quarantined_ref = DatabaseRef(
+        identifier="quarantined", ownership=ResourceOwnership.CREATED
+    )
 
     result = _service(_Registry(()), gateway, journal).run(
         SCOPE, POLICY, AUTHORIZATION
@@ -664,9 +697,12 @@ def test_qa_confirmed_zombie_history_requires_concordant_class() -> None:
 
     assert result.outcome is RecoveryOutcome.QUARANTINED
     assert gateway.calls == ["quarantine"]
-    history_event = next(event for event in journal.events() if event.history is not None)
+    history_events = [event for event in journal.events() if event.history is not None]
+    assert len(history_events) == 2
+    history_event = history_events[-1]
     assert history_event.history is not None
     assert history_event.history.resource_class is ResourceClass.QA
+    assert history_event.history.resource == gateway.quarantined_ref
 
     contradictory_gateway = _ProviderOnlyGateway(
         (_observation(resource_class=ResourceClass.DEV, presence=ProviderPresence.INVALID),)

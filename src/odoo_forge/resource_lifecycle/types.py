@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AwareDatetime, BaseModel, ConfigDict
 
 from odoo_forge.database.types import DatabaseRef
 from odoo_forge.durable_operations.types import DurableOperationIdentity
@@ -124,7 +124,7 @@ class QuarantineHistory(_LifecycleValue):
     operation: DurableOperationIdentity
     evidence_digest: str
     resource_class: ResourceClass
-    quarantined_at: datetime
+    quarantined_at: AwareDatetime
 
 
 class LifecycleJournalEvent(_LifecycleValue):
