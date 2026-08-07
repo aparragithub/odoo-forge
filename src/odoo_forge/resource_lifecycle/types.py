@@ -4,6 +4,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from odoo_forge.database.types import DatabaseRef
+from odoo_forge.resource_ownership.types import OwnershipReceipt
 from odoo_forge.tenancy.types import ProjectScope
 
 
@@ -25,6 +26,12 @@ class ExpirationAction(StrEnum):
 class LifecycleOutcome(StrEnum):
     EXPIRED = "expired"
     ALERTED = "alerted"
+    QUARANTINED = "quarantined"
+    ADOPTED = "adopted"
+    RECONCILED = "reconciled"
+    DELETED = "deleted"
+    CANCELLED = "cancelled"
+    HUMAN_INTERVENTION = "human_intervention"
 
 
 class ResourceOverride(_LifecycleValue):
@@ -114,6 +121,9 @@ class DatabaseObservation(_LifecycleValue):
     scope: ProjectScope
     evidence_digest: str
     ownership_valid: bool = True
+    resource_class: ResourceClass = ResourceClass.DEV
+    last_activity: datetime | None = None
+    receipt: OwnershipReceipt | None = None
 
 
 __all__ = [
