@@ -1906,29 +1906,79 @@ def test_live_plan_decomposition_ids_are_exact(live_plan: dict[str, Any]) -> Non
     assert tuple(entry["id"] for entry in live_plan["decompositions"]) == EXPECTED_DECOMPOSITION_IDS
 
 
-def test_guided_manifest_authoring_item_is_exact(live_plan: dict[str, Any]) -> None:
-    """Pin the guided manifest-authoring outcome by value.
+EXPECTED_MANIFEST_AUTHORING_EVIDENCE = {
+    "S91": "Engram #4721",
+    "S92": "src/odoo_forge/manifest/authoring.py",
+    "S93": "tests/manifest/test_authoring.py",
+    "S94": "Engram #4735",
+    "S95": "src/odoo_forge_cli/commands/manifest.py",
+    "S96": "src/odoo_forge_cli/_support.py",
+    "S97": "tests/cli/test_configure.py",
+}
 
-    The outcome exists so `project.yaml` can be produced through a guided
-    wizard instead of hand-editing. It is pinned here — kind, owner, status,
-    acceptance ids, and lineage — so a rename, a silent status promotion, or a
-    dropped surface fails before the roadmap projection can drift from it.
-    """
+
+def test_guided_manifest_authoring_item_is_exact(live_plan: dict[str, Any]) -> None:
+    """Pin the delivered terminal surface and deferred web surface by value."""
     items = {item["id"]: item for item in live_plan["items"]}
     item = items["SP-MANIFEST-AUTHORING"]
 
     assert item["kind"] == "sp"
     assert item["title"] == "Guided Manifest Authoring"
     assert item["owner_role"] == "Experience"
-    assert item["status"] == "proposed"
-    assert item["evidence_date"] is None
-    assert tuple(entry["id"] for entry in item["acceptance"]) == (
-        "AC-SP-MANIFEST-AUTHORING-TUI",
-        "AC-SP-MANIFEST-AUTHORING-WEB",
-    )
-    assert all(entry["gaps"] == ["G0"] and entry["evidence"] == [] for entry in item["acceptance"])
+    assert item["status"] == "partially delivered"
+    assert item["evidence_date"] == "2026-08-06"
+    assert item["acceptance"] == [
+        {
+            "id": "AC-SP-MANIFEST-AUTHORING-TUI",
+            "status": "achieved",
+            "evidence": list(EXPECTED_MANIFEST_AUTHORING_EVIDENCE),
+            "gaps": [],
+        },
+        {
+            "id": "AC-SP-MANIFEST-AUTHORING-WEB",
+            "status": "proposed",
+            "evidence": [],
+            "gaps": ["G0"],
+        },
+    ]
     assert tuple(item["predecessors"]) == ("CAP-MANIFEST",)
     assert tuple(item["successors"]) == ("SP-OPERATIONS-UI",)
+    assert item["description"] == (
+        "Experience outcome for producing a valid project.yaml through a guided step-by-step "
+        "assistant, delivered first as terminal authoring and later as a guided flow inside the "
+        "operations UI."
+    )
+    assert item["status_note"] == (
+        "Terminal authoring is delivered through the validated authoring contract and "
+        "create-only CLI flow. The future web wizard consumes the same contract inside "
+        "SP-OPERATIONS-UI and must not be delivered ahead of that surface."
+    )
+
+
+def test_guided_manifest_authoring_evidence_catalog_is_exact(live_plan: dict[str, Any]) -> None:
+    catalog = live_plan["meta"]["evidence_catalog"]
+    assert {key: catalog[key] for key in EXPECTED_MANIFEST_AUTHORING_EVIDENCE} == (
+        EXPECTED_MANIFEST_AUTHORING_EVIDENCE
+    )
+
+
+def test_guided_manifest_authoring_keeps_web_wizard_as_future_dependent_surface(
+    live_plan: dict[str, Any],
+) -> None:
+    item = next(item for item in live_plan["items"] if item["id"] == "SP-MANIFEST-AUTHORING")
+    terminal, web = item["acceptance"]
+
+    assert terminal["status"] == "achieved"
+    assert terminal["evidence"]
+    assert terminal["gaps"] == []
+    assert web == {
+        "id": "AC-SP-MANIFEST-AUTHORING-WEB",
+        "status": "proposed",
+        "evidence": [],
+        "gaps": ["G0"],
+    }
+    assert item["predecessors"] == ["CAP-MANIFEST"]
+    assert item["successors"] == ["SP-OPERATIONS-UI"]
 
 
 def test_live_plan_is_byte_stable_under_canonical_reserialization() -> None:
