@@ -381,6 +381,14 @@ class LocalOwnershipAuthority:
         state = self.read()
         return self._latest(state, operation, name) is not None
 
+    def lifecycle_records(self) -> tuple[dict[str, object], ...]:
+        state = self.read()
+        latest = {
+            (str(record["operation"]), str(record["name"])): dict(record)
+            for record in state["records"]
+        }
+        return tuple(latest.values())
+
     def owns(self, operation: str, name: str, docker_id: str) -> bool:
         """Return whether a signed active local record proves this exact resource."""
         state = self.read()
@@ -521,7 +529,7 @@ class LocalOwnershipAuthority:
     @staticmethod
     def _validate_record(record: Mapping[str, object]) -> None:
         if (
-            set(record) != _REQUIRED_RECORD_FIELDS
+            not set(record) >= _REQUIRED_RECORD_FIELDS
             or not all(isinstance(value, str) for value in record.values())
             or not all(record[key] for key in ("operation", "kind", "name", "state"))
             or record["state"] not in {"reserved", "active", "retired"}
@@ -596,7 +604,7 @@ class LocalOwnershipAuthority:
         for record in records:
             if not isinstance(record, dict):
                 raise AuthorityStateError()
-            if set(record) != _STORED_RECORD_FIELDS:
+            if not set(record) >= _STORED_RECORD_FIELDS:
                 raise AuthorityStateError()
             stored_generation = record.get("generation")
             key_id = record.get("key_id")
