@@ -125,7 +125,9 @@ def test_journal_appends_the_complete_immutable_audit_payload() -> None:
     journal = _AppendOnlyJournal()
 
     assert isinstance(journal, LifecycleJournal)
-    assert journal.append(event) == event
+    appended = journal.append(event)
+
+    assert appended == event
     assert journal.events() == (event,)
     assert event.policy.ttl == timedelta(days=7)
     assert event.evidence.digest == "evidence-1"
