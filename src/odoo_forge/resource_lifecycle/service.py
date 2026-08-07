@@ -24,11 +24,16 @@ from odoo_forge.resource_lifecycle.types import (
     LifecycleResource,
     ProviderPresence,
     QuarantineHistory,
+    ResourceClass,
     evaluate_expiration,
 )
 from odoo_forge.tenancy.types import ProjectScope
 
 RecoveryOutcome = LifecycleOutcome
+
+
+class _HistoryContradiction(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -61,6 +66,8 @@ class LifecycleService:
         wait: timedelta = timedelta(),
         now: datetime | None = None,
     ) -> tuple[RecoveryResult, ...]:
+        if wait < timedelta():
+            raise ValueError("wait must not be negative")
         records = tuple(self.registry.list(scope))
         observations = tuple(self.gateway.observe(scope))
         histories = tuple(
@@ -95,7 +102,11 @@ class LifecycleService:
                 continue
             history = matching_histories[0] if matching_histories else None
             if history is not None:
-                record = self._record_from_history(history, record)
+                try:
+                    record = self._record_from_history(history, record)
+                except _HistoryContradiction:
+                    results.append(self._human(policy, authorization, "history-mismatch"))
+                    continue
             results.append(self._recover(scope, policy, authorization, record, observation, delete, wait, now, history))  # fmt: skip  # noqa: E501
         return tuple(results)
 
@@ -113,16 +124,19 @@ class LifecycleService:
     ) -> RecoveryResult:
         if not authorization.approved: return self._human(policy, authorization, "unauthorized")  # fmt: skip  # noqa: E501,E701
         if history is not None and record is None:
-            if not _confirmed_zombie(scope, history, observation):
+            if not _confirmed_zombie(scope, policy, history, observation):
                 return self._human(policy, authorization, "not-confirmed-zombie")
+            if delete and not _quarantine_wait_elapsed(history, wait, now):
+                return self._human(policy, authorization, "quarantine-wait")
+            if not delete and not _valid_timestamp(getattr(history, "quarantined_at", None)):
+                return self._human(policy, authorization, "invalid-quarantine-history")
             quarantined = self.gateway.quarantine(history.resource)
             quarantine_history = history.model_copy(update={"resource": quarantined})
             self._append_action(
                 policy, authorization, RecoveryOutcome.QUARANTINED, history=quarantine_history
             )
-            waiting = delete and wait > timedelta()
-            if delete and not waiting:
-                if not self._revalidate_zombie(scope, quarantine_history):
+            if delete:
+                if not self._revalidate_zombie(scope, policy, quarantine_history):
                     return self._human(policy, authorization, "not-confirmed-zombie")
                 creation = DatabaseCreation(
                     ref=quarantined,
@@ -158,9 +172,9 @@ class LifecycleService:
             return self._finish(
                 policy,
                 authorization,
-                "quarantine-wait" if waiting else "confirmed-zombie",
+                "confirmed-zombie",
                 RecoveryOutcome.QUARANTINED,
-                residuals=("wait",) if waiting else (),
+                residuals=(),
                 history=history.model_copy(update={"resource": quarantined}),
             )
         if observation is not None:
@@ -192,7 +206,7 @@ class LifecycleService:
         failure = self._revalidate(scope, policy, record, observation, now)
         if failure: return self._human(policy, authorization, *failure)  # fmt: skip  # noqa: E501,E701
         quarantined = self.gateway.quarantine(observation.ref)
-        quarantine_history = _quarantine_history(record, observation, quarantined)
+        quarantine_history = _quarantine_history(record, observation, quarantined, now)
         self._append_action(
             policy,
             authorization,
@@ -236,12 +250,22 @@ class LifecycleService:
         try:
             record = self.registry.get(history.pointer)
         except InstanceRecordNotFoundError:
+            if current is not None and not _record_matches_history(current, history):
+                raise _HistoryContradiction from None
             return current
+        except Exception as exc:
+            raise _HistoryContradiction from exc
+        if not _record_matches_history(record, history):
+            raise _HistoryContradiction
+        if current is not None and not _record_matches_history(current, history):
+            raise _HistoryContradiction
         if current is not None and record != current:
             return current
         return record
 
-    def _revalidate_zombie(self, scope: ProjectScope, history: QuarantineHistory) -> bool:
+    def _revalidate_zombie(
+        self, scope: ProjectScope, policy: LifecyclePolicy, history: QuarantineHistory
+    ) -> bool:
         try:
             self.registry.get(history.pointer)
         except InstanceRecordNotFoundError:
@@ -254,7 +278,7 @@ class LifecycleService:
             if observation.ref == history.resource
         )
         return len(observations) == 0 or (
-            len(observations) == 1 and _confirmed_zombie(scope, history, observations[0])
+            len(observations) == 1 and _confirmed_zombie(scope, policy, history, observations[0])
         )
 
     def _append_action(
@@ -328,7 +352,10 @@ class LifecycleService:
 
 
 def _quarantine_history(
-    record: InstanceRecord, observation: DatabaseObservation, resource: DatabaseRef
+    record: InstanceRecord,
+    observation: DatabaseObservation,
+    resource: DatabaseRef,
+    now: datetime | None,
 ) -> QuarantineHistory:
     assert record.receipt is not None
     return QuarantineHistory(
@@ -337,26 +364,64 @@ def _quarantine_history(
         resource=resource,
         operation=record.receipt.operation,
         evidence_digest=observation.evidence_digest,
+        resource_class=observation.resource_class,
+        quarantined_at=now or datetime.now(UTC),
     )
 
 
 def _confirmed_zombie(
     scope: ProjectScope,
+    policy: LifecyclePolicy,
     history: QuarantineHistory,
     observation: DatabaseObservation | None,
 ) -> bool:
-    if history.scope != scope or history.pointer.scope != scope:
+    if (
+        history.scope != scope
+        or history.pointer.scope != scope
+        or history.resource_class not in {ResourceClass.DEV, ResourceClass.QA}
+        or not policy.is_approved(history.resource_class)
+    ):
         return False
     if observation is None:
         return True
     return (
         observation.scope == scope
         and observation.ref == history.resource
+        and observation.resource_class == history.resource_class
         and observation.evidence_digest == history.evidence_digest
         and observation.ownership_valid
         and observation.presence in {ProviderPresence.ABSENT, ProviderPresence.INVALID}
         and (observation.receipt is None or observation.receipt.operation == history.operation)
     )
+
+
+def _record_matches_history(record: InstanceRecord, history: QuarantineHistory) -> bool:
+    return (
+        record.pointer == history.pointer
+        and record.resource.resource_kind == "database"
+        and record.resource.identifier == history.resource.identifier
+        and record.resource.ownership == history.resource.ownership
+        and record.receipt is not None
+        and record.receipt.operation == history.operation
+    )
+
+
+def _valid_timestamp(value: object) -> bool:
+    return (
+        isinstance(value, datetime) and value.tzinfo is not None and value.utcoffset() is not None
+    )
+
+
+def _quarantine_wait_elapsed(
+    history: QuarantineHistory, wait: timedelta, now: datetime | None
+) -> bool:
+    current = now or datetime.now(UTC)
+    if not _valid_timestamp(getattr(history, "quarantined_at", None)) or not _valid_timestamp(
+        current
+    ):
+        return False
+    quarantined_at = history.quarantined_at
+    return quarantined_at <= current and current - quarantined_at >= wait
 
 
 def _matching(
