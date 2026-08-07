@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import math
 import os
 import re
 import subprocess
@@ -27,6 +29,8 @@ from odoo_forge.resource_lifecycle.types import (
 )
 from odoo_forge.resource_ownership.types import OwnershipReceipt
 from odoo_forge.tenancy.types import ProjectScope, TenantId
+
+MAX_DOCKER_TIMEOUT = 600.0
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
 _DOCKER_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
@@ -63,6 +67,8 @@ class PostgresDockerLifecycleAdapter:
         runner: Callable[..., subprocess.CompletedProcess[str]] = _run_docker,
         timeout: float = 10.0,
     ) -> None:
+        if not math.isfinite(timeout) or not 0.0 < timeout <= MAX_DOCKER_TIMEOUT:
+            raise ValueError(f"timeout must be finite and within (0, {MAX_DOCKER_TIMEOUT}] seconds")
         self.provider = provider
         self.authority = authority
         self._runner = runner
@@ -192,20 +198,36 @@ class JsonlLifecycleJournal:
 
     def append(self, event: LifecycleJournalEvent) -> LifecycleJournalEvent:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor = os.open(
-            self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600
-        )
+        descriptor, created = self._open()
         try:
-            encoded = (event.model_dump_json() + "\n").encode()
-            while encoded:
-                written = os.write(descriptor, encoded)
-                if written <= 0:
-                    raise OSError("journal write made no progress")
-                encoded = encoded[written:]
-            os.fsync(descriptor)
+            # A partial write can split one record across several os.write calls.
+            # Hold the lock across the whole record so a concurrent appender
+            # cannot interleave its own bytes and corrupt both JSONL lines.
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                encoded = (event.model_dump_json() + "\n").encode()
+                while encoded:
+                    written = os.write(descriptor, encoded)
+                    if written <= 0:
+                        raise OSError("journal write made no progress")
+                    encoded = encoded[written:]
+                os.fsync(descriptor)
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
+        if created:
+            # Syncing the file alone leaves its directory entry unrecoverable
+            # after a crash, which would lose the whole audit trail.
+            _fsync_directory(self.path.parent)
         return event
+
+    def _open(self) -> tuple[int, bool]:
+        flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW
+        try:
+            return os.open(self.path, flags | os.O_CREAT | os.O_EXCL, 0o600), True
+        except FileExistsError:
+            return os.open(self.path, flags), False
 
     def events(self) -> tuple[LifecycleJournalEvent, ...]:
         if not self.path.exists():
@@ -215,6 +237,14 @@ class JsonlLifecycleJournal:
             for line in self.path.read_text(encoding="utf-8").splitlines()
             if line
         )
+
+
+def _fsync_directory(directory: Path) -> None:
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _coerce_record(raw: object) -> LifecycleAuthorityRecord | None:

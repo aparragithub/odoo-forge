@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import fcntl
+import os
+import stat
 import subprocess
 from collections.abc import Callable
 from datetime import timedelta
@@ -21,6 +24,7 @@ from odoo_forge.resource_lifecycle.types import (
 from odoo_forge.tenancy import ProjectScope, TenantId
 from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
 from odoo_forge_postgres_docker.lifecycle import (
+    MAX_DOCKER_TIMEOUT,
     JsonlLifecycleJournal,
     PostgresDockerLifecycleAdapter,
     _run_docker,
@@ -36,6 +40,16 @@ _INSPECT = (
 
 def _authority(*records: object) -> SimpleNamespace:
     return SimpleNamespace(lifecycle_records=lambda: records)
+
+
+def _journal_event() -> LifecycleJournalEvent:
+    return LifecycleJournalEvent(
+        policy=LifecyclePolicy(ttl=timedelta(days=1), grace=timedelta(days=1)),
+        evidence=LifecycleEvidence(source="adapter", digest="evidence-1"),
+        authorization=LifecycleAuthorization(actor="operator", reason="approved"),
+        outcome=LifecycleOutcome.ALERTED,
+        kind="run",
+    )
 
 
 def _raw_record(full: bool = True) -> dict[str, str]:
@@ -114,17 +128,64 @@ def test_provider_evidence_maps_to_typed_presence(mode: str, expected: ProviderP
 
 def test_jsonl_journal_reloads_immutable_run_and_action_records(tmp_path: Path) -> None:
     journal = JsonlLifecycleJournal(tmp_path / "lifecycle.jsonl")
-    event = LifecycleJournalEvent(
-        policy=LifecyclePolicy(ttl=timedelta(days=1), grace=timedelta(days=1)),
-        evidence=LifecycleEvidence(source="adapter", digest="evidence-1"),
-        authorization=LifecycleAuthorization(actor="operator", reason="approved"),
-        outcome=LifecycleOutcome.ALERTED,
-        kind="run",
-    )
+    event = _journal_event()
     action = event.model_copy(update={"kind": "action", "outcome": LifecycleOutcome.QUARANTINED})
     journal.append(event)
     journal.append(action)
     assert JsonlLifecycleJournal(journal.path).events() == (event, action)
+
+
+@pytest.mark.parametrize(
+    "timeout", [float("inf"), float("nan"), 0.0, -1.0, MAX_DOCKER_TIMEOUT + 1.0]
+)
+def test_adapter_rejects_timeouts_without_a_finite_positive_bound(timeout: float) -> None:
+    with pytest.raises(ValueError):
+        PostgresDockerLifecycleAdapter(provider=Mock(), authority=_authority(), timeout=timeout)
+
+
+def test_journal_holds_an_exclusive_lock_from_first_write_through_fsync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    order: list[str] = []
+    real_flock, real_write, real_fsync = fcntl.flock, os.write, os.fsync
+
+    def flock(descriptor: int, operation: int) -> None:
+        order.append("lock" if operation == fcntl.LOCK_EX else "unlock")
+        real_flock(descriptor, operation)
+
+    def write(descriptor: int, data: bytes) -> int:
+        order.append("write")
+        return real_write(descriptor, data)
+
+    def fsync(descriptor: int) -> None:
+        order.append("fsync")
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(fcntl, "flock", flock)
+    monkeypatch.setattr(os, "write", write)
+    monkeypatch.setattr(os, "fsync", fsync)
+    JsonlLifecycleJournal(tmp_path / "lifecycle.jsonl").append(_journal_event())
+    assert order.index("lock") < order.index("write") < order.index("fsync")
+    assert order.index("fsync") < order.index("unlock")
+
+
+def test_journal_fsyncs_parent_directory_only_when_it_creates_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directories: list[bool] = []
+    real_fsync = os.fsync
+
+    def fsync(descriptor: int) -> None:
+        directories.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fsync)
+    journal = JsonlLifecycleJournal(tmp_path / "state" / "lifecycle.jsonl")
+    journal.append(_journal_event())
+    assert True in directories
+    directories.clear()
+    journal.append(_journal_event())
+    assert True not in directories
 
 
 def test_default_runner_uses_fixed_argv_without_shell(monkeypatch: pytest.MonkeyPatch) -> None:
