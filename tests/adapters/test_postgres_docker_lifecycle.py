@@ -142,6 +142,8 @@ def test_recovery_verbs_delegate_without_provision_or_restore() -> None:
     adapter.adopt(ref)
     adapter.reconcile(OPERATION)
     adapter.delete(creation)
-    assert adapter.cleanup(receipt) is provider.cleanup.return_value
-    assert provider.mock_calls == [call.quarantine(ref), call.adopt(ref), call.reconcile(OPERATION), call.delete(creation), call.cleanup(receipt)]  # noqa: E501  # fmt: skip
+    report = adapter.cleanup(receipt)
+    expected = [call.quarantine(ref), call.adopt(ref), call.reconcile(OPERATION), call.delete(creation), call.cleanup(receipt)]  # noqa: E501  # fmt: skip
+    assert report is provider.cleanup.return_value
+    assert provider.mock_calls == expected
     assert provider.provision.call_count == provider.restore.call_count == 0
