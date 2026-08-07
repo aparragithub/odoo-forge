@@ -133,6 +133,23 @@ def _write_lock_atomic(lock_path: Path, content: str) -> None:
         raise
 
 
+def _write_manifest_create_only(path: Path, content: str) -> None:
+    """Publish manifest bytes atomically without replacing an existing target."""
+    tmp_fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="\n") as tmp_file:
+            tmp_file.write(content)
+            tmp_file.flush()
+            os.fsync(tmp_file.fileno())
+        # A hard link atomically publishes with O_EXCL-style race preservation.
+        os.link(tmp_path, path)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    tmp_path.unlink()
+
+
 def _check_module_dependencies(parsed: Manifest, base: Path) -> None:
     """Run module-dependency validation against the materialized addons_path.
 
