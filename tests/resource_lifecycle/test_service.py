@@ -36,6 +36,8 @@ from odoo_forge.resource_lifecycle.types import (
     LifecyclePolicy,
     LifecycleResidual,
     LifecycleResource,
+    ProviderPresence,
+    QuarantineHistory,
     ResourceClass,
     ResourceOverride,
     evaluate_expiration,
@@ -234,25 +236,51 @@ RECEIPT = OwnershipReceipt(operation=DurableOperationIdentity(operation_id="oper
 RECORD = InstanceRecord(pointer=POINTER, resource=ResourceRef(identifier="database-1", resource_kind="database", ownership=ResourceOwnership.CREATED), receipt=RECEIPT)  # fmt: skip  # noqa: E501
 POLICY = LifecyclePolicy(ttl=timedelta(days=7), grace=timedelta(days=1))
 AUTHORIZATION = LifecycleAuthorization(actor="operator-1", reason="approved recovery")
+OTHER_SCOPE = ProjectScope(tenant=TenantId(value="other"), project_id="project-1")
+OTHER_OPERATION = DurableOperationIdentity(operation_id="other", request_digest="other")
 
 
-def _observation(identifier: str = "database-1", digest: str = "digest-1", *, scope: ProjectScope = SCOPE, valid: bool = True, resource_class: ResourceClass = ResourceClass.DEV, last_activity: datetime = NOW - timedelta(days=10), receipt: OwnershipReceipt | None = RECEIPT) -> DatabaseObservation:  # fmt: skip  # noqa: E501
-    return DatabaseObservation(ref=DatabaseRef(identifier=identifier, ownership=ResourceOwnership.CREATED), scope=scope, evidence_digest=digest, ownership_valid=valid, resource_class=resource_class, last_activity=last_activity, receipt=receipt)  # fmt: skip  # noqa: E501
+def _observation(identifier: str = "database-1", digest: str = "digest-1", *, scope: ProjectScope = SCOPE, valid: bool = True, resource_class: ResourceClass = ResourceClass.DEV, last_activity: datetime = NOW - timedelta(days=10), receipt: OwnershipReceipt | None = RECEIPT, presence: ProviderPresence = ProviderPresence.PRESENT) -> DatabaseObservation:  # fmt: skip  # noqa: E501
+    return DatabaseObservation(ref=DatabaseRef(identifier=identifier, ownership=ResourceOwnership.CREATED), scope=scope, evidence_digest=digest, ownership_valid=valid, resource_class=resource_class, last_activity=last_activity, receipt=receipt, presence=presence)  # fmt: skip  # noqa: E501
 
 
 class _Registry:
     def __init__(self, records: tuple[InstanceRecord, ...], *current: InstanceRecord | None): self.records, self.current = records, list(current) or list(records)  # fmt: skip  # noqa: E501,E701
     def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]: return self.records  # fmt: skip  # noqa: E501,E701
     def get(self, pointer: InstancePointer) -> InstanceRecord:
-        current = self.current.pop(0) if self.current else self.records[0]
+        current = self.current.pop(0) if self.current else (self.records[0] if self.records else None)  # noqa: E501
         if current is None: raise InstanceRecordNotFoundError(pointer)  # fmt: skip  # noqa: E701
         return current
-def _service(registry: _Registry, gateway: _ProviderOnlyGateway, journal: LifecycleJournal, retries: int = 2) -> LifecycleService:  # fmt: skip  # noqa: E501
+def _service(registry: "_Registry | _HistoryRegistry", gateway: _ProviderOnlyGateway, journal: LifecycleJournal, retries: int = 2) -> LifecycleService:  # fmt: skip  # noqa: E501
     return LifecycleService(registry=cast(InstanceRegistry, registry), gateway=gateway, journal=journal, max_cleanup_retries=retries)  # fmt: skip  # noqa: E501
 
 
 def _run(registry: _Registry, gateway: _ProviderOnlyGateway, *, journal: LifecycleJournal | None = None, authorization: LifecycleAuthorization = AUTHORIZATION, delete: bool = False, wait: timedelta = timedelta(), now: datetime | None = None) -> RecoveryResult:  # fmt: skip  # noqa: E501
     return _service(registry, gateway, journal or _AppendOnlyJournal()).run(SCOPE, POLICY, authorization, delete=delete, wait=wait, now=now)[0]  # fmt: skip  # noqa: E501
+
+
+def _history() -> QuarantineHistory:
+    return QuarantineHistory(
+        pointer=POINTER,
+        scope=SCOPE,
+        resource=_database_ref(),
+        operation=RECEIPT.operation,
+        evidence_digest="digest-1",
+    )
+
+
+def _history_journal(history: QuarantineHistory | None = None) -> _AppendOnlyJournal:
+    journal = _AppendOnlyJournal()
+    journal.append(
+        LifecycleJournalEvent(
+            policy=POLICY,
+            evidence=LifecycleEvidence(source="lifecycle", digest="digest-1"),
+            authorization=AUTHORIZATION,
+            outcome=RecoveryOutcome.QUARANTINED,
+            history=history or _history(),
+        )
+    )
+    return journal
 
 
 @pytest.mark.parametrize(
@@ -391,4 +419,137 @@ def test_positive_wait_keeps_resource_quarantined_without_deletion() -> None:
     gateway = _ProviderOnlyGateway((_observation(),))
     result = _run(_Registry((RECORD,)), gateway, delete=True, wait=timedelta(days=1), now=NOW)
     assert result.outcome is RecoveryOutcome.QUARANTINED and result.residuals[0].code == "quarantine-wait" and gateway.calls == ["quarantine"]  # fmt: skip  # noqa: E501
+class _HistoryRegistry:
+    def __init__(self) -> None:
+        self.records = [(RECORD,), ()]
+        self.get_results: list[InstanceRecord | None] = [RECORD, None]
+        self.get_calls: list[InstancePointer] = []
+
+    def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]:
+        return self.records.pop(0)
+
+    def get(self, pointer: InstancePointer) -> InstanceRecord:
+        self.get_calls.append(pointer)
+        result = self.get_results.pop(0)
+        if result is None:
+            raise InstanceRecordNotFoundError(pointer)
+        return result
+
+
+def test_quarantine_history_reuses_exact_pointer_and_preserves_lineage() -> None:
+    registry = _HistoryRegistry()
+    gateway = _ProviderOnlyGateway((_observation(),), (_observation(),), ())
+    journal = _AppendOnlyJournal()
+    service = _service(registry, gateway, journal)
+
+    service.run(SCOPE, POLICY, AUTHORIZATION)
+    service.run(SCOPE, POLICY, AUTHORIZATION)
+
+    history = journal.events()[1].history
+    assert history == QuarantineHistory(
+        pointer=POINTER,
+        scope=SCOPE,
+        resource=_database_ref(),
+        operation=RECEIPT.operation,
+        evidence_digest="digest-1",
+    )
+    assert registry.get_calls[-1] == POINTER
+
+
+@pytest.mark.parametrize("presence", [ProviderPresence.ABSENT, ProviderPresence.INVALID])
+def test_confirmed_zombie_requires_registry_absence_and_provider_absent_or_invalid(
+    presence: ProviderPresence,
+) -> None:
+    journal = _history_journal()
+    observations = () if presence is ProviderPresence.ABSENT else (_observation(presence=presence),)
+    gateway = _ProviderOnlyGateway(observations)
+
+    result = _service(_Registry(()), gateway, journal).run(SCOPE, POLICY, AUTHORIZATION)[0]
+
+    assert result.outcome is RecoveryOutcome.QUARANTINED
+    assert gateway.calls == ["quarantine"]
+
+
+@pytest.mark.parametrize(
+    ("history", "observation"),
+    [
+        (_history().model_copy(update={"scope": OTHER_SCOPE}), None),
+        (
+            _history().model_copy(update={"evidence_digest": "other-digest"}),
+            _observation(presence=ProviderPresence.INVALID),
+        ),
+        (
+            _history().model_copy(update={"operation": OTHER_OPERATION}),
+            _observation(presence=ProviderPresence.INVALID),
+        ),
+    ],
+)
+def test_mismatched_history_fails_closed_without_mutation(
+    history: QuarantineHistory, observation: DatabaseObservation | None
+) -> None:
+    journal = _history_journal(history)
+    gateway = (
+        _ProviderOnlyGateway(())
+        if observation is None
+        else _ProviderOnlyGateway((observation,))
+    )
+
+    result = _service(_Registry(()), gateway, journal).run(SCOPE, POLICY, AUTHORIZATION)[0]
+
+    assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
+    assert gateway.calls == []
+
+
+def test_duplicate_history_fails_closed_without_mutation() -> None:
+    journal = _history_journal()
+    journal.append(journal.events()[0])
+    gateway = _ProviderOnlyGateway(())
+
+    result = _service(_Registry(()), gateway, journal).run(SCOPE, POLICY, AUTHORIZATION)[0]
+
+    assert result.residuals[0].code == "duplicate-history"
+    assert gateway.calls == []
+
+
+def test_empty_run_appends_a_run_audit_with_residuals() -> None:
+    journal = _AppendOnlyJournal()
+    result = _service(_Registry(()), _ProviderOnlyGateway(()), journal).run(
+        SCOPE, POLICY, AUTHORIZATION
+    )
+
+    assert result == ()
+    assert journal.events()[0].kind == "run"
+    assert journal.events()[0].residuals[0].code == "empty-run"
+
+
+def test_confirmed_zombie_delete_revalidates_before_mutating_delete() -> None:
+    journal = _history_journal()
+    gateway = _ProviderOnlyGateway((), (_observation(presence=ProviderPresence.PRESENT),))
+
+    result = _service(_Registry(()), gateway, journal).run(
+        SCOPE, POLICY, AUTHORIZATION, delete=True
+    )[0]
+
+    assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
+    assert result.residuals[0].code == "not-confirmed-zombie"
+    assert gateway.calls == ["quarantine"]
+
+
+def test_action_audit_contains_each_mutating_action_and_residuals() -> None:
+    journal = _AppendOnlyJournal()
+    gateway = _ProviderOnlyGateway((_observation(),))
+    gateway.cleanup_reports = [CleanupReport(residual_failures=("network",))]
+
+    result = _service(_Registry((RECORD,)), gateway, journal).run(
+        SCOPE, POLICY, AUTHORIZATION, delete=True
+    )[0]
+
+    actions = [event for event in journal.events() if event.kind == "action"]
+    assert result.outcome is RecoveryOutcome.HUMAN_INTERVENTION
+    assert [event.outcome for event in actions] == [
+        RecoveryOutcome.QUARANTINED,
+        RecoveryOutcome.DELETED,
+        RecoveryOutcome.HUMAN_INTERVENTION,
+    ]
+    assert actions[-1].residuals[0].detail == "network"
 # fmt: on
