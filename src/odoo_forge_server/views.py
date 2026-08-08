@@ -10,7 +10,12 @@ from fastapi.templating import Jinja2Templates
 from odoo_forge.control_plane.models import ReconciliationOutcome, ReconciliationResult
 from odoo_forge.instance_registry import InstanceId, InstancePointer
 from odoo_forge.tenancy import ProjectScope, TenantId
-from odoo_forge_server.runtime import UiRuntime
+from odoo_forge_server.routes.instances import (
+    ManifestContextResponse,
+    ManifestLoader,
+    _manifest_context,
+)
+from odoo_forge_server.runtime import UiRuntime, guard_loopback_request
 
 _PREFIX = "/ui/tenants/{tenant_id}/projects/{project_id}/instances"
 _TEMPLATES = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -30,14 +35,6 @@ def _scope(tenant_id: str, project_id: str) -> ProjectScope:
 
 def _label(outcome: ReconciliationOutcome) -> str:
     return _LABELS[outcome]
-
-
-def _guard(request: Request, runtime: UiRuntime) -> None:
-    # A local reverse proxy defeats this socket-origin check; access control must
-    # then be enforced at the proxy or network boundary.
-    server = request.scope.get("server")
-    if not server or server[0] != runtime.bind_host:
-        raise HTTPException(status_code=403, detail="read-only UI is loopback-only")
 
 
 def _render(
@@ -63,24 +60,42 @@ def _render(
     )
 
 
-def create_ui_router(reconciler: Any, runtime: UiRuntime) -> APIRouter:
+def create_ui_router(
+    reconciler: Any,
+    runtime: UiRuntime,
+    *,
+    manifest_scope: ProjectScope | None = None,
+    manifest_location: Path | None = None,
+    manifest_loader: ManifestLoader | None = None,
+) -> APIRouter:
     """Create loopback-guarded, read-only HTML reconciliation routes."""
     router = APIRouter()
 
     @router.get(_PREFIX, response_class=HTMLResponse)
     def dashboard(request: Request, tenant_id: str, project_id: str) -> HTMLResponse:
-        _guard(request, runtime)
-        result = reconciler.list(_scope(tenant_id, project_id))
+        guard_loopback_request(request, runtime)
+        scope = _scope(tenant_id, project_id)
+        manifest: ManifestContextResponse | None = None
+        if (
+            manifest_scope is not None
+            and manifest_location is not None
+            and manifest_loader is not None
+        ):
+            if scope != manifest_scope:
+                raise HTTPException(status_code=404, detail="manifest not found")
+            manifest = _manifest_context(manifest_location, manifest_loader)
+        result = reconciler.list(scope)
         return _render(
             request,
             "instances.html",
             result,
             status=503 if result.outcome is ReconciliationOutcome.PERSISTENCE_ERROR else 200,
+            manifest=manifest,
         )
 
     @router.get(f"{_PREFIX}/{{instance_id}}", response_class=HTMLResponse)
     def detail(request: Request, tenant_id: str, project_id: str, instance_id: str) -> HTMLResponse:
-        _guard(request, runtime)
+        guard_loopback_request(request, runtime)
         result = reconciler.get(
             InstancePointer(
                 scope=_scope(tenant_id, project_id), instance_id=InstanceId(value=instance_id)
