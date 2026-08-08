@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from ipaddress import ip_address
 
+from fastapi import HTTPException, Request
+
 
 @dataclass(frozen=True)
 class UiRuntime:
@@ -22,4 +24,11 @@ class UiRuntime:
             raise ValueError("read-only UI requires a loopback bind host")
 
 
-__all__ = ["UiRuntime"]
+def guard_loopback_request(request: Request, runtime: UiRuntime) -> None:
+    """Reject requests whose socket origin is not the configured literal bind."""
+    server = request.scope.get("server")
+    if not server or server[0] != runtime.bind_host:
+        raise HTTPException(status_code=403, detail="read-only UI is loopback-only")
+
+
+__all__ = ["UiRuntime", "guard_loopback_request"]
