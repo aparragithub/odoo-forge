@@ -487,8 +487,22 @@ def test_quarantine_history_reuses_exact_pointer_and_preserves_lineage() -> None
         evidence_digest="digest-1",
         resource_class=ResourceClass.DEV,
         quarantined_at=NOW,
+        last_activity=NOW - timedelta(days=10),
     )
     assert registry.get_calls[-1] == POINTER
+
+
+def test_quarantine_records_the_applied_activity_baseline() -> None:
+    baseline = NOW - timedelta(days=30)
+    gateway = _ProviderOnlyGateway((_observation(last_activity=baseline),))
+    journal = _AppendOnlyJournal()
+    service = _service(_Registry((RECORD,)), gateway, journal)
+
+    service.run(SCOPE, POLICY, AUTHORIZATION, now=NOW)
+
+    history = next(event.history for event in journal.events() if event.history is not None)
+    assert history is not None
+    assert history.last_activity == baseline
 
 
 @pytest.mark.parametrize("presence", [ProviderPresence.ABSENT, ProviderPresence.INVALID])

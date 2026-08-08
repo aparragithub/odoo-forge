@@ -366,6 +366,7 @@ def _quarantine_history(
         evidence_digest=observation.evidence_digest,
         resource_class=observation.resource_class,
         quarantined_at=now or datetime.now(UTC),
+        last_activity=observation.last_activity,
     )
 
 

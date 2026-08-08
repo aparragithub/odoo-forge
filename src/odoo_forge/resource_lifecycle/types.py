@@ -98,6 +98,16 @@ def evaluate_expiration(
 def reset_activity_baseline(
     resource: LifecycleResource, occurred_at: datetime
 ) -> LifecycleResource:
+    """Model the effect of a qualifying use/renewal on the activity baseline.
+
+    No production code path calls this: the design keeps the provider boundary
+    read-only (`DatabaseLifecycleGateway` exposes no renew/reset verb), so the
+    activity baseline is observed from the live provider (for example the
+    Docker `io.odoo-forge.last-activity` label) rather than written back by
+    this system. This pure function exists to prove the spec's "Configured
+    baseline prevents premature expiration" scenario at the domain-value
+    level, independent of how the provider records the renewal.
+    """
     return resource.model_copy(update={"last_activity": occurred_at})
 
 
@@ -125,6 +135,7 @@ class QuarantineHistory(_LifecycleValue):
     evidence_digest: str
     resource_class: ResourceClass
     quarantined_at: AwareDatetime
+    last_activity: datetime | None = None
 
 
 class LifecycleJournalEvent(_LifecycleValue):
