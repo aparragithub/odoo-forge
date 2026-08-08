@@ -222,9 +222,7 @@ def test_dashboard_renders_safe_manifest_panel_without_mutation_controls() -> No
     ],
 )
 def test_dashboard_renders_bounded_manifest_states(loader: object, status: str) -> None:
-    response = _manifest_client(loader).get(
-        "/ui/tenants/tenant-1/projects/project-1/instances"
-    )
+    response = _manifest_client(loader).get("/ui/tenants/tenant-1/projects/project-1/instances")
 
     assert response.status_code == 200
     assert "Manifest status:" in response.text and f">{status}</strong>" in response.text

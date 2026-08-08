@@ -268,9 +268,12 @@ def test_composition_forwards_manifest_seam_to_api_and_ssr_as_get_only() -> None
     assert locations == [Path("/secret/project.yaml"), Path("/secret/project.yaml")]
     manifest_path = "/api/v1/tenants/{tenant_id}/projects/{project_id}/manifest"
     assert set(app.openapi()["paths"][manifest_path]) == {"get"}
-    assert client.head(  # noqa: E501
-        manifest_path.replace("{tenant_id}", "tenant-1").replace("{project_id}", "project-1")
-    ).status_code == 405
+    assert (
+        client.head(  # noqa: E501
+            manifest_path.replace("{tenant_id}", "tenant-1").replace("{project_id}", "project-1")
+        ).status_code
+        == 405
+    )
 
 
 class _FakeCustody:

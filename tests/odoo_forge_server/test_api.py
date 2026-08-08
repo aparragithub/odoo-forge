@@ -209,9 +209,7 @@ def test_manifest_context_returns_only_the_validated_allowlist() -> None:
         loaded.append(path)
         return _manifest_data()
 
-    response = _manifest_client(loader).get(
-        "/api/v1/tenants/tenant-1/projects/project-1/manifest"
-    )
+    response = _manifest_client(loader).get("/api/v1/tenants/tenant-1/projects/project-1/manifest")
 
     assert response.status_code == 200
     assert response.json() == {
@@ -232,16 +230,17 @@ def test_manifest_context_returns_only_the_validated_allowlist() -> None:
 @pytest.mark.parametrize(
     ("loader", "status"),
     [
-        (lambda _path: (_ for _ in ()).throw(FileNotFoundError("/secret/project.yaml")), "unavailable"),  # noqa: E501
+        (
+            lambda _path: (_ for _ in ()).throw(FileNotFoundError("/secret/project.yaml")),
+            "unavailable",
+        ),  # noqa: E501
         (lambda _path: {"name": "broken"}, "invalid"),
     ],
 )
 def test_manifest_context_maps_unavailable_and_invalid_inputs_to_bounded_states(
     loader: object, status: str
 ) -> None:
-    response = _manifest_client(loader).get(
-        "/api/v1/tenants/tenant-1/projects/project-1/manifest"
-    )
+    response = _manifest_client(loader).get("/api/v1/tenants/tenant-1/projects/project-1/manifest")
 
     assert response.status_code == 200
     assert response.json() == {"status": status, "summary": None}
