@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+import subprocess
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import cast
+from unittest.mock import Mock, call
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from odoo_forge.backend.status import InstanceRef, InstanceStatus, RoleStatus
 from odoo_forge.control_plane.authority import ControlPlaneAuthority, RegistrationRequest
+from odoo_forge.database.types import DatabaseRef
 from odoo_forge.durable_operations.types import DurableOperationIdentity
-from odoo_forge.instance_registry.types import InstanceId, InstancePointer
+from odoo_forge.instance_registry.errors import InstanceRecordNotFoundError
+from odoo_forge.instance_registry.types import InstanceId, InstancePointer, InstanceRecord
+from odoo_forge.ports.instance_registry import InstanceRegistry
 from odoo_forge.ports.resource_custody import (
     CustodyStartingState,
     CustodyTransition,
@@ -22,12 +30,27 @@ from odoo_forge.provider_catalog import (
     ProviderCatalog,
     ProviderKind,
 )
+from odoo_forge.resource_lifecycle.service import LifecycleService
+from odoo_forge.resource_lifecycle.types import (
+    LifecycleAuthorization,
+    LifecycleEvidence,
+    LifecycleJournalEvent,
+    LifecycleOutcome,
+    LifecyclePolicy,
+    QuarantineHistory,
+    ResourceClass,
+)
 from odoo_forge.resource_ownership import OwnershipReceipt
 from odoo_forge.resource_ownership.types import ResourceOwnership, ResourceRef
 from odoo_forge.tenancy.types import ProjectScope, TenantId
 from odoo_forge_instances_postgres.adapter import Connection
+from odoo_forge_postgres_docker.authority import LocalOwnershipAuthority
+from odoo_forge_postgres_docker.lifecycle import (
+    JsonlLifecycleJournal,
+    PostgresDockerLifecycleAdapter,
+)
 from odoo_forge_server.app import UiRuntime
-from odoo_forge_server.composition import create_production_app
+from odoo_forge_server.composition import EnvLifecycleSchedulerGate, create_production_app
 
 
 class _Backend:
@@ -300,3 +323,247 @@ def test_composition_exposes_bounded_data_environment_adapters_and_service() -> 
     assert all(
         route.methods <= {"GET", "HEAD"} for route in app.routes if hasattr(route, "methods")
     )
+
+
+LIFECYCLE_SCOPE = ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1")
+LIFECYCLE_POLICY = LifecyclePolicy(ttl=timedelta(days=7), grace=timedelta(days=1))
+LIFECYCLE_AUTHORIZATION = LifecycleAuthorization(actor="operator-1", reason="approved recovery")
+LIFECYCLE_NOW = datetime(2026, 1, 10, tzinfo=UTC)
+
+
+class _EmptyRegistry:
+    def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]:
+        return ()
+
+    def get(self, pointer: InstancePointer) -> InstanceRecord:
+        raise InstanceRecordNotFoundError(pointer)
+
+
+class _OneRecordRegistry:
+    def __init__(self, record: InstanceRecord) -> None:
+        self._record = record
+
+    def list(self, scope: ProjectScope) -> tuple[InstanceRecord, ...]:
+        return (self._record,)
+
+    def get(self, pointer: InstancePointer) -> InstanceRecord:
+        if pointer == self._record.pointer:
+            return self._record
+        raise InstanceRecordNotFoundError(pointer)
+
+
+_INSPECT_TEMPLATE = (
+    '[{{"Id":"docker-1","Config":{{"Labels":{{"io.odoo-forge.operation":"op-1",'
+    '"io.odoo-forge.resource-class":"{resource_class}","io.odoo-forge.last-activity":'
+    '"2020-01-01T00:00:00+00:00","io.odoo-forge.evidence-digest":"digest-1"}}}},'
+    '"State":{{"Dead":false}}}}]'
+)
+
+
+def _docker_runner(resource_class: str) -> Callable[..., subprocess.CompletedProcess[str]]:
+    def run(argv: list[str], *, timeout: float) -> subprocess.CompletedProcess[str]:
+        if argv[1:3] == ["ps", "-a"]:
+            return subprocess.CompletedProcess(argv, 0, "docker-1\n", "")
+        return subprocess.CompletedProcess(
+            argv, 0, _INSPECT_TEMPLATE.format(resource_class=resource_class), ""
+        )
+
+    return run
+
+
+def _live_authority(tmp_path: Path, resource_class: str) -> LocalOwnershipAuthority:
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.write(
+        {
+            "operation": "op-1",
+            "kind": "container",
+            "name": "database-1",
+            "docker_id": "docker-1",
+            "state": "active",
+            "tenant_id": LIFECYCLE_SCOPE.tenant.value,
+            "project_id": LIFECYCLE_SCOPE.project_id,
+            "request_digest": "request-1",
+            "resource_class": resource_class,
+            "last_activity": "2020-01-01T00:00:00+00:00",
+            "evidence_digest": "digest-1",
+        }
+    )
+    return authority
+
+
+def _composed_lifecycle_service(
+    *, tmp_path: Path, registry: _EmptyRegistry | _OneRecordRegistry, resource_class: str
+) -> tuple[LifecycleService, Mock]:
+    provider = Mock()
+    gateway = PostgresDockerLifecycleAdapter(
+        provider=provider,
+        authority=_live_authority(tmp_path, resource_class),
+        runner=_docker_runner(resource_class),
+    )
+    journal = JsonlLifecycleJournal(tmp_path / "lifecycle.jsonl")
+    return (
+        LifecycleService(
+            registry=cast(InstanceRegistry, registry), gateway=gateway, journal=journal
+        ),
+        provider,
+    )
+
+
+def test_composition_shares_the_same_registry_and_authority_with_lifecycle_service() -> None:
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=lambda: contextmanager(_connection)(),
+    )
+
+    assert app.state.lifecycle_service.registry is app.state.registry
+    assert app.state.lifecycle_service.gateway.authority is app.state.resource_authority
+    assert isinstance(app.state.lifecycle_service.journal, JsonlLifecycleJournal)
+    assert all(
+        route.methods <= {"GET", "HEAD"} for route in app.routes if hasattr(route, "methods")
+    )
+
+
+def test_composition_lifecycle_scheduler_gate_is_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("ODOO_FORGE_LIFECYCLE_SCHEDULER_ENABLED", raising=False)
+
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=lambda: contextmanager(_connection)(),
+    )
+
+    assert isinstance(app.state.lifecycle_scheduler_gate, EnvLifecycleSchedulerGate)
+    assert app.state.lifecycle_scheduler_gate.enabled() is False
+
+
+@pytest.mark.parametrize("value", ["true", "TRUE", "yes", "0", ""])
+def test_composition_lifecycle_scheduler_gate_rejects_inexact_opt_in_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("ODOO_FORGE_LIFECYCLE_SCHEDULER_ENABLED", value)
+
+    assert EnvLifecycleSchedulerGate().enabled() is False
+
+
+def test_composition_lifecycle_scheduler_gate_opts_in_on_exact_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("ODOO_FORGE_LIFECYCLE_SCHEDULER_ENABLED", "1")
+
+    assert EnvLifecycleSchedulerGate().enabled() is True
+
+
+def test_composition_lifecycle_service_reports_only_for_prod_resources_with_zero_mutation(
+    tmp_path: Path,
+) -> None:
+    service, provider = _composed_lifecycle_service(
+        tmp_path=tmp_path, registry=_EmptyRegistry(), resource_class="prod"
+    )
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=lambda: contextmanager(_connection)(),
+        lifecycle_service=service,
+    )
+
+    results = app.state.lifecycle_service.run(
+        LIFECYCLE_SCOPE, LIFECYCLE_POLICY, LIFECYCLE_AUTHORIZATION, now=LIFECYCLE_NOW
+    )
+
+    assert [result.outcome for result in results] == [LifecycleOutcome.HUMAN_INTERVENTION]
+    assert provider.mock_calls == []
+
+
+def test_composition_lifecycle_service_detects_lineage_contradiction_with_zero_mutation(
+    tmp_path: Path,
+) -> None:
+    pointer = InstancePointer(scope=LIFECYCLE_SCOPE, instance_id=InstanceId(value="database-1"))
+    record = InstanceRecord(
+        pointer=pointer,
+        resource=ResourceRef(
+            identifier="database-1", resource_kind="database", ownership=ResourceOwnership.CREATED
+        ),
+        receipt=OwnershipReceipt(
+            operation=DurableOperationIdentity(operation_id="other-op", request_digest="d" * 64),
+            owned_resource_ids=("database-1",),
+        ),
+    )
+    service, provider = _composed_lifecycle_service(
+        tmp_path=tmp_path, registry=_OneRecordRegistry(record), resource_class="dev"
+    )
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=lambda: contextmanager(_connection)(),
+        lifecycle_service=service,
+    )
+
+    results = app.state.lifecycle_service.run(
+        LIFECYCLE_SCOPE, LIFECYCLE_POLICY, LIFECYCLE_AUTHORIZATION, now=LIFECYCLE_NOW
+    )
+
+    assert [result.outcome for result in results] == [LifecycleOutcome.HUMAN_INTERVENTION]
+    assert provider.mock_calls == []
+
+
+def test_composition_lifecycle_service_confirms_zombie_quarantine_through_composed_journal(
+    tmp_path: Path,
+) -> None:
+    provider = Mock()
+    authority = LocalOwnershipAuthority(tmp_path / "authority")
+    authority.write(
+        {
+            "operation": "op-0",
+            "kind": "container",
+            "name": "retired-1",
+            "docker_id": "docker-0",
+            "state": "retired",
+        }
+    )
+    history = QuarantineHistory(
+        pointer=InstancePointer(scope=LIFECYCLE_SCOPE, instance_id=InstanceId(value="database-1")),
+        scope=LIFECYCLE_SCOPE,
+        resource=DatabaseRef(identifier="database-1", ownership=ResourceOwnership.CREATED),
+        operation=DurableOperationIdentity(operation_id="op-1", request_digest="d" * 64),
+        evidence_digest="digest-1",
+        resource_class=ResourceClass.DEV,
+        quarantined_at=LIFECYCLE_NOW - timedelta(days=3),
+    )
+    journal_path = tmp_path / "lifecycle.jsonl"
+    JsonlLifecycleJournal(journal_path).append(
+        LifecycleJournalEvent(
+            policy=LIFECYCLE_POLICY,
+            evidence=LifecycleEvidence(source="lifecycle", digest="digest-1"),
+            authorization=LIFECYCLE_AUTHORIZATION,
+            outcome=LifecycleOutcome.QUARANTINED,
+            history=history,
+        )
+    )
+    provider.quarantine.return_value = history.resource
+    gateway = PostgresDockerLifecycleAdapter(provider=provider, authority=authority)
+    service = LifecycleService(
+        registry=cast(InstanceRegistry, _EmptyRegistry()),
+        gateway=gateway,
+        journal=JsonlLifecycleJournal(journal_path),
+    )
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=lambda: contextmanager(_connection)(),
+        lifecycle_service=service,
+    )
+
+    results = app.state.lifecycle_service.run(
+        LIFECYCLE_SCOPE, LIFECYCLE_POLICY, LIFECYCLE_AUTHORIZATION, now=LIFECYCLE_NOW
+    )
+
+    assert [result.outcome for result in results] == [LifecycleOutcome.QUARANTINED]
+    assert provider.mock_calls == [call.quarantine(history.resource)]
