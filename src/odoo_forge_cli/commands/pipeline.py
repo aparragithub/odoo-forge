@@ -1,4 +1,4 @@
-"""Pipeline commands: trigger a CI run and check its status."""
+"""Pipeline commands: trigger a CI run, check its status, and print its logs."""
 
 import typer
 
@@ -44,7 +44,20 @@ def status(run_id: str = typer.Option(..., "--run-id", help="Run id to check")) 
         raise typer.Exit(code=1) from exc
 
 
+def logs(run_id: str = typer.Option(..., "--run-id", help="Run id to inspect")) -> None:
+    """Print a pipeline run's logs."""
+    try:
+        ref = PipelineRunRef(run_id=run_id)
+        provider = _composition._make_pipeline_provider()
+        log_text = provider.logs(ref)
+        typer.echo(log_text)
+    except (OSError, RuntimeError, ValueError, KeyError) as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
 def register(app: typer.Typer) -> None:
-    """Bind the two pipeline commands onto `app`."""
+    """Bind the pipeline commands onto `app`."""
     app.command(name="pipeline-trigger")(trigger)
     app.command(name="pipeline-status")(status)
+    app.command(name="pipeline-logs")(logs)
