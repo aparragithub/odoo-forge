@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import fcntl
-import os
-import stat
+import multiprocessing
 import subprocess
 from collections.abc import Callable
 from datetime import timedelta
@@ -50,6 +48,12 @@ def _journal_event() -> LifecycleJournalEvent:
         outcome=LifecycleOutcome.ALERTED,
         kind="run",
     )
+
+
+def _append_many(path: str, count: int) -> None:
+    journal = JsonlLifecycleJournal(Path(path))
+    for _ in range(count):
+        journal.append(_journal_event())
 
 
 def _raw_record(full: bool = True) -> dict[str, str]:
@@ -143,49 +147,32 @@ def test_adapter_rejects_timeouts_without_a_finite_positive_bound(timeout: float
         PostgresDockerLifecycleAdapter(provider=Mock(), authority=_authority(), timeout=timeout)
 
 
-def test_journal_holds_an_exclusive_lock_from_first_write_through_fsync(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    order: list[str] = []
-    real_flock, real_write, real_fsync = fcntl.flock, os.write, os.fsync
-
-    def flock(descriptor: int, operation: int) -> None:
-        order.append("lock" if operation == fcntl.LOCK_EX else "unlock")
-        real_flock(descriptor, operation)
-
-    def write(descriptor: int, data: bytes) -> int:
-        order.append("write")
-        return real_write(descriptor, data)
-
-    def fsync(descriptor: int) -> None:
-        order.append("fsync")
-        real_fsync(descriptor)
-
-    monkeypatch.setattr(fcntl, "flock", flock)
-    monkeypatch.setattr(os, "write", write)
-    monkeypatch.setattr(os, "fsync", fsync)
-    JsonlLifecycleJournal(tmp_path / "lifecycle.jsonl").append(_journal_event())
-    assert order.index("lock") < order.index("write") < order.index("fsync")
-    assert order.index("fsync") < order.index("unlock")
+def test_journal_reloads_every_record_intact_after_concurrent_appends(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "lifecycle.jsonl"
+    workers = [
+        multiprocessing.get_context("spawn").Process(target=_append_many, args=(str(path), 25))
+        for _ in range(4)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=60)
+    assert [worker.exitcode for worker in workers] == [0, 0, 0, 0]
+    events = JsonlLifecycleJournal(path).events()
+    assert len(events) == 100 and set(events) == {_journal_event()}
 
 
-def test_journal_fsyncs_parent_directory_only_when_it_creates_the_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    directories: list[bool] = []
-    real_fsync = os.fsync
-
-    def fsync(descriptor: int) -> None:
-        directories.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
-        real_fsync(descriptor)
-
-    monkeypatch.setattr(os, "fsync", fsync)
-    journal = JsonlLifecycleJournal(tmp_path / "state" / "lifecycle.jsonl")
-    journal.append(_journal_event())
-    assert True in directories
-    directories.clear()
-    journal.append(_journal_event())
-    assert True not in directories
+def test_journal_reads_return_only_whole_records_while_appends_run(tmp_path: Path) -> None:
+    path = tmp_path / "state" / "lifecycle.jsonl"
+    worker = multiprocessing.get_context("spawn").Process(target=_append_many, args=(str(path), 60))
+    worker.start()
+    try:
+        reader = JsonlLifecycleJournal(path)
+        for _ in range(40):
+            assert set(reader.events()) <= {_journal_event()}
+    finally:
+        worker.join(timeout=60)
+    assert worker.exitcode == 0 and len(JsonlLifecycleJournal(path).events()) == 60
 
 
 def test_default_runner_uses_fixed_argv_without_shell(monkeypatch: pytest.MonkeyPatch) -> None:

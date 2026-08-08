@@ -198,7 +198,9 @@ class JsonlLifecycleJournal:
 
     def append(self, event: LifecycleJournalEvent) -> LifecycleJournalEvent:
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        descriptor, created = self._open()
+        descriptor = os.open(
+            self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600
+        )
         try:
             # A partial write can split one record across several os.write calls.
             # Hold the lock across the whole record so a concurrent appender
@@ -216,26 +218,30 @@ class JsonlLifecycleJournal:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
         finally:
             os.close(descriptor)
-        if created:
-            # Syncing the file alone leaves its directory entry unrecoverable
-            # after a crash, which would lose the whole audit trail.
-            _fsync_directory(self.path.parent)
+        # Syncing the file alone leaves its directory entry unrecoverable after
+        # a crash, losing the whole audit trail. Every append pays this, not
+        # just the creating one: another process can open the new file and
+        # return successfully before the creator would have synced.
+        _fsync_directory(self.path.parent)
         return event
 
-    def _open(self) -> tuple[int, bool]:
-        flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW
-        try:
-            return os.open(self.path, flags | os.O_CREAT | os.O_EXCL, 0o600), True
-        except FileExistsError:
-            return os.open(self.path, flags), False
-
     def events(self) -> tuple[LifecycleJournalEvent, ...]:
-        if not self.path.exists():
+        try:
+            descriptor = os.open(self.path, os.O_RDONLY | os.O_NOFOLLOW)
+        except FileNotFoundError:
             return ()
+        try:
+            # Without a shared lock a read can land inside an in-flight append
+            # and hand a truncated final line to the parser.
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            try:
+                payload = os.fdopen(descriptor, encoding="utf-8", closefd=False).read()
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
         return tuple(
-            LifecycleJournalEvent.model_validate_json(line)
-            for line in self.path.read_text(encoding="utf-8").splitlines()
-            if line
+            LifecycleJournalEvent.model_validate_json(line) for line in payload.splitlines() if line
         )
 
 
