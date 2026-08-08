@@ -114,6 +114,11 @@ def create_production_app(
     execution are added by this wiring. Manual execution stays available
     through `app.state.lifecycle_service.run(...)`; the opt-in scheduler
     gate defaults to disabled.
+
+    `custody_adapter` and `lifecycle_service` are test seams. A caller that
+    supplies either one owns the authority behind it, so the shared-authority
+    guarantee above describes the composed defaults, which is the only path
+    production takes.
     """
     resolution = ProviderCatalogResolver(provider_catalog).resolve(ProviderKind.BACKEND)
     if not isinstance(resolution, ResolvedProviderAdapter):
