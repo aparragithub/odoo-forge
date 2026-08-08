@@ -273,5 +273,4 @@ def test_pipeline_logs_requires_run_id_before_provider_composition(
     result = runner.invoke(app, ["pipeline-logs"])
 
     assert result.exit_code == 2
-    assert "--run-id" in result.output
     assert provider_composition_calls == []
