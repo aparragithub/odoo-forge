@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -12,7 +14,7 @@ from odoo_forge.control_plane.models import (
 from odoo_forge.instance_registry import InstanceId, InstancePointer, InstanceRecord
 from odoo_forge.resource_ownership import ResourceOwnership, ResourceRef
 from odoo_forge.tenancy import ProjectScope, TenantId
-from odoo_forge_server.app import create_app
+from odoo_forge_server.app import UiRuntime, create_app
 
 
 def _record(
@@ -166,3 +168,98 @@ def test_schema_and_openapi_are_read_only() -> None:
     assert set(response_schema["required"]) == {"outcome", "rows"}
     assert {"record", "live", "outcome"}.issubset(row_schema["required"])
     assert all(set(item) == {"get"} for item in schema["paths"].values())
+
+
+def _manifest_data() -> dict[str, object]:
+    return {
+        "name": "safe-project",
+        "odoo_version": "19.0",
+        "edition": "community",
+        "layers": [
+            {
+                "type": "git",
+                "name": "custom-apps",
+                "repos": [{"url": "https://user:secret@example.invalid/apps.git", "ref": "main"}],
+            }
+        ],
+        "client": {"addons_path": "/srv/secret/workspace/client"},
+        "backend": {"odoo": {"bind_host": "127.0.0.1", "http_port": 18069}},
+    }
+
+
+def _manifest_client(loader: object) -> TestClient:
+    return TestClient(
+        create_app(
+            reconciler=_FakeReconciler(
+                ReconciliationResult(outcome=ReconciliationOutcome.EMPTY, rows=())
+            ),
+            ui_runtime=UiRuntime("127.0.0.1"),
+            manifest_scope=ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1"),
+            manifest_location=Path("/secret/project.yaml"),
+            manifest_loader=loader,  # type: ignore[arg-type]
+        ),
+        base_url="http://127.0.0.1",
+    )
+
+
+def test_manifest_context_returns_only_the_validated_allowlist() -> None:
+    loaded: list[Path] = []
+
+    def loader(path: Path) -> object:
+        loaded.append(path)
+        return _manifest_data()
+
+    response = _manifest_client(loader).get(
+        "/api/v1/tenants/tenant-1/projects/project-1/manifest"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "valid",
+        "summary": {
+            "project_name": "safe-project",
+            "odoo_version": "19.0",
+            "edition": "community",
+            "layer_names": ["custom-apps"],
+            "backend_bind_host": "127.0.0.1",
+            "backend_http_port": 18069,
+        },
+    }
+    assert loaded == [Path("/secret/project.yaml")]
+    assert "secret" not in response.text and "workspace" not in response.text
+
+
+@pytest.mark.parametrize(
+    ("loader", "status"),
+    [
+        (lambda _path: (_ for _ in ()).throw(FileNotFoundError("/secret/project.yaml")), "unavailable"),  # noqa: E501
+        (lambda _path: {"name": "broken"}, "invalid"),
+    ],
+)
+def test_manifest_context_maps_unavailable_and_invalid_inputs_to_bounded_states(
+    loader: object, status: str
+) -> None:
+    response = _manifest_client(loader).get(
+        "/api/v1/tenants/tenant-1/projects/project-1/manifest"
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"status": status, "summary": None}
+    assert "/secret" not in response.text and "broken" not in response.text
+
+
+def test_manifest_context_rejects_guards_and_non_get_methods_before_loading() -> None:
+    calls: list[Path] = []
+
+    def loader(path: Path) -> object:
+        calls.append(path)
+        return _manifest_data()
+
+    client = _manifest_client(loader)
+    path = "/api/v1/tenants/tenant-1/projects/project-1/manifest"
+    assert TestClient(client.app, base_url="http://127.0.0.2").get(path).status_code == 403
+    assert client.get("/api/v1/tenants/other/projects/project-1/manifest").status_code == 404
+    assert client.head(path).status_code == 405
+    for method in (client.post, client.put, client.patch, client.delete):
+        assert method(path).status_code == 405
+    assert calls == []

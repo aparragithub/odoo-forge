@@ -2,6 +2,22 @@
 {% block title %}Instances — {{ label }}{% endblock %}
 {% block content %}<h1>Read-only operations</h1>
 <p>Aggregate outcome: <strong>{{ label }}</strong></p>
+{% if manifest %}
+<section aria-label="Project manifest">
+<h2>Project manifest</h2>
+<p>Manifest status: <strong>{{ manifest.status }}</strong></p>
+{% if manifest.summary %}
+<dl>
+<dt>Project</dt><dd>{{ manifest.summary.project_name }}</dd>
+<dt>Odoo version</dt><dd>{{ manifest.summary.odoo_version }}</dd>
+<dt>Edition</dt><dd>{{ manifest.summary.edition }}</dd>
+<dt>Layers</dt><dd>{{ manifest.summary.layer_names|join(", ") }}</dd>
+<dt>Backend bind host</dt><dd>{{ manifest.summary.backend_bind_host or "not configured" }}</dd>
+<dt>Backend HTTP port</dt><dd>{{ manifest.summary.backend_http_port or "not configured" }}</dd>
+</dl>
+{% endif %}
+</section>
+{% endif %}
 {% if is_persistence_error %}
 <p role="alert">The instance registry is unavailable.</p>
 {% elif rows %}

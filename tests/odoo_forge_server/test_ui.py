@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -171,3 +173,59 @@ def test_polling_reconciles_again_and_ui_is_get_only() -> None:
     paths = (path, f"{path}/alpha")
     for method in (client.post, client.put, client.delete, client.patch):
         assert all(method(candidate).status_code == 405 for candidate in paths)
+
+
+def _manifest_data() -> dict[str, object]:
+    return {
+        "name": "safe-project",
+        "odoo_version": "19.0",
+        "edition": "community",
+        "layers": [{"type": "git", "name": "custom-apps", "repos": []}],
+        "client": {"addons_path": "/srv/secret/workspace/client"},
+        "backend": {"odoo": {"bind_host": "127.0.0.1", "http_port": 18069}},
+    }
+
+
+def _manifest_client(loader: object) -> TestClient:
+    scope = ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1")
+    return TestClient(
+        create_app(
+            reconciler=_FakeReconciler((_result(ReconciliationOutcome.EMPTY),)),
+            ui_runtime=UiRuntime("127.0.0.1"),
+            manifest_scope=scope,
+            manifest_location=Path("/secret/project.yaml"),
+            manifest_loader=loader,  # type: ignore[arg-type]
+        ),
+        base_url="http://127.0.0.1",
+    )
+
+
+def test_dashboard_renders_safe_manifest_panel_without_mutation_controls() -> None:
+    response = _manifest_client(lambda _path: _manifest_data()).get(
+        "/ui/tenants/tenant-1/projects/project-1/instances"
+    )
+
+    assert response.status_code == 200
+    assert "Manifest status:" in response.text and ">valid</strong>" in response.text
+    assert "safe-project" in response.text and "custom-apps" in response.text
+    assert "18069" in response.text and "secret" not in response.text
+    assert all(  # noqa: E501
+        token not in response.text.lower() for token in ("<form", "wizard", "save", "submit")
+    )
+
+
+@pytest.mark.parametrize(
+    ("loader", "status"),
+    [
+        (lambda _path: (_ for _ in ()).throw(OSError("/secret/project.yaml")), "unavailable"),
+        (lambda _path: {"name": "invalid-secret"}, "invalid"),
+    ],
+)
+def test_dashboard_renders_bounded_manifest_states(loader: object, status: str) -> None:
+    response = _manifest_client(loader).get(
+        "/ui/tenants/tenant-1/projects/project-1/instances"
+    )
+
+    assert response.status_code == 200
+    assert "Manifest status:" in response.text and f">{status}</strong>" in response.text
+    assert "invalid-secret" not in response.text and "/secret" not in response.text

@@ -24,6 +24,7 @@ from odoo_forge.provider_catalog import (
     ResolvedProviderAdapter,
 )
 from odoo_forge.resource_lifecycle.service import LifecycleService
+from odoo_forge.tenancy import ProjectScope
 from odoo_forge_docker.provider import DockerBackendProvider
 from odoo_forge_instances_postgres.adapter import (
     Connection,
@@ -42,6 +43,7 @@ from odoo_forge_postgres_docker.lifecycle import (
 )
 from odoo_forge_postgres_docker.provider import DockerPostgresqlDatabaseProvider
 from odoo_forge_server.app import UiRuntime, create_app
+from odoo_forge_server.routes.instances import ManifestLoader
 
 BackendAdapter = Any
 
@@ -100,6 +102,9 @@ def create_production_app(
     backend_adapters: Mapping[str, BackendAdapter] | None = None,
     acquire_connection: Callable[[], AbstractContextManager[Connection]] | None = None,
     ui_runtime: UiRuntime | None = None,
+    manifest_scope: ProjectScope | None = None,
+    manifest_location: Path | None = None,
+    manifest_loader: ManifestLoader | None = None,
     custody_adapter: ResourceCustodyAdapter | None = None,
     data_environment_service: DataEnvironmentService | None = None,
     lifecycle_service: LifecycleService | None = None,
@@ -135,7 +140,13 @@ def create_production_app(
     registry: InstanceRegistry = PostgresInstanceRegistry(acquirer)
     reconciler = Reconciler(registry, backend.status)
     authority = _default_resource_authority()
-    app = create_app(reconciler=reconciler, ui_runtime=ui_runtime)
+    app = create_app(
+        reconciler=reconciler,
+        ui_runtime=ui_runtime,
+        manifest_scope=manifest_scope,
+        manifest_location=manifest_location,
+        manifest_loader=manifest_loader,
+    )
     app.state.registry = registry
     app.state.backend_status = backend.status
     app.state.reconciler = reconciler

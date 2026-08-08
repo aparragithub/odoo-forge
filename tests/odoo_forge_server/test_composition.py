@@ -236,6 +236,43 @@ def test_composition_injects_the_same_reconciler_into_the_ui() -> None:
     ]
 
 
+def test_composition_forwards_manifest_seam_to_api_and_ssr_as_get_only() -> None:
+    locations: list[Path] = []
+
+    def load_manifest(path: Path) -> object:
+        locations.append(path)
+        return {
+            "name": "safe-project",
+            "odoo_version": "19.0",
+            "edition": "community",
+            "layers": [],
+            "client": {"addons_path": "/secret/client"},
+        }
+
+    app = create_production_app(
+        database_url="postgresql://unused",
+        provider_catalog=_catalog(),
+        backend_adapters={"docker": _Backend()},
+        acquire_connection=lambda: contextmanager(_connection)(),
+        ui_runtime=UiRuntime("127.0.0.1"),
+        manifest_scope=_REGISTERED_POINTER.scope,
+        manifest_location=Path("/secret/project.yaml"),
+        manifest_loader=load_manifest,
+    )
+    client = TestClient(app, base_url="http://127.0.0.1")
+    api = client.get("/api/v1/tenants/tenant-1/projects/project-1/manifest")
+    ui = client.get("/ui/tenants/tenant-1/projects/project-1/instances")
+
+    assert api.status_code == 200 and api.json()["summary"]["project_name"] == "safe-project"
+    assert ui.status_code == 200 and "safe-project" in ui.text
+    assert locations == [Path("/secret/project.yaml"), Path("/secret/project.yaml")]
+    manifest_path = "/api/v1/tenants/{tenant_id}/projects/{project_id}/manifest"
+    assert set(app.openapi()["paths"][manifest_path]) == {"get"}
+    assert client.head(  # noqa: E501
+        manifest_path.replace("{tenant_id}", "tenant-1").replace("{project_id}", "project-1")
+    ).status_code == 405
+
+
 class _FakeCustody:
     def __init__(self) -> None:
         self.calls = 0
