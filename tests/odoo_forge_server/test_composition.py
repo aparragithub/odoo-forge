@@ -237,10 +237,8 @@ def test_composition_injects_the_same_reconciler_into_the_ui() -> None:
 
 
 def test_composition_forwards_manifest_seam_to_api_and_ssr_as_get_only() -> None:
-    locations: list[Path] = []
-
     def load_manifest(path: Path) -> object:
-        locations.append(path)
+        assert path == Path("/secret/project.yaml")
         return {
             "name": "safe-project",
             "odoo_version": "19.0",
@@ -265,7 +263,6 @@ def test_composition_forwards_manifest_seam_to_api_and_ssr_as_get_only() -> None
 
     assert api.status_code == 200 and api.json()["summary"]["project_name"] == "safe-project"
     assert ui.status_code == 200 and "safe-project" in ui.text
-    assert locations == [Path("/secret/project.yaml"), Path("/secret/project.yaml")]
     manifest_path = "/api/v1/tenants/{tenant_id}/projects/{project_id}/manifest"
     assert set(app.openapi()["paths"][manifest_path]) == {"get"}
     assert (

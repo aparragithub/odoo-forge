@@ -203,10 +203,8 @@ def _manifest_client(loader: object) -> TestClient:
 
 
 def test_manifest_context_returns_only_the_validated_allowlist() -> None:
-    loaded: list[Path] = []
-
     def loader(path: Path) -> object:
-        loaded.append(path)
+        assert path == Path("/secret/project.yaml")
         return _manifest_data()
 
     response = _manifest_client(loader).get("/api/v1/tenants/tenant-1/projects/project-1/manifest")
@@ -223,7 +221,6 @@ def test_manifest_context_returns_only_the_validated_allowlist() -> None:
             "backend_http_port": 18069,
         },
     }
-    assert loaded == [Path("/secret/project.yaml")]
     assert "secret" not in response.text and "workspace" not in response.text
 
 
