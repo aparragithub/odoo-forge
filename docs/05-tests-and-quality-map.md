@@ -34,7 +34,7 @@ Leé esto después de [04-cli-and-adapters-map.md](04-cli-and-adapters-map.md). 
 | `tests/backend/` | tipos del backend plan, parseo de status, errores del backend |
 | `tests/ports/` | contratos de ports y expectativas de protocolos |
 | `tests/adapters/` | comportamiento concreto de adapters Git, workspace, Docker, registry y PostgreSQL Docker |
-| `tests/cli/` | wiring de las 23 commands, incluidos configure, copy y pipelines; flujos visibles y límites de salida |
+| `tests/cli/` | wiring de las 22 commands, incluidos configure, copy y pipelines; flujos visibles y límites de salida |
 | `tests/database/` | tipos de base de datos neutrales al provider, readiness y errores |
 | `tests/credentials/` | reglas de materialización y seguridad de credenciales |
 | `tests/data_artifacts/` | contratos de restore/discard y reglas de redaction |

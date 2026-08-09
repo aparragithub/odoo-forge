@@ -51,7 +51,7 @@ Hoy el runtime distribuido está orientado a desarrollo local. Existen varias fo
 | --- | --- | --- |
 | Core de dominio | `src/odoo_forge/` | Tipos de dominio puros, validación, planning y contratos de ports |
 | Composition root | `src/odoo_forge_cli/` | `commands/*.py` posee las familias de comandos; `_composition.py`, `_presentation.py` y `_support.py` concentran wiring, render e I/O; `main.py` solo registra módulos |
-| Runtime adapters | `src/odoo_forge_git/`, `src/odoo_forge_workspace/`, `src/odoo_forge_docker/`, `src/odoo_forge_registry/`, `src/odoo_forge_pipeline_github/`, `src/odoo_forge_instances_postgres/`, `src/odoo_forge_server/` | Integraciones concretas para Git, filesystem, Docker, GHCR, GitHub Actions, persistencia PostgreSQL de instancias y servidor HTTP |
+| Runtime adapters | `src/odoo_forge_git/`, `src/odoo_forge_workspace/`, `src/odoo_forge_docker/`, `src/odoo_forge_registry/`, `src/odoo_forge_catalog/`, `src/odoo_forge_pipeline_github/`, `src/odoo_forge_instances_postgres/`, `src/odoo_forge_server/` | Integraciones concretas para Git, filesystem, Docker, GHCR, índice de catálogo, GitHub Actions, persistencia PostgreSQL de instancias y servidor HTTP |
 | Foundation de database adapter | `src/odoo_forge_postgres_docker/` | Implementación aislada de `DatabaseProvider` para PostgreSQL en Docker; foundation importante, no la ruta principal de ejecución de la CLI |
 | Tests y quality gates | `tests/`, `pyproject.toml`, `.github/workflows/` | Verificación de comportamiento, enforcement de límites de imports, lint, typing y workflows de CI |
 | Docs de producto y gobernanza | `docs/`, `openspec/` | Guías actuales, diagramas, autoridad de portfolio, specs aceptadas y evidencia histórica de cambios |
@@ -82,6 +82,7 @@ Hoy el runtime distribuido está orientado a desarrollo local. Existen varias fo
 | `src/odoo_forge_workspace/` | Workspace adapter | Materializa en el filesystem el estado planeado del workspace |
 | `src/odoo_forge_docker/` | Backend adapter | Ejecuta workloads locales de Odoo/PostgreSQL mediante Docker |
 | `src/odoo_forge_registry/` | Registry adapter | Resuelve, publica, verifica y descarga imágenes vía tooling GHCR/Docker |
+| `src/odoo_forge_catalog/` | Catalog index adapter | Implementa el índice de catálogo |
 | `src/odoo_forge_postgres_docker/` | Foundation de database-provider adapter | Es dueña de la lógica aislada de ciclo de vida PostgreSQL; todavía no es el flujo canónico del runtime local |
 | `src/odoo_forge_pipeline_github/` | Pipeline adapter | Implementa trigger, status y logs mediante GitHub Actions |
 | `src/odoo_forge_instances_postgres/` | Persistencia de instancias y data environments | Implementa registries y autoridades PostgreSQL para superficies administradas |
