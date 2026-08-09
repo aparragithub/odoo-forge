@@ -102,7 +102,7 @@ class GitHubActionsRestTransport:
                         raise RuntimeError("invalid log archive") from exc
                     output.append(content.decode("utf-8", errors="replace"))
                 return "".join(output)
-        except zipfile.BadZipFile as exc:
+        except (zipfile.BadZipFile, UnicodeDecodeError) as exc:
             raise RuntimeError("invalid log archive") from exc
 
     def _request(self, url: str, *, method: str, body: bytes | None = None) -> bytes:

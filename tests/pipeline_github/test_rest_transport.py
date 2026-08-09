@@ -127,3 +127,14 @@ def test_logs_reject_corrupted_compressed_entries(monkeypatch: pytest.MonkeyPatc
 
     with pytest.raises(RuntimeError, match="invalid log archive"):
         transport.get_run_logs("42")
+
+
+def test_logs_reject_malformed_utf8_entry_names(monkeypatch: pytest.MonkeyPatch) -> None:
+    archive = bytearray(_zip_bytes({"job.txt": b"output"}))
+    central_header = archive.index(b"PK\x01\x02")
+    archive[central_header + 8 : central_header + 10] = (0x800).to_bytes(2, "little")
+    archive[central_header + 46] = 0xFF
+    _mock_urlopen(monkeypatch, bytes(archive))
+
+    with pytest.raises(RuntimeError, match="invalid log archive"):
+        _transport().get_run_logs("42")
