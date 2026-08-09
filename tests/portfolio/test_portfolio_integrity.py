@@ -541,6 +541,72 @@ def test_live_plan_is_clean_at_every_severity(live_plan: dict[str, Any]) -> None
     assert [str(v) for v in validate.validate_plan(live_plan)] == []
 
 
+def test_partial_delivery_records_have_exact_evidence_and_gaps(
+    live_plan: dict[str, Any],
+) -> None:
+    items = {item["id"]: item for item in live_plan["items"]}
+
+    assert {
+        key: items["SP-DELIVERY-AUTOMATION"][key]
+        for key in ("status", "evidence_date", "status_note", "acceptance")
+    } == {
+        "status": "partially delivered",
+        "evidence_date": "2026-08-08",
+        "status_note": (
+            "Pipeline trigger, status, and log inspection are delivered while aggregate delivery "
+            "automation remains unachieved."
+        ),
+        "acceptance": [
+            {
+                "id": "AC-SP-DELIVERY-AUTOMATION-READY",
+                "status": "proposed",
+                "evidence": ["S98"],
+                "gaps": ["G9"],
+            }
+        ],
+    }
+    assert {
+        key: items["SP-RESOURCE-LIFECYCLE"][key]
+        for key in ("status", "evidence_date", "status_note", "acceptance")
+    } == {
+        "status": "partially delivered",
+        "evidence_date": "2026-08-07",
+        "status_note": (
+            "Delivery is limited to the PostgreSQL Docker lifecycle and opt-in scheduler while "
+            "broader cross-resource acceptance remains unproven."
+        ),
+        "acceptance": [
+            {
+                "id": "AC-SP-RESOURCE-LIFECYCLE-READY",
+                "status": "proposed",
+                "evidence": ["S99", "S100", "S101", "S102", "S103"],
+                "gaps": ["G10"],
+            }
+        ],
+    }
+    assert {
+        key: live_plan["meta"]["evidence_catalog"][key]
+        for key in ("S98", "S99", "S100", "S101", "S102", "S103")
+    } == {
+        "S98": "commit:adf748a",
+        "S99": "commit:e9d4c49",
+        "S100": "commit:e0e9cfd",
+        "S101": "commit:b8c7dc6",
+        "S102": "commit:2cc27c3",
+        "S103": "commit:1f21983",
+    }
+    assert {key: live_plan["meta"]["gap_catalog"][key] for key in ("G9", "G10")} == {
+        "G9": (
+            "Aggregate fabrication, promotion, build, test, and deploy acceptance remains "
+            "incomplete"
+        ),
+        "G10": (
+            "Complete cross-resource lifecycle acceptance, including image retention and "
+            "generalized orphan reclamation, remains unproven"
+        ),
+    }
+
+
 def test_dangling_gap_reference_red_catches_bad_ac_gap(live_plan: dict[str, Any]) -> None:
     mutated = copy.deepcopy(live_plan)
     item = next(
