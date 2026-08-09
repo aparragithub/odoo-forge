@@ -10,7 +10,7 @@ Importa porque esta superficie concentra el wiring de runtime que primero percib
 
 ## Por qué existe
 
-Existe para que maintainers y futuras personas implementadoras distingan con precisión qué debe vivir en `main.py`, qué debe seguir en el core y qué debe permanecer encapsulado dentro de cada adapter concreto.
+Existe para que maintainers distingan qué pertenece a `commands/`, a los helpers compartidos, al core y a cada adapter concreto.
 
 ## Cómo ayuda al sistema
 
@@ -34,40 +34,50 @@ Después de esta ficha, conviene seguir con [17-src-docker-adapter-map.md](17-sr
 
 | Elemento | Rol principal | Qué debe evitar |
 | --- | --- | --- |
-| `main.py` | entrypoint Typer, helpers de composición, lectura de manifest/lock, render de errores y mensajes | decidir reglas del dominio, reinterpretar estado Docker/Git, duplicar semántica ya modelada en el core |
+| `main.py` | shell de 26 líneas: crea `app`, define el callback y registra seis módulos | commands, composición, I/O o presentación |
+| `commands/backend.py`, `copy.py`, `image.py`, `maintenance.py`, `manifest.py`, `pipeline.py` | familias de commands y boundaries Typer | construcción dispersa de adapters o reglas duplicadas del core |
+| `_composition.py` | factories de adapters concretos | presentación o semántica de dominio |
+| `_presentation.py` | formato de resultados ya calculados | I/O o decisiones de negocio |
+| `_support.py` | filesystem, entorno y manifest/lock I/O | selección de adapters o reglas del dominio |
 
 ## Por qué `src/odoo_forge_cli/` es el composition root
 
-`src/odoo_forge_cli/main.py` es el lugar donde el repo decide qué implementación concreta satisface cada port en tiempo de ejecución.
+`src/odoo_forge_cli/_composition.py` es el lugar donde el repo decide qué implementación concreta satisface cada port en tiempo de ejecución. `main.py` solo registra `backend`, `copy`, `image`, `maintenance`, `manifest` y `pipeline`.
 
 | Port o capability consumida | Implementación concreta cableada hoy | Dónde se usa |
 | --- | --- | --- |
 | `SourceProvider` | `GitSourceProvider` | `lock` |
 | `PublishedArtifactResolver` | `PublishedArtifactRegistryResolver(GhcrImageRegistryProvider())` | `lock` para layers `published` |
 | `WorkspaceProvider` | `GitWorkspaceProvider` | `validate`, `project`, `unlock`, `run` |
-| `BackendProvider` | `DockerBackendProvider(SopsEnvFileInjector(...))` | `run`, `status`, `stop`, `logs`, `exec` |
+| `BackendProvider` | `DockerBackendProvider(SopsEnvFileInjector(...))` | `run`, `status`, `stop`, `destroy`, `logs`, `exec` |
 | image registry provider concreto | `GhcrImageRegistryProvider` | `image-resolve`, `image-publish`, `image-pull`, `image-exists` |
+| `DatabaseProvider` y coordinador de copy | adapters PostgreSQL Docker y staged artifact store | `run` y `copy` |
+| `CatalogIndex` | `YamlCatalogIndex` | `onboard` por cliente |
+| `PipelineProvider` | `GitHubActionsPipelineProvider` | `pipeline-trigger`, `pipeline-status`, `pipeline-logs` |
 
-La regla de mantenimiento es simple: un adapter concreto se instancia aquí o en un helper `_make_*` de este mismo archivo, no dentro del core y no distribuido por múltiples commands.
+La regla de mantenimiento es simple: un adapter concreto se instancia en un helper `_make_*` de `_composition.py`, no dentro del core ni distribuido por múltiples commands.
 
 ## Familias de commands y flujos de producto/runtime
 
 | Familia | Commands | Flujo que exponen | Dependencias principales |
 | --- | --- | --- | --- |
-| manifest y lock | `validate`, `lock` | parseo del manifest, composición, resolución de refs, chequeo de drift y escritura de `project.lock` | schema/core de manifest, provider Git, resolver de artifacts publicados, workspace scan |
+| manifest y onboarding | `configure`, `validate`, `onboard`, `lock` | authoring, catálogo, composición, resolución de refs, drift y escritura de `project.lock` | schema/core de manifest, catálogo, provider Git, resolver de artifacts, workspace scan |
 | proyección de workspace | `project`, `unlock` | llevar el lock al filesystem y promover repos a worktree editable | projection core + `WorkspaceProvider` |
-| runtime local | `run`, `status`, `stop`, `logs`, `exec` | derivar identidad de instancia, planificar backend, lanzar y operar el runtime Docker local | backend core + `WorkspaceProvider` + `BackendProvider` |
+| runtime local | `run`, `status`, `stop`, `destroy`, `logs`, `exec` | derivar identidad, planificar backend y operar el runtime Docker local | backend core + `WorkspaceProvider` + `BackendProvider` |
+| copia de datos | `copy` | captura, anonimización y entrega durable | data artifacts + PostgreSQL Docker adapters |
 | imágenes | `image-resolve`, `image-publish`, `image-pull`, `image-exists` | operar refs de imágenes inmutables y su existencia/publicación | `GhcrImageRegistryProvider` |
+| pipelines | `pipeline-trigger`, `pipeline-status`, `pipeline-logs` | disparar, consultar y leer logs de pipelines | `PipelineProvider` |
+| mantenimiento | `doctor`, `rotate-enterprise-credential` | diagnosticar y rotar credenciales Enterprise | SOPS/age |
 
 ## Cómo la CLI se mantiene delgada
 
 | Responsabilidad que sí pertenece aquí | Cómo se hace hoy |
 | --- | --- |
-| leer bytes de `project.yaml` y `project.lock` | `_read_manifest_data()` y `_load_lock()` |
+| leer bytes de `project.yaml` y `project.lock` | `_support._read_manifest_data()` y `_support._load_lock()` |
 | traducir errores de I/O o decode a errores tipados | wrappers que convierten fallos crudos en `ManifestInputError`, `LockfileError` o boundaries equivalentes |
 | normalizar input específico de CLI | opciones Typer y normalización de refs de imagen |
-| construir adapters concretos | helpers `_make_*` |
-| renderizar salida humana | `_format_drift()`, `_render_validation_errors()` y `typer.echo(...)` |
+| construir adapters concretos | helpers `_make_*` en `_composition.py` |
+| renderizar salida humana | `_presentation._format_drift()`, `_render_validation_errors()` y `typer.echo(...)` en commands |
 | propagar exit codes correctos | `typer.Exit(code=1)` para errores de boundary y `ExecResult.exit_code` en `exec` |
 
 | Responsabilidad que NO pertenece aquí | Dueño real |
@@ -79,7 +89,7 @@ La regla de mantenimiento es simple: un adapter concreto se instancia aquí o en
 | planificación del runtime | `plan_backend()` |
 | ejecución Docker/Git/GHCR | packages adapter concretos |
 
-## Helpers `_make_*` y por qué existen
+## Helpers `_make_*` en `_composition.py`
 
 | Helper | Qué construye | Por qué existe |
 | --- | --- | --- |

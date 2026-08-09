@@ -33,10 +33,11 @@ This is an **early-stage project under active development** (first commit July 2
 - GHCR image operations (resolve, publish, pull, exists)
 - Image factory for base images
 - SOPS/age-backed Enterprise credential handling
+- End-to-end database copy with anonymization policy support
 
 **Provider-neutral foundations, not yet wired to a managed flow**
 
-Credentials, data artifacts, project catalog, and durable operations exist as neutral building blocks. They are implemented but not yet exposed as managed data-environment workflows.
+Credentials, data artifacts, project catalog, durable operations, tenancy contracts, and data-environment domain services exist as implemented building blocks. The local `copy` flow is wired, but managed data-environment and control-plane workflows are not available.
 
 **Target state**
 
@@ -103,17 +104,18 @@ See [`example/`](example/) for a complete working manifest.
 
 | Command family | Commands |
 | --- | --- |
-| Manifest | `validate`, `lock`, `project`, `unlock`, `onboard` |
-| Local backend | `run`, `status`, `stop`, `destroy`, `logs` |
+| Manifest and onboarding | `configure`, `validate`, `onboard`, `lock`, `project`, `unlock` |
+| Local backend | `run`, `status`, `stop`, `destroy`, `logs`, `exec` |
+| Data copy | `copy` |
 | Images (GHCR) | `image-resolve`, `image-publish`, `image-pull`, `image-exists` |
-| Pipelines | `pipeline-trigger`, `pipeline-status` |
+| Pipelines | `pipeline-trigger`, `pipeline-status`, `pipeline-logs` |
 | Maintenance | `doctor`, `rotate-enterprise-credential` |
 
 Run `uv run forge <command> --help` for the full signature of any command.
 
 ## Architecture
 
-Hexagonal, and enforced rather than aspirational: **9 import-linter contracts fail the build** if the domain core reaches for infrastructure, the CLI, or any adapter.
+Hexagonal, and enforced rather than aspirational: **10 import-linter contracts fail the build** if the domain core reaches for infrastructure, the CLI, or any adapter.
 
 | Package | Role |
 | --- | --- |

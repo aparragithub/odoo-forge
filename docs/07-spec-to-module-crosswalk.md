@@ -41,7 +41,8 @@ Leé esto después de [06-docs-and-openspec-lifecycle.md](06-docs-and-openspec-l
 | `openspec/specs/data-artifacts/spec.md` | `src/odoo_forge/data_artifacts/contracts.py`, `types.py` | `src/odoo_forge_postgres_docker/target_handoffs.py`, partes de `provider.py` | `tests/data_artifacts/test_contracts.py`, cobertura de restore en `tests/adapters/test_postgres_docker_provider.py` e integración | Restore-set opaco consumido por el adapter PostgreSQL; todavía sin flujo CLI general de restore |
 | `openspec/specs/project-catalog-resolution/spec.md` | `src/odoo_forge/project_catalog/resolver.py`, `models.py`, `interfaces.py`, `validation.py` | ninguno canónico todavía; futuro consumer desde CLI o control-plane | `tests/project_catalog/test_resolver.py` | Capability foundation para futuros flujos de onboarding / environment request; sin command visible hoy |
 | `openspec/specs/durable-operations/spec.md` | `src/odoo_forge/durable_operations/service.py`, `types.py`, `errors.py`, `src/odoo_forge/ports/durable_operation_store.py`, `durable_operation_recovery.py` | ninguno canónico todavía; futuro backing store fuera del core | `tests/durable_operations/test_service.py`, `tests/durable_operations/test_types.py`, `tests/ports/test_durable_operation_store.py` | Foundation para workflows largos o crash-sensitive; no expuesta hoy como flujo CLI directo |
-| `openspec/specs/tenancy-contract/spec.md` | hoy no tiene módulos runtime dedicados en `src/`; actúa como contrato de plataforma para trabajo futuro | ninguno actual | sin suite dedicada en `tests/` todavía | Impacta diseño futuro de consumers SP-3, SP-4 y SP-8; no modifica commands actuales |
+| `openspec/specs/tenancy-contract/spec.md` | `src/odoo_forge/tenancy/types.py`, `errors.py` | ninguno necesario para los contratos puros actuales | `tests/tenancy/test_types.py`, `tests/tenancy/test_errors.py` | Contratos runtime implementados; no implican por sí solos un workflow administrado |
+| data environments y registros relacionados | `src/odoo_forge/data_environments/`, `instance_registry/`, `deployment_spec/`, `provider_catalog/`, `resource_lifecycle/` | `src/odoo_forge_instances_postgres`, `src/odoo_forge_server` | suites dedicadas homónimas y tests de adapters/server | Superficies implementadas de dominio y runtime; disponibilidad final depende del workflow consumidor |
 
 ## Capacidades De Gobernanza Y Documentación
 
@@ -66,5 +67,5 @@ Leé esto después de [06-docs-and-openspec-lifecycle.md](06-docs-and-openspec-l
 
 - `manifest`, `local-backend` e `image-registry-provider` sí impactan flujos CLI visibles hoy.
 - `database-provider`, `docker-postgresql-database-adapter`, `credential-materialization`, `data-artifacts`, `project-catalog-resolution` y `durable-operations` están aceptadas como foundations, pero varias todavía no tienen un command `forge` canónico expuesto.
-- `tenancy-contract` y las specs de gobernanza/documentación hoy condicionan diseño y autoridad más que wiring de runtime.
+- `tenancy-contract` tiene tipos, errores y tests runtime dedicados; las specs de gobernanza/documentación siguen condicionando autoridad más que wiring.
 - Cuando una capability no tiene consumer CLI actual, cambiá primero el contrato core y sus tests; no inventes wiring visible sin autoridad explícita en spec o roadmap activo.

@@ -26,7 +26,7 @@ Seguir con [13-src-ports-map.md](13-src-ports-map.md). Para la verificación, co
 
 ## Ruta rápida
 
-1. Empezar aquí si el cambio toca `forge run`, `status`, `stop`, `logs` o `exec`.
+1. Empezar aquí si el cambio toca `forge run`, `status`, `stop`, `destroy`, `logs` o `exec`.
 2. Verificar si el cambio es de planning puro, de interpretación de estado o de error model.
 3. Confirmar después qué corresponde al core y qué corresponde al adapter Docker.
 
@@ -56,6 +56,7 @@ Seguir con [13-src-ports-map.md](13-src-ports-map.md). Para la verificación, co
 | `forge run` | Planning puro del runtime y nombres/labels autoritativos | `src/odoo_forge_docker` crea recursos, espera readiness y hace rollback |
 | `forge status` | Interpretación tipada del estado de roles | el adapter ejecuta `docker inspect` y entrega JSON |
 | `forge stop` | Identidad de instancia y semántica esperada de lifecycle | el adapter detiene y remueve contenedores/red |
+| `forge destroy` | Resultado tipado de destrucción y ownership | el adapter elimina recursos propios tras confirmación explícita |
 | `forge logs` | Identidad de rol y contrato de retorno | el adapter obtiene texto de logs |
 | `forge exec` | Contrato del resultado (`ExecResult`) | el adapter ejecuta `docker exec` |
 
@@ -118,7 +119,7 @@ El punto importante es que `errors.py` fija un lenguaje público. El adapter pue
 
 | Dirección | Relación |
 | --- | --- |
-| Entrante desde `src/odoo_forge_cli/main.py` | `run`, `status`, `stop`, `logs` y `exec` consumen tipos y helpers del backend |
+| Entrante desde `src/odoo_forge_cli/commands/backend.py` | `run`, `status`, `stop`, `destroy`, `logs` y `exec` consumen tipos del backend; `_composition.py` construye el provider concreto |
 | Entrante desde `src/odoo_forge_docker/provider.py` | el adapter ejecuta `BackendPlan` y reutiliza `parse_status()` e identidades |
 | Saliente hacia `src/odoo_forge/manifest/` | el planning depende de mounts ya validados y de la semántica del manifest |
 | Saliente hacia `src/odoo_forge/ports/backend_provider.py` | el port se tipa con contratos de `backend/` |

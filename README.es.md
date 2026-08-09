@@ -33,10 +33,11 @@ Es un **proyecto en etapa temprana y desarrollo activo** (primer commit en julio
 - Operaciones de imágenes en GHCR (resolve, publish, pull, exists)
 - Image factory para imágenes base
 - Manejo de credenciales Enterprise respaldado por SOPS/age
+- Copia end-to-end de bases de datos con soporte de políticas de anonimización
 
 **Foundations neutrales al provider, todavía no conectadas a un flujo administrado**
 
-Credenciales, artefactos de datos, catálogo de proyectos y operaciones durables existen como piezas neutrales. Están implementadas, pero aún no expuestas como workflows administrados de data environments.
+Credenciales, artefactos de datos, catálogo de proyectos, operaciones durables, contratos de tenancy y servicios de dominio para data environments existen como piezas implementadas. El flujo local `copy` está conectado, pero los workflows administrados de data environments y control plane no están disponibles.
 
 **Estado objetivo**
 
@@ -103,17 +104,18 @@ En [`example/`](example/) hay un manifest completo y funcional.
 
 | Familia | Comandos |
 | --- | --- |
-| Manifest | `validate`, `lock`, `project`, `unlock`, `onboard` |
-| Backend local | `run`, `status`, `stop`, `destroy`, `logs` |
+| Manifest y onboarding | `configure`, `validate`, `onboard`, `lock`, `project`, `unlock` |
+| Backend local | `run`, `status`, `stop`, `destroy`, `logs`, `exec` |
+| Copia de datos | `copy` |
 | Imágenes (GHCR) | `image-resolve`, `image-publish`, `image-pull`, `image-exists` |
-| Pipelines | `pipeline-trigger`, `pipeline-status` |
+| Pipelines | `pipeline-trigger`, `pipeline-status`, `pipeline-logs` |
 | Mantenimiento | `doctor`, `rotate-enterprise-credential` |
 
 Para la firma completa de cualquier comando: `uv run forge <comando> --help`.
 
 ## Arquitectura
 
-Hexagonal, y verificada en lugar de declarativa: **9 contratos de import-linter rompen el build** si el core de dominio toca infraestructura, la CLI o cualquier adapter.
+Hexagonal, y verificada en lugar de declarativa: **10 contratos de import-linter rompen el build** si el core de dominio toca infraestructura, la CLI o cualquier adapter.
 
 | Paquete | Rol |
 | --- | --- |

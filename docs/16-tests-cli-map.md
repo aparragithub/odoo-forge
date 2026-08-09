@@ -14,7 +14,7 @@ Existe para que maintainers y futuras personas implementadoras distingan entre c
 
 ## Cómo ayuda al sistema
 
-Ayuda al sistema porque mantiene estable el contrato público de `src/odoo_forge_cli/main.py`: parseo de opciones, construcción de adapters, boundary único de `error: ...`, ausencia de tracebacks crudos y separación correcta entre familias de commands.
+Ayuda al sistema porque mantiene estable el contrato público de `forge`: parseo de opciones, construcción de adapters, boundary único de `error: ...`, ausencia de tracebacks crudos y separación correcta entre familias de commands.
 
 ## Leer después de...
 
@@ -26,19 +26,19 @@ Seguir con [17-src-docker-adapter-map.md](17-src-docker-adapter-map.md) si el ca
 
 ## Ruta rápida
 
-1. Empezar aquí cuando cambie `src/odoo_forge_cli/main.py` o el output visible de un command.
+1. Empezar aquí cuando cambie un módulo de `src/odoo_forge_cli/commands/`, un helper compartido o el output visible de un command.
 2. Identificar qué familia de commands cambió y qué adapter instancia el composition root.
 3. Confirmar que el fallo esperado se renderiza como mensaje claro, con exit code correcto y sin traceback.
 
-## Relación directa con `src/odoo_forge_cli/main.py`
+## Relación directa con `src/odoo_forge_cli/`
 
-`tests/cli/` es la suite que pone bajo presión el composition root real del repo.
+`tests/cli/` pone bajo presión los módulos de commands y los helpers del composition root; `main.py` solo registra las seis familias.
 
-| Superficie en `main.py` | Qué afirma la suite |
+| Superficie CLI | Qué afirma la suite |
 | --- | --- |
-| helpers `_make_*` | que la CLI construye el adapter correcto en el lugar correcto |
-| commands `validate`, `lock`, `project`, `unlock` | que el wiring entre manifest/core/workspace/registry produce resultados y errores previsibles |
-| commands `run`, `status`, `stop`, `logs`, `exec` | que la familia backend usa identidad, scan y provider solo cuando corresponde |
+| `_composition.py` y helpers `_make_*` | que la CLI construye el adapter correcto en el lugar correcto |
+| commands `configure`, `validate`, `onboard`, `lock`, `project`, `unlock` | que el wiring entre manifest/core/catalog/workspace/registry produce resultados y errores previsibles |
+| commands `run`, `status`, `stop`, `destroy`, `logs`, `exec` | que la familia backend usa identidad, scan y provider solo cuando corresponde |
 | commands `image-resolve`, `image-publish`, `image-pull`, `image-exists` | que la familia registry respeta sus boundaries sin invadir backend ni lock |
 | render de errores y drift | que la salida pública siga siendo legible, estable y segura |
 
@@ -48,8 +48,11 @@ Seguir con [17-src-docker-adapter-map.md](17-src-docker-adapter-map.md) si el ca
 | --- | --- | --- |
 | Manifest y drift | `test_validate.py`, `test_lock.py` | validación de manifest, round-trip lock/validate, rechazo limpio de lock corrupto, reporte de drift correcto |
 | Projection y unlock | `test_project.py`, `test_unlock.py` | proyección de repos, corte limpio ante fallos de checkout, promoción a worktree y naming de branch |
-| Runtime backend | `test_backend.py` | `run`, `status`, `stop`, `logs`, `exec`, wiring de credenciales, boundaries de scan y render de errores de provider |
+| Runtime backend | `test_backend.py` | `run`, `status`, `stop`, `destroy`, `logs`, `exec`, wiring de credenciales, boundaries de scan y render de errores de provider |
 | Image registry | `test_image_registry.py` | resolve/publish/pull/exists, normalización de refs, mensajes de error y aislamiento respecto de backend y lock |
+| Configure y onboarding | `test_configure.py`, `test_onboard.py` | authoring, catálogo y materialización del flujo inicial |
+| Copy | `test_copy_command.py`, `test_copy_live_docker.py`, `test_data_artifact_copy_composition.py`, `test_anonymization_policy.py` | captura, anonimización, entrega y wiring de adapters |
+| Pipelines | `test_pipeline.py`, `test_composition_pipeline.py` | trigger, status, logs y construcción del provider |
 
 ## Qué comportamientos protege de forma explícita
 

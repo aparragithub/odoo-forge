@@ -2,7 +2,7 @@
 
 ## Qué es este documento
 
-Es el punto de entrada estable para la documentación de mantenimiento de `odoo-forge`. Ordena la serie numerada `00` a `21`, resume qué cubre cada documento y te dice por dónde entrar según el tipo de cambio que querés hacer.
+Es el punto de entrada estable para la documentación de mantenimiento de `odoo-forge`. Ordena la serie numerada `00` a `22`, resume qué cubre cada documento y te dice por dónde entrar según el tipo de cambio que querés hacer.
 
 ## Por qué importa
 
@@ -19,9 +19,10 @@ Ayuda al sistema porque reduce cambios incorrectos, mejora la trazabilidad entre
 ## Estado Rápido
 
 - La fuente estructural de verdad para estado, dependencias y evidencia es [`docs/specs/platform/portfolio.json`](specs/platform/portfolio.json).
-- El árbol vivo de `openspec/changes/` tiene solo un change activo: [`sp-data-environments`](../openspec/changes/sp-data-environments/proposal.md).
+- El árbol vivo de `openspec/changes/` no tiene changes activos; contiene solo `archive/`.
+- `sp-data-environments` es historia archivada en [`openspec/changes/archive/2026-07-17-sp-data-environments/`](../openspec/changes/archive/2026-07-17-sp-data-environments/).
 - `refresh-platform-roadmap-after-stabilization` y `fix-roadmap-refresh-verification-closure` son historia archivada bajo `openspec/changes/archive/`.
-- La serie vigente para maintainers corre desde este documento `00` hasta [`21-src-postgres-docker-foundation-map.md`](21-src-postgres-docker-foundation-map.md).
+- La serie vigente para maintainers corre desde este documento `00` hasta [`22-example-runtime-guide.md`](22-example-runtime-guide.md).
 
 ## Estrategia De Lectura
 
@@ -34,7 +35,7 @@ Usá esta ruta si necesitás reconstruir el repo completo con el menor riesgo de
 3. `02` matriz de autoridad.
 4. `03` a `06` para arquitectura, adapters, tests y lifecycle documental/OpenSpec.
 5. `07` a `10` para cruces entre specs, portfolio, diagramas y trabajo activo.
-6. `11` a `21` para mapas focalizados por subdirectorio o superficie concreta.
+6. `11` a `22` para mapas focalizados por subdirectorio o superficie concreta.
 
 ### Recorridos temáticos
 
@@ -54,7 +55,7 @@ Usá esta ruta si necesitás reconstruir el repo completo con el menor riesgo de
 | --- | --- | --- |
 | `README.md` o la narrativa visible del proyecto | [`01-repository-map.md`](01-repository-map.md) | [`09-portfolio-and-evidence-crosswalk.md`](09-portfolio-and-evidence-crosswalk.md), `docs/specs/platform/portfolio.json` |
 | Estado de producto, dependencias o evidencia | `docs/specs/platform/portfolio.json` | [`09-portfolio-and-evidence-crosswalk.md`](09-portfolio-and-evidence-crosswalk.md) |
-| Un change OpenSpec activo | [`06-docs-and-openspec-lifecycle.md`](06-docs-and-openspec-lifecycle.md) | [`08-sp-data-environments-map.md`](08-sp-data-environments-map.md) |
+| El estado de changes OpenSpec | [`06-docs-and-openspec-lifecycle.md`](06-docs-and-openspec-lifecycle.md) | `openspec/changes/` |
 | Core de manifest | [`11-src-manifest-map.md`](11-src-manifest-map.md) | [`07-spec-to-module-crosswalk.md`](07-spec-to-module-crosswalk.md), `tests/manifest/` |
 | Planning/backend local | [`12-src-backend-map.md`](12-src-backend-map.md) | [`17-src-docker-adapter-map.md`](17-src-docker-adapter-map.md), `tests/backend/` |
 | Contratos/ports | [`13-src-ports-map.md`](13-src-ports-map.md) | [`04-cli-and-adapters-map.md`](04-cli-and-adapters-map.md), `tests/ports/` |
@@ -62,7 +63,7 @@ Usá esta ruta si necesitás reconstruir el repo completo con el menor riesgo de
 | Diagramas | [`10-diagrams-maintenance-guide.md`](10-diagrams-maintenance-guide.md) | [`diagrams/README.md`](diagrams/README.md) |
 | Un roadmap o doc histórico | [`06-docs-and-openspec-lifecycle.md`](06-docs-and-openspec-lifecycle.md) | `docs/specs/platform/portfolio.json` y el árbol vivo de `openspec/changes/` |
 
-## Serie `01` A `21`
+## Serie `01` A `22`
 
 | Nro | Documento | Para qué sirve |
 | --- | --- | --- |
@@ -73,7 +74,7 @@ Usá esta ruta si necesitás reconstruir el repo completo con el menor riesgo de
 | `05` | [`05-tests-and-quality-map.md`](05-tests-and-quality-map.md) | Mapa de tests, gates y validación. |
 | `06` | [`06-docs-and-openspec-lifecycle.md`](06-docs-and-openspec-lifecycle.md) | Distingue guía actual, verdad aceptada, trabajo activo e historia preservada. |
 | `07` | [`07-spec-to-module-crosswalk.md`](07-spec-to-module-crosswalk.md) | Cruza specs aceptadas con módulos y tests. |
-| `08` | [`08-sp-data-environments-map.md`](08-sp-data-environments-map.md) | Explica el único change OpenSpec activo del árbol vivo. |
+| `08` | [`08-sp-data-environments-map.md`](08-sp-data-environments-map.md) | Mapea la historia archivada de `sp-data-environments` y su evidencia implementada. |
 | `09` | [`09-portfolio-and-evidence-crosswalk.md`](09-portfolio-and-evidence-crosswalk.md) | Relaciona `portfolio.json` con evidencia, history y claims actuales. |
 | `10` | [`10-diagrams-maintenance-guide.md`](10-diagrams-maintenance-guide.md) | Regla de mantenimiento y render de diagramas. |
 | `11` | [`11-src-manifest-map.md`](11-src-manifest-map.md) | Detalle de `src/odoo_forge/manifest/`. |
@@ -87,6 +88,7 @@ Usá esta ruta si necesitás reconstruir el repo completo con el menor riesgo de
 | `19` | [`19-src-registry-adapter-map.md`](19-src-registry-adapter-map.md) | Mapa del adapter de registry/GHCR. |
 | `20` | [`20-src-cli-composition-root-map.md`](20-src-cli-composition-root-map.md) | Mapa del composition root Typer. |
 | `21` | [`21-src-postgres-docker-foundation-map.md`](21-src-postgres-docker-foundation-map.md) | Mapa de la foundation PostgreSQL sobre Docker. |
+| `22` | [`22-example-runtime-guide.md`](22-example-runtime-guide.md) | Guía del ejemplo de runtime distribuido con el repositorio. |
 
 ## Regla De Navegación Segura
 

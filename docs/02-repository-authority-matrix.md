@@ -30,7 +30,6 @@ Leé esto después del [Mapa Del Repositorio](01-repository-map.md). Siguiente l
 | `docs/specs/platform/portfolio.json` | Estado actual de producto, dependencias, evidencia y referencias de protected-history | Canónica | Editar directo; validar estructuralmente |
 | `docs/tools/platform_portfolio/validate.py` | Reglas deterministas de gobernanza documental | Tool canónico | Editar directo con sus tests |
 | `openspec/specs/**` | Autoridad de especificación aceptada | Canónica | Editar solo cuando cambia el comportamiento aceptado |
-| `openspec/changes/sp-data-environments/**` | Trabajo actual de change activo | Canónica en progreso | Editar directo para trabajo en curso |
 | `openspec/changes/archive/**` | Evidencia histórica preservada de changes | Histórica | No reescribir |
 | `docs/diagrams/*.mmd` | Fuente canónica de diagramas documentados | Canónica | Editar directo |
 | `docs/diagrams/*.svg` | Salidas renderizadas de diagramas | Derivada | Regenerar; no editar a mano |
@@ -48,7 +47,8 @@ Leé esto después del [Mapa Del Repositorio](01-repository-map.md). Siguiente l
 
 | Tema | Interpretación segura actual |
 | --- | --- |
-| Trabajo OpenSpec activo | El árbol vivo muestra solo `openspec/changes/sp-data-environments/` como activo |
+| Trabajo OpenSpec activo | Ninguno; `openspec/changes/` contiene solo `archive/` |
+| Change `sp-data-environments` | Histórico; preservado bajo `openspec/changes/archive/2026-07-17-sp-data-environments/` |
 | Change de roadmap-refresh | Histórico; preservado bajo `openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization/` |
 | Límite actual del runtime | `README.md` más `docs/diagrams/odoo-forge-current-implementation.mmd` y su guía describen el scope distribuido |
 | Estado de dependencias y evidencia del producto | `docs/specs/platform/portfolio.json` es la autoridad |

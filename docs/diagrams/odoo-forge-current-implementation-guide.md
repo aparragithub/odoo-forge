@@ -5,9 +5,9 @@
 > [`README.md`](../../README.md), nunca se edita a mano. Las rutas sólidas representan
 > implementaciones operativas. El adaptador aislado Docker PostgreSQL implementa
 > `DatabaseProvider`; catálogo de proyectos, credenciales, artefactos de datos y operaciones
-> durables siguen siendo fundamentos neutrales sin un flujo operativo administrado conectado.
-> Tenancy, entornos de datos administrados, control plane, backends remotos, RBAC y UI web son
-> estado objetivo, no capacidades actuales.
+> durables y los servicios core de data environments están implementados. `copy` y pipelines tienen
+> superficies CLI concretas; los workflows administrados de data environments, control plane,
+> backends remotos y RBAC siguen sin estar disponibles como producto completo.
 
 Este documento explica el diagrama `odoo-forge-current-implementation.mmd` en palabras simples. La idea central es esta: una persona usa el comando `forge`, y `forge` coordina distintas partes del sistema para leer un proyecto Odoo, resolver versiones, preparar el código, levantar contenedores y trabajar con imágenes.
 
@@ -18,10 +18,10 @@ de aceptación, la fuente de verdad es el
 [`portfolio.json`](../specs/platform/portfolio.json). La
 [hoja de ruta de estabilización](../specs/2026-07-14-stabilization-roadmap.md) debe leerse como
 secuencia histórica de estabilización y no como inventario autoritativo de changes vivos. El árbol
-actual de `openspec/changes/` tiene solo un change activo:
-[`sp-data-environments`](../../openspec/changes/sp-data-environments/proposal.md), que sigue
-bloqueado. `refresh-platform-roadmap-after-stabilization` quedó archivado y ya no debe tratarse
-como trabajo activo. Para navegación general de maintainers, empezá en
+actual de `openspec/changes/` no tiene changes activos: contiene solo `archive/`.
+[`sp-data-environments`](../../openspec/changes/archive/2026-07-17-sp-data-environments/)
+y `refresh-platform-roadmap-after-stabilization` son historia archivada y no deben tratarse como
+trabajo activo. Para navegación general de maintainers, empezá en
 [`docs/00-master-index.md`](../00-master-index.md). El diagrama de plataforma completa es una
 referencia de estado objetivo/histórica: no describe componentes desplegados hoy.
 
@@ -66,6 +66,8 @@ Estos son los comandos que hoy expone `forge`. La lista está agrupada por inten
 | --- | --- | --- |
 | `forge validate` | Revisa que `project.yaml` sea válido y detecta si hay diferencias contra `project.lock` o el workspace local. | “¿Mi proyecto está bien descrito y coincide con lo que tengo en disco?” |
 | `forge lock` | Resuelve las versiones declaradas y escribe `project.lock` con referencias exactas. | “Congelá las versiones para que todos usen lo mismo.” |
+| `forge configure` | Guía la creación de un `project.yaml` nuevo sin ejecutar el proyecto. | “Ayudame a crear la configuración inicial.” |
+| `forge onboard` | Valida y materializa un manifest, o resuelve un cliente conocido y arranca su instancia. | “Prepará este proyecto o cliente para trabajar.” |
 
 Flujo típico:
 
@@ -95,6 +97,7 @@ Flujo típico:
 | `forge run` | Levanta la instancia local con Docker: Odoo + PostgreSQL. | “Arrancá el proyecto.” |
 | `forge status` | Muestra si los contenedores principales están corriendo y listos. | “¿Está vivo?” |
 | `forge stop` | Detiene y elimina contenedores/red, pero conserva los volúmenes importantes. | “Apagalo sin borrar los datos persistentes.” |
+| `forge destroy` | Destruye una instancia local después de confirmación explícita. | “Eliminá de forma irreversible los recursos de esta instancia.” |
 | `forge logs --role odoo` | Muestra logs del contenedor de Odoo. También puede pedir PostgreSQL con `--role postgres`. | “Mostrame qué está pasando.” |
 | `forge exec -- <comando>` | Ejecuta un comando dentro del contenedor de Odoo. | “Corré esto adentro de Odoo.” |
 
@@ -116,6 +119,22 @@ Flujo típico:
 | `forge image-exists --ref <digest>` | Verifica si una imagen por digest existe en el registry. | “¿Esta imagen existe allá?” |
 
 Estos comandos no levantan Odoo por sí solos. Sólo trabajan con imágenes. Después `forge run` puede usar una imagen digest-backed con `--odoo-image-ref`.
+
+### Copiar datos y operar pipelines
+
+| Comando | Para qué sirve |
+| --- | --- |
+| `forge copy SOURCE TARGET` | Captura una base PostgreSQL, aplica la política de anonimización y la entrega al target como una operación durable. |
+| `forge pipeline-trigger` | Dispara un workflow de GitHub Actions y devuelve su run id. |
+| `forge pipeline-status` | Consulta el estado actual de un pipeline run. |
+| `forge pipeline-logs` | Imprime los logs de un pipeline run. |
+
+### Mantenimiento
+
+| Comando | Para qué sirve |
+| --- | --- |
+| `forge doctor` | Verifica prerrequisitos locales de credenciales Enterprise. |
+| `forge rotate-enterprise-credential` | Rota las claves SOPS de la credencial Enterprise convencional. |
 
 ## Secuencia recomendada para un developer
 
@@ -151,7 +170,8 @@ Por ejemplo, el núcleo puede decir: “para este proyecto necesito estos reposi
 | Status parsing | Interpreta la información que devuelve Docker para decir si una instancia está corriendo, detenida o no existe. |
 | Image registry refs/errors | Normaliza nombres de imágenes y errores relacionados con imágenes. Ayuda a trabajar con referencias a imágenes de forma consistente. |
 | Drift validation | Compara la intención del proyecto con lo que realmente existe. Sirve para detectar desvíos entre `project.yaml`, `project.lock` y el workspace. |
-| Project catalog | Resuelve y valida un catálogo de proyectos como fundamento de dominio, todavía sin flujo operativo conectado. |
+| Project catalog | Resuelve y valida un catálogo de proyectos y participa en `forge onboard <cliente>`. |
+| Data environments y tenancy | Definen servicios, tipos y errores puros ya implementados; no equivalen a un workflow administrado disponible. |
 
 ## Puertos
 
@@ -166,6 +186,7 @@ Esto es importante porque permite cambiar la implementación sin romper el coraz
 | BackendProvider | Ejecutar, detener, consultar logs o correr comandos en una instancia. |
 | ImageRegistryProvider | Publicar, resolver, verificar o descargar imágenes desde un registry. |
 | DatabaseProvider | Administrar el ciclo de vida de una base de datos mediante un adaptador seleccionado. |
+| PipelineProvider | Disparar pipelines, consultar su estado y obtener logs. |
 
 ## Adaptadores implementados
 
@@ -178,6 +199,9 @@ Los adaptadores son las piezas que sí hablan con herramientas reales.
 | `odoo_forge_docker` / `DockerBackendProvider` | Ejecuta Odoo y PostgreSQL usando Docker local. |
 | `odoo_forge_postgres_docker` / `DockerPostgresqlDatabaseProvider` | Implementa el ciclo de vida aislado de PostgreSQL para `DatabaseProvider`, sin redirigir el backend local. |
 | `odoo_forge_registry` / `GhcrImageRegistryProvider` | Trabaja con imágenes en GHCR usando Docker y `buildx`. |
+| `odoo_forge_pipeline_github` / `GitHubActionsPipelineProvider` | Implementa trigger, status y logs sobre GitHub Actions. |
+| `odoo_forge_instances_postgres` | Persiste instancias y data environments en PostgreSQL y aporta autoridad de grants. |
+| `odoo_forge_server` | Expone rutas HTTP de instancias mediante FastAPI. |
 
 ## Herramientas externas
 
@@ -284,10 +308,10 @@ Según el diagrama actual, ya existe:
 
 1. Una CLI `forge`.
 2. Un núcleo con manifest, lockfile, composición, proyección, planificación desde estado materializado, backend local, estado e imágenes.
-3. Puertos para código fuente, workspace, backend, imágenes y bases de datos.
-4. Adaptadores concretos para Git, workspace local, Docker, Docker PostgreSQL y GHCR.
+3. Puertos para código fuente, workspace, backend, imágenes, bases de datos, pipelines, identidad, instancias y lifecycle de recursos.
+4. Adaptadores concretos para Git, workspace local, Docker, Docker PostgreSQL, GHCR, GitHub Actions, persistencia PostgreSQL de instancias y servidor HTTP.
 5. Integración con herramientas externas como `git`, Docker, GHCR, filesystem y `project.lock`.
-6. Fundamentos neutrales para catálogo de proyectos, credenciales, artefactos de datos y operaciones durables; sus consumidores administrados todavía no están conectados.
+6. Fundamentos neutrales para catálogo de proyectos, credenciales, artefactos de datos, data environments, tenancy y operaciones durables; `copy` está conectado, pero los workflows administrados completos todavía no lo están.
 
 ## Qué no muestra este diagrama
 

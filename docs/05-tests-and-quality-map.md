@@ -34,12 +34,14 @@ Leé esto después de [04-cli-and-adapters-map.md](04-cli-and-adapters-map.md). 
 | `tests/backend/` | tipos del backend plan, parseo de status, errores del backend |
 | `tests/ports/` | contratos de ports y expectativas de protocolos |
 | `tests/adapters/` | comportamiento concreto de adapters Git, workspace, Docker, registry y PostgreSQL Docker |
-| `tests/cli/` | wiring de commands, flujos visibles para usuarios, límites de salida |
+| `tests/cli/` | wiring de las 22 commands, incluidos configure, copy y pipelines; flujos visibles y límites de salida |
 | `tests/database/` | tipos de base de datos neutrales al provider, readiness y errores |
 | `tests/credentials/` | reglas de materialización y seguridad de credenciales |
 | `tests/data_artifacts/` | contratos de restore/discard y reglas de redaction |
 | `tests/project_catalog/` | comportamiento de resolución autoritativa del catálogo |
 | `tests/durable_operations/` | servicio de durable operations y tipos de lifecycle |
+| `tests/data_environments/`, `tests/deployment_spec/`, `tests/instance_registry/`, `tests/provider_catalog/`, `tests/resource_lifecycle/`, `tests/tenancy/` | dominios implementados de entornos, despliegue, registro, catálogo, lifecycle y tenancy |
+| `tests/odoo_forge_instances_postgres/`, `tests/pipeline_github/`, `tests/odoo_forge_server/` | adapters/runtime de persistencia PostgreSQL, GitHub Actions y servidor HTTP |
 | `tests/factory/` | checks de wiring de image factory |
 | `tests/fixtures/` | fixtures de manifest reutilizables |
 

@@ -2,7 +2,7 @@
 
 ## Qué es este documento
 
-Es la ficha de mantenimiento de `tests/adapters/`: organiza la suite que verifica el comportamiento concreto de adapters Git, workspace, Docker, registry y PostgreSQL Docker.
+Es la ficha de mantenimiento de `tests/adapters/` y de las suites adapter/runtime hermanas: organiza la verificación de Git, workspace, Docker, registry, PostgreSQL Docker, persistencia de instancias, pipelines y servidor.
 
 ## Por qué importa
 
@@ -39,6 +39,9 @@ Después de esta ficha, la siguiente documentación recomendada es volver a [07-
 | Docker backend | `test_docker_provider.py`, `test_docker_provider_integration.py` | ejecución de `BackendPlan`, lifecycle runtime, rollback, readiness, logs y exec |
 | Registry y published artifacts | `test_registry_provider.py`, `test_published_artifact_resolver.py` | refs inmutables, existencia, pull/publish y resolución de artifacts publicados |
 | PostgreSQL Docker | `test_postgres_docker_provider.py`, `test_postgres_docker_provider_integration.py`, `test_postgres_docker_secret_injection.py`, `test_postgres_docker_authority.py` | lifecycle de base de datos, secretos, autoridad de ownership y cleanup |
+| Instancias PostgreSQL | `tests/odoo_forge_instances_postgres/` | persistencia de instancias, data environments, migraciones y grants |
+| Pipeline GitHub | `tests/pipeline_github/` | transporte y contrato trigger/status/logs |
+| Servidor | `tests/odoo_forge_server/` | composición, UI y rutas HTTP de instancias |
 
 ## Límites entre default, integration y real_docker
 
