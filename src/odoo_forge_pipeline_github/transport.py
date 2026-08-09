@@ -13,6 +13,7 @@ import io
 import json
 import urllib.request
 import zipfile
+import zlib
 from pathlib import PurePosixPath
 from typing import Protocol, runtime_checkable
 
@@ -95,7 +96,11 @@ class GitHubActionsRestTransport:
                     path = PurePosixPath(normalized)
                     if path.is_absolute() or ".." in path.parts or entry.flag_bits & 0x1:
                         raise RuntimeError("log archive contains an unsafe entry")
-                    output.append(archive.read(entry).decode("utf-8", errors="replace"))
+                    try:
+                        content = archive.read(entry)
+                    except (zipfile.BadZipFile, EOFError, NotImplementedError, zlib.error) as exc:
+                        raise RuntimeError("invalid log archive") from exc
+                    output.append(content.decode("utf-8", errors="replace"))
                 return "".join(output)
         except zipfile.BadZipFile as exc:
             raise RuntimeError("invalid log archive") from exc

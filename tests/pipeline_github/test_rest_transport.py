@@ -20,6 +20,19 @@ def _zip_bytes(entries: dict[str, bytes]) -> bytes:
     return output.getvalue()
 
 
+def _corrupted_compressed_entry() -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("job.txt", b"workflow output\n" * 100)
+
+    corrupted = bytearray(output.getvalue())
+    with zipfile.ZipFile(io.BytesIO(corrupted)) as archive:
+        entry = archive.getinfo("job.txt")
+        data_offset = entry.header_offset + 30 + len(entry.filename.encode()) + len(entry.extra)
+        corrupted[data_offset] = (corrupted[data_offset] & ~0x06) | 0x06
+    return bytes(corrupted)
+
+
 def _mock_urlopen(monkeypatch: pytest.MonkeyPatch, response: bytes) -> list[urllib.request.Request]:
     requests: list[urllib.request.Request] = []
 
@@ -56,6 +69,7 @@ def test_dispatch_returns_the_exact_workflow_run_id(
     requests = _mock_urlopen(monkeypatch, json.dumps({"workflow_run_id": 314}).encode())
 
     assert transport.dispatch_workflow("ci.yml", "main", {"env": "qa"}) == "314"
+    assert len(requests) == 1
     assert requests[0].method == "POST"
     assert requests[0].data == json.dumps({"ref": "main", "inputs": {"env": "qa"}}).encode()
 
@@ -104,4 +118,12 @@ def test_logs_reject_archives_over_the_uncompressed_limit(
     monkeypatch.setattr("odoo_forge_pipeline_github.transport.MAX_LOG_BYTES", 100)
 
     with pytest.raises(RuntimeError, match="log archive"):
+        transport.get_run_logs("42")
+
+
+def test_logs_reject_corrupted_compressed_entries(monkeypatch: pytest.MonkeyPatch) -> None:
+    transport = _transport()
+    _mock_urlopen(monkeypatch, _corrupted_compressed_entry())
+
+    with pytest.raises(RuntimeError, match="invalid log archive"):
         transport.get_run_logs("42")
