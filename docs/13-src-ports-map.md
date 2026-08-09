@@ -55,6 +55,11 @@ No es solo una interfaz por estilo. Es la pieza que permite que `src/odoo_forge/
 | `DurableOperationStore` | Persistencia replay-safe de workflows durables | no hay adapter canónico cableado en este corte |
 | `DurableOperationRecovery` | Registro de intentos/evidencia de recovery | no hay adapter canónico cableado en este corte |
 | `ResourceOwnershipPort` | Leer ownership state/evidence y atestiguar receipts sin transicionar estado | no hay adapter canónico cableado en este corte (el Docker `LocalOwnershipAuthority` ya implementa read/attest pero no está adaptado a este port en este corte) |
+| `DataEnvironmentRegistry` | Registrar y consultar entornos de datos | `src/odoo_forge_instances_postgres` |
+| `InstanceRegistry` | Persistir y consultar instancias | `src/odoo_forge_instances_postgres` |
+| `PipelineProvider` | Trigger, status y logs de pipelines | `src/odoo_forge_pipeline_github` |
+| `IdentityProvider` | Autenticar y resolver principales | sin adapter concreto elegido |
+| `RawDataGrantAuthority`, `ResourceCustody`, `ResourceLifecyclePort` | Autoridad de acceso, custodia y transiciones de lifecycle | implementaciones específicas según el runtime; no hay un adapter general único |
 
 ## Familias por propósito
 
@@ -66,6 +71,9 @@ No es solo una interfaz por estilo. Es la pieza que permite que `src/odoo_forge/
 | Database foundation | `DatabaseProvider` | provision, restore, adopt, reconcile, delete y cleanup |
 | Workflows durables | `DurableOperationStore`, `DurableOperationRecovery` | checkpoints, commit terminal, recovery y cleanup residual |
 | Resource ownership | `ResourceOwnershipPort` | describe/attest de ownership state y receipt para cualquier tipo de recurso |
+| Entornos e instancias | `DataEnvironmentRegistry`, `InstanceRegistry` | persistencia de referencias y estado administrado |
+| Pipelines | `PipelineProvider` | `pipeline-trigger`, `pipeline-status`, `pipeline-logs` |
+| Identidad y lifecycle | `IdentityProvider`, `RawDataGrantAuthority`, `ResourceCustody`, `ResourceLifecyclePort` | límites neutrales para autenticación, acceso y recursos |
 
 ## Qué implementa cada adapter
 
@@ -76,6 +84,8 @@ No es solo una interfaz por estilo. Es la pieza que permite que `src/odoo_forge/
 | `src/odoo_forge_docker` | `BackendProvider` | CLI backend commands |
 | `src/odoo_forge_registry` | `ImageRegistryProvider`, `PublishedArtifactResolver` | image commands, locking de published artifacts |
 | `src/odoo_forge_postgres_docker` | `DatabaseProvider` | tests y foundations de provider de base de datos |
+| `src/odoo_forge_instances_postgres` | `DataEnvironmentRegistry`, `InstanceRegistry` y autoridad de grants | runtime PostgreSQL de instancias y entornos |
+| `src/odoo_forge_pipeline_github` | `PipelineProvider` | commands de pipeline |
 
 ## Por qué este directorio es central para `import-linter`
 

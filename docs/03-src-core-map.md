@@ -49,6 +49,13 @@ Leé esto después de [02-repository-authority-matrix.md](02-repository-authorit
 | `project_catalog/` | Modelos de request de catálogo y lógica de resolución autoritativa | Resuelve un registro autoritativo sin heurísticas de fallback |
 | `durable_operations/` | Registros replay-safe de workflow, checkpoints y lifecycle de cleanup residual | Persistencia y recovery quedan detrás de ports |
 | `resource_ownership/` | Modelo de ownership de tres estados (`created`/`adopted`/`external`), `ResourceRef` genérico, receipt reusable y atribución opcional de tenant | Vocabulario canónico de `CAP-RESOURCE-OWNERSHIP`; `database/types.py` re-exporta `ResourceOwnership`, `OperationIdentity` y `CreationReceipt` desde acá |
+| `data_environments/` | Tipos, errores y servicio de ciclo de vida de entornos de datos | Dominio implementado; no implica un workflow administrado disponible |
+| `deployment_spec/` | Tipos neutrales de especificación de despliegue | Mantiene el contrato separado de adapters concretos |
+| `identity/` | Tipos provider-neutral de autenticación y principal | El provider concreto queda detrás de `IdentityProvider` |
+| `instance_registry/` | Tipos y errores del registro de instancias | Define identidad y estado sin elegir persistencia |
+| `provider_catalog/` | Modelos y resolución del catálogo de providers | Resuelve selección sin incorporar infraestructura al core |
+| `resource_lifecycle/` | Servicio y tipos para transiciones de recursos | Coordina lifecycle mediante ports neutrales |
+| `tenancy/` | Tipos y errores de tenant, acceso cruzado y cuotas | Contratos runtime puros con tests dedicados |
 
 ## Ports Que Definen El Límite
 
@@ -63,6 +70,9 @@ Leé esto después de [02-repository-authority-matrix.md](02-repository-authorit
 | `DurableOperationStore` | ningún package concreto listado en este corte | Persistir estado autoritativo del workflow |
 | `DurableOperationRecovery` | ningún package concreto listado en este corte | Registrar intentos de recovery sobre estado durable |
 | `ResourceOwnershipPort` | ningún package concreto listado en este corte (el adapter Docker `LocalOwnershipAuthority` ya satisface read/attest pero no está cableado a este port) | Leer estado de ownership y receipt/evidence, y atestiguar sin transicionar estado |
+| `DataEnvironmentRegistry`, `InstanceRegistry` | `src/odoo_forge_instances_postgres` | Persistir y consultar entornos de datos e instancias |
+| `PipelineProvider` | `src/odoo_forge_pipeline_github` | Disparar pipelines, consultar estado y obtener logs |
+| `IdentityProvider`, `RawDataGrantAuthority`, `ResourceCustody`, `ResourceLifecyclePort` | sin adapter canónico general cableado en este corte | Mantener identidad, acceso a datos y lifecycle neutrales al provider |
 
 ## Flujos De Dominio Clave
 
@@ -153,5 +163,5 @@ Leé esto después de [02-repository-authority-matrix.md](02-repository-authorit
 
 - Confirmá que el cambio pueda expresarse con datos puros y funciones puras.
 - Si se necesita un side effect, agregá o refiná un port en vez de importar un adapter.
-- Actualizá los tests correspondientes bajo `tests/manifest`, `tests/backend`, `tests/ports`, `tests/database`, `tests/credentials`, `tests/data_artifacts`, `tests/project_catalog`, `tests/durable_operations` o `tests/resource_ownership`.
+- Actualizá los tests correspondientes bajo la suite dedicada, incluidas `tests/data_environments`, `tests/deployment_spec`, `tests/instance_registry`, `tests/provider_catalog`, `tests/resource_lifecycle` y `tests/tenancy`.
 - Revisá otra vez el siguiente doc: [Mapa De CLI Y Adapters](04-cli-and-adapters-map.md) antes de tocar wiring del composition root.

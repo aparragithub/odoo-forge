@@ -18,7 +18,7 @@ Ayuda al sistema porque mantiene la continuidad entre planning, aceptación, arc
 
 ## Leer Antes De...
 
-Si necesitás una vista general de toda la serie documental, empezá en [`00-master-index.md`](00-master-index.md). Este `06` es la pieza de lifecycle dentro de esa ruta `00` a `21`.
+Si necesitás una vista general de toda la serie documental, empezá en [`00-master-index.md`](00-master-index.md). Este `06` es la pieza de lifecycle dentro de esa ruta `00` a `22`.
 
 ## Leer Después De...
 
@@ -34,7 +34,7 @@ Leé esto después de [05-tests-and-quality-map.md](05-tests-and-quality-map.md)
 
 | Path | Propósito | Postura de edición |
 | --- | --- | --- |
-| `docs/00-*.md` a `docs/21-*.md` | serie numerada para maintainers sobre estructura, autoridad, lifecycle, cruces y mapas focalizados | guía actual |
+| `docs/00-*.md` a `docs/22-*.md` | serie numerada para maintainers sobre estructura, autoridad, lifecycle, cruces y mapas focalizados | guía actual |
 | `docs/diagrams/` | visuales de arquitectura actual y objetivo, fuentes Mermaid, contrato de render y guía de runtime | editar fuentes `.mmd` y de guía; tratar `.svg` como derivado |
 | `docs/specs/platform/portfolio.json` | estado canónico del portfolio, dependencias, evidencia y referencias de protected-history | fuente canónica actual |
 | `docs/specs/*.md` | narrativas fechadas de diseño y roadmap | mixto actual/histórico; verificar antes de editar |
@@ -55,7 +55,8 @@ Leé esto después de [05-tests-and-quality-map.md](05-tests-and-quality-map.md)
 
 | Tema | Interpretación segura actual |
 | --- | --- |
-| Trabajo de change activo | solo `openspec/changes/sp-data-environments/` está activo |
+| Trabajo de change activo | ninguno; `openspec/changes/` contiene solo `archive/` |
+| `sp-data-environments` | histórico; preservado bajo `openspec/changes/archive/2026-07-17-sp-data-environments/` |
 | Trabajo de roadmap-refresh | histórico; preservado bajo `openspec/changes/archive/2026-07-17-refresh-platform-roadmap-after-stabilization/` |
 | Verdad aceptada de runtime/spec | `openspec/specs/**` más docs canónicas actuales como `portfolio.json` |
 | Narrativas de changes archivados | evidencia e historia, no autoridad de planning vivo |
@@ -107,12 +108,12 @@ No reescribas directorios OpenSpec archivados para hacer que la historia se vea 
 | --- | --- |
 | comportamiento distribuido o aceptado | `openspec/specs/**` y código/docs canónicos correspondientes |
 | estado actual de producto/dependencias/evidencia | `docs/specs/platform/portfolio.json` |
-| trabajo futuro activo | `openspec/changes/sp-data-environments/**` |
+| trabajo futuro activo | crear un nuevo change bajo `openspec/changes/<change>/`; actualmente no hay ninguno |
 | solo contexto histórico | dejá intactos los bytes del archive; agregá una doc actual más nueva si hace falta |
 
 ## Matiz Importante Actual
 
-El repo contiene muchos directorios históricos de changes, pero quienes mantienen el proyecto deberían tratar solo `openspec/changes/sp-data-environments/` como trabajo activo. Las referencias a roadmap-refresh o a su corrective closure fuera del archive son históricas o desactualizadas salvo que estén corroboradas por el árbol vivo y por docs canónicas actuales.
+El repo no contiene changes activos. `sp-data-environments`, roadmap-refresh y su corrective closure son historia archivada; cualquier referencia que los trate como trabajo vivo está desactualizada salvo que un nuevo directorio aparezca en el árbol de `openspec/changes/`.
 
 ## Checklist Antes De Editar Docs U OpenSpec
 

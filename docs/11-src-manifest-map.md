@@ -75,11 +75,8 @@ Seguir con [12-src-backend-map.md](12-src-backend-map.md). Para la capa de verif
 
 | Caller entrante | Relación con `manifest/` |
 | --- | --- |
-| `src/odoo_forge_cli/main.py::validate` | Parsea manifest, carga lock, escanea workspace, materializa estado y llama a `detect_drift()` |
-| `src/odoo_forge_cli/main.py::lock` | Construye el lock mediante `build_lock()` |
-| `src/odoo_forge_cli/main.py::project` | Usa `plan_projection()` y `project_workspace()` |
-| `src/odoo_forge_cli/main.py::unlock` | Usa `plan_unlock()` para promover repos |
-| `src/odoo_forge_cli/main.py::run` | Usa `materialize_state()` y `build_mount_planning_view()` antes del planning del backend |
+| `src/odoo_forge_cli/commands/manifest.py` | Implementa `configure`, `validate`, `onboard`, `lock`, `project` y `unlock` sobre los servicios de manifest |
+| `src/odoo_forge_cli/commands/backend.py` | Usa `materialize_state()` y `build_mount_planning_view()` antes del planning del backend |
 | `src/odoo_forge/backend/plan.py` | Consume la vista de mounts y modelos derivados de manifest para planificar runtime |
 
 ## Dependencias salientes

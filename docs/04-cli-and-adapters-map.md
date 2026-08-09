@@ -30,7 +30,11 @@ Leé esto después de [03-src-core-map.md](03-src-core-map.md). Siguiente lectur
 
 | Path | Rol | Regla para maintainers |
 | --- | --- | --- |
-| `src/odoo_forge_cli/main.py` | Entrypoint Typer, definiciones de commands, construcción de adapters, render de errores de cara al usuario | Mantenelo fino: parsear input, construir adapters, llamar al core, renderizar outcomes tipados |
+| `src/odoo_forge_cli/main.py` | Shell Typer de 26 líneas que crea `app` y registra seis módulos | No agregar lógica de commands ni composición aquí |
+| `src/odoo_forge_cli/commands/*.py` | Propiedad de las familias backend, copy, image, maintenance, manifest y pipeline | Mantener cada command como borde fino hacia core y adapters |
+| `src/odoo_forge_cli/_composition.py` | Construcción centralizada de adapters concretos | Único lugar para seleccionar implementaciones de ports |
+| `src/odoo_forge_cli/_presentation.py` | Render de valores ya calculados | No incorporar reglas de dominio |
+| `src/odoo_forge_cli/_support.py` | Filesystem, entorno y manifest/lock I/O compartido | Traducir fallos de boundary sin duplicar semántica core |
 
 `forge` se registra desde `pyproject.toml` como `odoo_forge_cli.main:app`.
 
@@ -38,9 +42,12 @@ Leé esto después de [03-src-core-map.md](03-src-core-map.md). Siguiente lectur
 
 | Familia de commands | Flujo core | Adapters involucrados |
 | --- | --- | --- |
-| `validate`, `lock`, `project`, `unlock` | validación de manifest, locking, projection, drift | Git source, workspace, registry-resolver |
-| `run`, `status`, `stop`, `logs`, `exec` | backend planning e identidad/status de instancia | workspace scan más Docker backend |
+| `configure`, `validate`, `onboard`, `lock`, `project`, `unlock` | authoring, validación, catálogo, locking, projection y drift | catálogo, Git source, workspace, registry-resolver |
+| `run`, `status`, `stop`, `destroy`, `logs`, `exec` | backend planning e identidad/status/lifecycle de instancia | workspace scan más Docker backend |
+| `copy` | captura, anonimización y entrega durable de datos | PostgreSQL Docker y staged artifact store |
 | `image-resolve`, `image-publish`, `image-pull`, `image-exists` | normalización de referencias de imagen y operaciones de registry | GHCR/Docker registry adapter |
+| `pipeline-trigger`, `pipeline-status`, `pipeline-logs` | contrato provider-neutral de pipelines | GitHub Actions adapter |
+| `doctor`, `rotate-enterprise-credential` | mantenimiento de credenciales Enterprise | SOPS/age y filesystem local |
 
 ## Mapa De Adapters
 
@@ -51,6 +58,10 @@ Leé esto después de [03-src-core-map.md](03-src-core-map.md). Siguiente lectur
 | `src/odoo_forge_docker` | `BackendProvider` | daemon Docker local, archivos locales, `sops` para credenciales | `forge run`, `status`, `stop`, `logs`, `exec` |
 | `src/odoo_forge_registry` | `ImageRegistryProvider`, `PublishedArtifactResolver` | refs compatibles con GHCR vía Docker CLI / buildx | commands de imágenes y locking de artifacts publicados |
 | `src/odoo_forge_postgres_docker` | `DatabaseProvider` | daemon Docker local, archivos temporales de secretos, restore artifacts | foundation de database-provider y adapter tests |
+| `src/odoo_forge_catalog` | `CatalogIndex` | archivo YAML local | `onboard` por cliente |
+| `src/odoo_forge_pipeline_github` | `PipelineProvider` | API de GitHub Actions | commands de pipeline |
+| `src/odoo_forge_instances_postgres` | registries de instancias/data environments y autoridad de grants | PostgreSQL | runtime administrado y servidor |
+| `src/odoo_forge_server` | adapter HTTP sobre servicios core | FastAPI/HTTP | rutas de instancias |
 | `src/odoo_forge_cli` | composition root, no implementación de port | I/O de terminal, archivos manifest/lock | todo workflow visible para usuarios |
 
 ## Detalle De Packages
@@ -60,7 +71,7 @@ Leé esto después de [03-src-core-map.md](03-src-core-map.md). Siguiente lectur
 | Tema | Notas |
 | --- | --- |
 | Qué hace | Lee bytes de manifest y lock, valida/normaliza input CLI, construye adapters y renderiza mensajes tipados de éxito o fallo |
-| Cómo se conecta al core | Importa servicios puros y protocolos de ports, y después instancia adapters concretos en helpers `_make_*` |
+| Cómo se conecta al core | `commands/*.py` importa servicios puros; `_composition.py` instancia adapters concretos en helpers `_make_*` |
 | Sistemas externos | output de terminal, archivos locales, parseo YAML/JSON |
 | Advertencia para maintainers | No muevas reglas de negocio acá solo porque un command las necesita |
 

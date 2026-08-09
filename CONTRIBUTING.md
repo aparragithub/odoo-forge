@@ -26,7 +26,7 @@ uv sync
 Run locally what CI will run — a PR cannot merge with a red gate:
 
 ```bash
-uv run lint-imports          # architecture contracts (9, all must hold)
+uv run lint-imports          # architecture contracts (10, all must hold)
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy
@@ -50,7 +50,7 @@ uv run pytest                # integration tests deselected by default
 ## Architecture boundaries (the short version)
 
 The domain core (`src/odoo_forge/`) never imports adapters, the CLI,
-`subprocess`, or network I/O — nine import-linter contracts fail the build
+`subprocess`, or network I/O — ten import-linter contracts fail the build
 if it does. Adapters (`src/odoo_forge_*`) depend on the core's ports, never
 on each other. If your change fights this shape, stop and open an issue:
 either the design conversation is worth having, or the change belongs in an
