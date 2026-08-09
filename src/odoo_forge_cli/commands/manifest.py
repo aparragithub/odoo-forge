@@ -94,11 +94,7 @@ def _collect_published_layer() -> dict[str, object]:
 def _collect_layers() -> list[dict[str, object]]:
     layers: list[dict[str, object]] = []
     while typer.confirm("Add a layer?" if not layers else "Add another layer?", default=False):
-        layer_type = _prompt_text("Layer type (git or published)").lower()
-        while layer_type not in {"git", "published"}:
-            typer.echo("error: layer type must be 'git' or 'published'", err=True)
-            layer_type = _prompt_text("Layer type (git or published)").lower()
-        layers.append(_collect_git_layer() if layer_type == "git" else _collect_published_layer())
+        layers.append(_collect_git_layer())
     return layers
 
 
@@ -162,11 +158,7 @@ def _collect_draft() -> dict[str, object]:
     layers = _collect_layers()
     draft["layers"] = layers
     addons_path = _prompt_text("Client addons path")
-    requirements = _prompt_text("Python requirements path", "")
-    client: dict[str, object] = {"addons_path": addons_path}
-    if requirements:
-        client["python_requirements"] = requirements
-    draft["client"] = client
+    draft["client"] = {"addons_path": addons_path}
     draft["overrides"] = _collect_overrides()
 
     if typer.confirm("Configure workspace", default=False):

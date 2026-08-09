@@ -60,8 +60,7 @@ class GitHubActionsPipelineProvider:
         self._ref = ref
 
     def trigger(self, spec: PipelineRunSpec) -> PipelineRunRef:
-        self._transport.dispatch_workflow(spec.definition, self._ref, spec.parameters)
-        run_id = self._transport.latest_run_id(spec.definition, self._ref)
+        run_id = self._transport.dispatch_workflow(spec.definition, self._ref, spec.parameters)
         return PipelineRunRef(run_id=run_id)
 
     def status(self, ref: PipelineRunRef) -> PipelineRunStatus:
