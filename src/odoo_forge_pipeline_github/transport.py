@@ -65,7 +65,7 @@ class GitHubActionsRestTransport:
         try:
             payload = json.loads(self._request(url, method="POST", body=body))
             run_id = payload["workflow_run_id"]
-        except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError) as exc:
             raise RuntimeError("workflow dispatch response has no workflow run id") from exc
         if isinstance(run_id, bool) or not isinstance(run_id, (int, str)) or not str(run_id):
             raise RuntimeError("workflow dispatch response has no workflow run id")

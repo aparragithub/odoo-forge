@@ -20,8 +20,8 @@ def _zip_bytes(entries: dict[str, bytes]) -> bytes:
     return output.getvalue()
 
 
-def test_requests_pin_the_github_api_version(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured_request: urllib.request.Request | None = None
+def _mock_urlopen(monkeypatch: pytest.MonkeyPatch, response: bytes) -> list[urllib.request.Request]:
+    requests: list[urllib.request.Request] = []
 
     class Response:
         def __enter__(self) -> "Response":
@@ -31,46 +31,41 @@ def test_requests_pin_the_github_api_version(monkeypatch: pytest.MonkeyPatch) ->
             return None
 
         def read(self) -> bytes:
-            return b"{}"
+            return response
 
     def urlopen(request: urllib.request.Request, *, timeout: float) -> Response:
-        nonlocal captured_request
-        captured_request = request
+        requests.append(request)
         return Response()
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    return requests
 
-    _transport()._request("https://example.test", method="GET")
 
-    assert captured_request is not None
-    assert captured_request.get_header("X-github-api-version") == "2026-03-10"
+def test_requests_pin_the_github_api_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    requests = _mock_urlopen(monkeypatch, b'{"workflow_run_id": 314}')
+
+    _transport().dispatch_workflow("ci.yml", "main", {})
+
+    assert requests[0].get_header("X-github-api-version") == "2026-03-10"
 
 
 def test_dispatch_returns_the_exact_workflow_run_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transport = _transport()
-    request_calls: list[tuple[str, str, bytes | None]] = []
-
-    def request(url: str, *, method: str, body: bytes | None = None) -> bytes:
-        request_calls.append((url, method, body))
-        return json.dumps({"workflow_run_id": 314}).encode()
-
-    monkeypatch.setattr(transport, "_request", request)
+    requests = _mock_urlopen(monkeypatch, json.dumps({"workflow_run_id": 314}).encode())
 
     assert transport.dispatch_workflow("ci.yml", "main", {"env": "qa"}) == "314"
-    assert request_calls[0][1:] == (
-        "POST",
-        json.dumps({"ref": "main", "inputs": {"env": "qa"}}).encode(),
-    )
+    assert requests[0].method == "POST"
+    assert requests[0].data == json.dumps({"ref": "main", "inputs": {"env": "qa"}}).encode()
 
 
-@pytest.mark.parametrize("response", [b"{}", b"not-json"])
+@pytest.mark.parametrize("response", [b"{}", b"not-json", b"\xff"])
 def test_dispatch_fails_when_the_run_id_is_missing_or_malformed(
     response: bytes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     transport = _transport()
-    monkeypatch.setattr(transport, "_request", lambda *args, **kwargs: response)
+    _mock_urlopen(monkeypatch, response)
 
     with pytest.raises(RuntimeError, match="workflow run id"):
         transport.dispatch_workflow("ci.yml", "main", {})
@@ -81,7 +76,7 @@ def test_logs_render_real_zip_entries_in_deterministic_name_order(
 ) -> None:
     transport = _transport()
     archive = _zip_bytes({"job/z.txt": b"last\n", "job/a.txt": b"first\n"})
-    monkeypatch.setattr(transport, "_request", lambda *args, **kwargs: archive)
+    _mock_urlopen(monkeypatch, archive)
 
     assert transport.get_run_logs("42") == "first\nlast\n"
 
@@ -94,7 +89,7 @@ def test_logs_reject_malformed_or_unsafe_archives(
     archive: bytes, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     transport = _transport()
-    monkeypatch.setattr(transport, "_request", lambda *args, **kwargs: archive)
+    _mock_urlopen(monkeypatch, archive)
 
     with pytest.raises(RuntimeError, match="log archive"):
         transport.get_run_logs("42")
@@ -105,7 +100,7 @@ def test_logs_reject_archives_over_the_uncompressed_limit(
 ) -> None:
     transport = _transport()
     archive = _zip_bytes({"large.txt": b"x" * 101})
-    monkeypatch.setattr(transport, "_request", lambda *args, **kwargs: archive)
+    _mock_urlopen(monkeypatch, archive)
     monkeypatch.setattr("odoo_forge_pipeline_github.transport.MAX_LOG_BYTES", 100)
 
     with pytest.raises(RuntimeError, match="log archive"):
