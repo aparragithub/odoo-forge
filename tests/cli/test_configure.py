@@ -17,7 +17,7 @@ runner = CliRunner()
 
 
 def _invoke_configure(target: Path, *, name: str = "demo", edition: str = "community") -> Any:
-    scripted_input = f"{name}\n19.0\n{edition}\n\n\nn\nclient/addons\n\nn\nn\nn\nn\ny\n"
+    scripted_input = f"{name}\n19.0\n{edition}\n\n\nn\nclient/addons\nn\nn\nn\nn\ny\n"
     return runner.invoke(app, ["configure", "--manifest", str(target)], input=scripted_input)
 
 
@@ -70,7 +70,6 @@ client:
 
 def test_configure_enterprise_collects_all_optional_branches(
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     prompts = {
         "Project name": "enterprise-demo",
@@ -80,17 +79,11 @@ def test_configure_enterprise_collects_all_optional_branches(
         "Core ref override": "stable",
         "Enterprise URL override": "https://example.test/enterprise.git",
         "Enterprise ref override": "stable",
-        "Layer type": ["unsupported", "git", "published"],
         "Layer name": "custom",
         "Layer category": "localization",
         "Repository URL": "https://example.test/custom.git",
         "Repository ref": "main",
-        "Published layer name": "published",
-        "Published layer source": "registry://example/addons",
-        "Published layer version": "1.0",
-        "Published layer category": "enterprise-addons",
         "Client addons path": "client/addons",
-        "Python requirements path": "client/requirements.txt",
         "Override layer": "custom",
         "Override repository": "https://example.test/custom.git",
         "Override fork": "https://example.test/fork.git",
@@ -104,7 +97,6 @@ def test_configure_enterprise_collects_all_optional_branches(
         "Add a layer": True,
         "Add another repository": False,
         "Add another layer": [True, False],
-        "Published layer requires enterprise": True,
         "Add another override": False,
         "Add an override": True,
         "Configure workspace": True,
@@ -119,7 +111,6 @@ def test_configure_enterprise_collects_all_optional_branches(
         manifest.configure(Path("project.yaml"))
 
     assert raised.value.exit_code == 0
-    assert "layer type must be 'git' or 'published'" in capsys.readouterr().err
 
 
 def test_configure_rejects_existing_target_before_prompt(tmp_path: Path) -> None:

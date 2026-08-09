@@ -18,7 +18,7 @@ def block_network(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_trigger_status_logs_never_touch_the_network(block_network: None) -> None:
     fake = FakeGitHubActionsTransport(
-        run_ids=["1"], run_state=("in_progress", None), run_logs="hermetic log"
+        run_id="1", run_state=("in_progress", None), run_logs="hermetic log"
     )
     provider = GitHubActionsPipelineProvider(
         transport=fake, owner="acme", repo="widgets", ref="main"

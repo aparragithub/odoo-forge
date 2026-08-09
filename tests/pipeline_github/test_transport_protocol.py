@@ -2,10 +2,7 @@ from odoo_forge_pipeline_github.transport import GitHubActionsTransport
 
 
 class _FakeTransportForProtocolCheck:
-    def dispatch_workflow(self, workflow: str, ref: str, inputs: dict[str, str]) -> None:
-        return None
-
-    def latest_run_id(self, workflow: str, ref: str) -> str:
+    def dispatch_workflow(self, workflow: str, ref: str, inputs: dict[str, str]) -> str:
         return "1"
 
     def get_run_state(self, run_id: str) -> tuple[str, str | None]:

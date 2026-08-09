@@ -5,7 +5,7 @@ from tests.pipeline_github.fakes import FakeGitHubActionsTransport
 
 def test_trigger_status_logs_return_exactly_the_neutral_types() -> None:
     fake = FakeGitHubActionsTransport(
-        run_ids=["55"], run_state=("completed", "success"), run_logs="log text"
+        run_id="55", run_state=("completed", "success"), run_logs="log text"
     )
     provider = GitHubActionsPipelineProvider(
         transport=fake, owner="acme", repo="widgets", ref="main"
