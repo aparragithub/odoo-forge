@@ -13,7 +13,6 @@ from odoo_forge_identity_github.transport import (
     BoundedHttpResponse,
     GitHubOidcHttpsTransport,
     GitHubOidcTransport,
-    _HttpsRedirectHandler,
     create_github_oidc_https_transport,
 )
 
@@ -139,7 +138,9 @@ def test_https_request_rejects_non_https_redirect_target() -> None:
     assert reads == []
 
 
-def test_each_redirect_hop_is_validated_before_request() -> None:
+def test_each_redirect_hop_is_validated_before_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     requested: list[str] = []
 
     class _RedirectingOpener:
@@ -170,10 +171,16 @@ def test_each_redirect_hop_is_validated_before_request() -> None:
             )
             raise AssertionError("insecure redirect must be rejected")
 
+    def build_opener(
+        handler: urllib.request.BaseHandler,
+    ) -> _RedirectingOpener:
+        assert isinstance(handler, urllib.request.HTTPRedirectHandler)
+        return _RedirectingOpener(handler)
+
+    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
+
     with pytest.raises(RuntimeError, match="request failed"):
-        GitHubOidcHttpsTransport(opener=_RedirectingOpener(_HttpsRedirectHandler())).get_jwks(
-            "https://issuer.example/first"
-        )
+        create_github_oidc_https_transport().get_jwks("https://issuer.example/first")
 
     assert requested == [
         "https://issuer.example/first",
