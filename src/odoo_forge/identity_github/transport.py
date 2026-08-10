@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import urllib.request
 from typing import Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit
@@ -33,8 +34,12 @@ class GitHubOidcHttpsTransport:
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
-        if timeout <= 0:
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+            raise ValueError("timeout must be a finite number greater than zero")
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be greater than zero")
+        if isinstance(max_response_bytes, bool) or not isinstance(max_response_bytes, int):
+            raise ValueError("response size limit must be a positive integer")
         if max_response_bytes <= 0:
             raise ValueError("response size limit must be greater than zero")
         self._timeout = timeout
@@ -42,7 +47,7 @@ class GitHubOidcHttpsTransport:
 
     def get_metadata(self, issuer: str) -> dict[str, object]:
         """Retrieve the standard OpenID configuration for an HTTPS issuer."""
-        issuer = self._validate_https_url(issuer)
+        issuer = self._validate_https_url(issuer, allow_query=False)
         return self._get_json(f"{issuer.rstrip('/')}{_OPENID_CONFIGURATION_PATH}")
 
     def get_jwks(self, jwks_uri: str) -> dict[str, object]:
@@ -60,9 +65,10 @@ class GitHubOidcHttpsTransport:
         )
         try:
             with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
+                self._validate_https_url(response.geturl())
                 body = response.read(self._max_response_bytes + 1)
-        except Exception as exc:
-            raise RuntimeError("GitHub OIDC transport request failed") from exc
+        except Exception:
+            raise RuntimeError("GitHub OIDC transport request failed") from None
         if not isinstance(body, bytes):
             raise RuntimeError("GitHub OIDC transport returned an invalid response")
         if len(body) > self._max_response_bytes:
@@ -80,7 +86,7 @@ class GitHubOidcHttpsTransport:
         return cast(dict[str, object], payload)
 
     @staticmethod
-    def _validate_https_url(url: str) -> str:
+    def _validate_https_url(url: str, *, allow_query: bool = True) -> str:
         try:
             parsed = urlsplit(url)
         except ValueError as exc:
@@ -91,6 +97,7 @@ class GitHubOidcHttpsTransport:
             or parsed.username is not None
             or parsed.password is not None
             or parsed.fragment
+            or (not allow_query and parsed.query)
         ):
             raise ValueError("GitHub OIDC transport requires an HTTPS URL")
         return url
