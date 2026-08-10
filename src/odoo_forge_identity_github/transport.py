@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import math
 import urllib.request
-from typing import Protocol, cast, runtime_checkable
+from typing import IO, Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -44,6 +45,7 @@ class GitHubOidcHttpsTransport:
             raise ValueError("response size limit must be greater than zero")
         self._timeout = timeout
         self._max_response_bytes = max_response_bytes
+        self._opener = urllib.request.build_opener(_HttpsRedirectHandler())
 
     def get_metadata(self, issuer: str) -> dict[str, object]:
         """Retrieve the standard OpenID configuration for an HTTPS issuer."""
@@ -64,7 +66,7 @@ class GitHubOidcHttpsTransport:
             headers=_JSON_HEADERS,
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310
+            with self._opener.open(request, timeout=self._timeout) as response:  # noqa: S310
                 self._validate_https_url(response.geturl())
                 body = response.read(self._max_response_bytes + 1)
         except Exception:
@@ -96,11 +98,25 @@ class GitHubOidcHttpsTransport:
             or not parsed.hostname
             or parsed.username is not None
             or parsed.password is not None
-            or parsed.fragment
-            or (not allow_query and ("?" in url or "#" in url))
+            or "#" in url
+            or (not allow_query and "?" in url)
         ):
             raise ValueError("GitHub OIDC transport requires an HTTPS URL")
         return url
+
+
+class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: urllib.request.Request,
+        fp: IO[bytes],
+        code: int,
+        msg: str,
+        headers: http.client.HTTPMessage,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        GitHubOidcHttpsTransport._validate_https_url(newurl)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 __all__ = ["GitHubOidcHttpsTransport", "GitHubOidcTransport"]
