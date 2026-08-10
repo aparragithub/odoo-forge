@@ -6,7 +6,7 @@ from collections.abc import Callable
 
 import pytest
 
-from odoo_forge.identity_github.transport import (
+from odoo_forge_identity_github.transport import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_RESPONSE_BYTES,
     GitHubOidcHttpsTransport,
@@ -83,6 +83,19 @@ def test_metadata_issuer_with_query_is_rejected_without_network(
 
     with pytest.raises(ValueError, match="HTTPS"):
         GitHubOidcHttpsTransport().get_metadata("https://issuer.example?token=secret")
+
+
+@pytest.mark.parametrize("issuer", ["https://issuer.example?", "https://issuer.example#"])
+def test_metadata_issuer_with_empty_delimiter_is_rejected_without_network(
+    monkeypatch: pytest.MonkeyPatch, issuer: str
+) -> None:
+    def fail_if_called(*args: object, **kwargs: object) -> None:
+        raise AssertionError("network must not be called")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_if_called)
+
+    with pytest.raises(ValueError, match="HTTPS"):
+        GitHubOidcHttpsTransport().get_metadata(issuer)
 
 
 def test_https_requests_use_timeout_and_read_one_byte_beyond_response_bound(

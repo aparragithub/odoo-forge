@@ -97,7 +97,7 @@ class GitHubOidcHttpsTransport:
             or parsed.username is not None
             or parsed.password is not None
             or parsed.fragment
-            or (not allow_query and parsed.query)
+            or (not allow_query and ("?" in url or "#" in url))
         ):
             raise ValueError("GitHub OIDC transport requires an HTTPS URL")
         return url
