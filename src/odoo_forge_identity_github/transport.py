@@ -6,7 +6,8 @@ import http.client
 import json
 import math
 import urllib.request
-from typing import IO, Protocol, cast, runtime_checkable
+from types import TracebackType
+from typing import IO, Protocol, Self, cast, runtime_checkable
 from urllib.parse import urlsplit
 
 DEFAULT_TIMEOUT_SECONDS = 10.0
@@ -26,12 +27,32 @@ class GitHubOidcTransport(Protocol):
         ...
 
 
+class BoundedHttpResponse(Protocol):
+    def __enter__(self) -> Self: ...
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    def geturl(self) -> str: ...
+
+    def read(self, amount: int = -1) -> bytes: ...
+
+
+class BoundedHttpOpener(Protocol):
+    def open(self, request: urllib.request.Request, *, timeout: float) -> BoundedHttpResponse: ...
+
+
 class GitHubOidcHttpsTransport:
     """Retrieve GitHub OIDC JSON documents using bounded HTTPS requests."""
 
     def __init__(
         self,
         *,
+        opener: BoundedHttpOpener,
         timeout: float = DEFAULT_TIMEOUT_SECONDS,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
     ) -> None:
@@ -45,7 +66,7 @@ class GitHubOidcHttpsTransport:
             raise ValueError("response size limit must be greater than zero")
         self._timeout = timeout
         self._max_response_bytes = max_response_bytes
-        self._opener = urllib.request.build_opener(_HttpsRedirectHandler())
+        self._opener = opener
 
     def get_metadata(self, issuer: str) -> dict[str, object]:
         """Retrieve the standard OpenID configuration for an HTTPS issuer."""
@@ -119,4 +140,24 @@ class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-__all__ = ["GitHubOidcHttpsTransport", "GitHubOidcTransport"]
+def create_github_oidc_https_transport(
+    *,
+    timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    max_response_bytes: int = MAX_RESPONSE_BYTES,
+) -> GitHubOidcHttpsTransport:
+    """Compose the production GitHub OIDC transport with urllib."""
+    opener = cast(BoundedHttpOpener, urllib.request.build_opener(_HttpsRedirectHandler()))
+    return GitHubOidcHttpsTransport(
+        opener=opener,
+        timeout=timeout,
+        max_response_bytes=max_response_bytes,
+    )
+
+
+__all__ = [
+    "BoundedHttpOpener",
+    "BoundedHttpResponse",
+    "GitHubOidcHttpsTransport",
+    "GitHubOidcTransport",
+    "create_github_oidc_https_transport",
+]

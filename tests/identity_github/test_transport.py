@@ -4,15 +4,17 @@ import json
 import traceback
 import urllib.error
 import urllib.request
-from collections.abc import Callable
 
 import pytest
 
 from odoo_forge_identity_github.transport import (
     DEFAULT_TIMEOUT_SECONDS,
     MAX_RESPONSE_BYTES,
+    BoundedHttpResponse,
     GitHubOidcHttpsTransport,
     GitHubOidcTransport,
+    _HttpsRedirectHandler,
+    create_github_oidc_https_transport,
 )
 
 
@@ -44,39 +46,36 @@ class _Response:
         return self._url
 
 
-def _build_opener_failing_if_opened(*handlers: object) -> object:
-    class _Opener:
-        def open(self, *args: object, **kwargs: object) -> None:
-            raise AssertionError("network must not be called")
-
-    return _Opener()
+class _FailIfOpened:
+    def open(self, request: urllib.request.Request, *, timeout: float) -> BoundedHttpResponse:
+        raise AssertionError("network must not be called")
 
 
-def _urlopen_returning(
-    body: bytes,
-    calls: list[tuple[str, float]],
-    reads: list[int],
-    *,
-    final_url: str | None = None,
-) -> Callable[..., object]:
-    class _Opener:
-        def open(self, request: urllib.request.Request, timeout: float) -> _Response:
-            calls.append((request.full_url, timeout))
-            return _Response(body, reads, final_url or request.full_url)
+class _ReturningOpener:
+    def __init__(
+        self,
+        body: bytes,
+        calls: list[tuple[str, float]],
+        reads: list[int],
+        *,
+        final_url: str | None = None,
+    ) -> None:
+        self._body = body
+        self._calls = calls
+        self._reads = reads
+        self._final_url = final_url
 
-    def build_opener(*handlers: object) -> _Opener:
-        return _Opener()
-
-    return build_opener
+    def open(self, request: urllib.request.Request, *, timeout: float) -> _Response:
+        self._calls.append((request.full_url, timeout))
+        return _Response(self._body, self._reads, self._final_url or request.full_url)
 
 
 def test_transport_protocol_is_runtime_checkable_and_satisfied_structurally() -> None:
     assert isinstance(_FakeTransport(), GitHubOidcTransport)
 
 
-def test_non_https_urls_are_rejected_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(urllib.request, "build_opener", _build_opener_failing_if_opened)
-    transport = GitHubOidcHttpsTransport()
+def test_non_https_urls_are_rejected_without_network() -> None:
+    transport = GitHubOidcHttpsTransport(opener=_FailIfOpened())
 
     with pytest.raises(ValueError, match="HTTPS"):
         transport.get_metadata("http://issuer.example")
@@ -84,36 +83,28 @@ def test_non_https_urls_are_rejected_without_network(monkeypatch: pytest.MonkeyP
         transport.get_jwks("file:///tmp/keys.json")
 
 
-def test_metadata_issuer_with_query_is_rejected_without_network(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(urllib.request, "build_opener", _build_opener_failing_if_opened)
-
+def test_metadata_issuer_with_query_is_rejected_without_network() -> None:
     with pytest.raises(ValueError, match="HTTPS"):
-        GitHubOidcHttpsTransport().get_metadata("https://issuer.example?token=secret")
+        GitHubOidcHttpsTransport(opener=_FailIfOpened()).get_metadata(
+            "https://issuer.example?token=secret"
+        )
 
 
 @pytest.mark.parametrize("issuer", ["https://issuer.example?", "https://issuer.example#"])
 def test_metadata_issuer_with_empty_delimiter_is_rejected_without_network(
-    monkeypatch: pytest.MonkeyPatch, issuer: str
+    issuer: str,
 ) -> None:
-    monkeypatch.setattr(urllib.request, "build_opener", _build_opener_failing_if_opened)
-
     with pytest.raises(ValueError, match="HTTPS"):
-        GitHubOidcHttpsTransport().get_metadata(issuer)
+        GitHubOidcHttpsTransport(opener=_FailIfOpened()).get_metadata(issuer)
 
 
-def test_https_requests_use_timeout_and_read_one_byte_beyond_response_bound(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_https_requests_use_timeout_and_read_one_byte_beyond_response_bound() -> None:
     calls: list[tuple[str, float]] = []
     reads: list[int] = []
-    monkeypatch.setattr(
-        urllib.request,
-        "build_opener",
-        _urlopen_returning(b'{"issuer":"https://issuer.example"}', calls, reads),
+    transport = GitHubOidcHttpsTransport(
+        opener=_ReturningOpener(b'{"issuer":"https://issuer.example"}', calls, reads),
+        timeout=2.5,
     )
-    transport = GitHubOidcHttpsTransport(timeout=2.5)
 
     result = transport.get_metadata("https://issuer.example")
 
@@ -127,42 +118,28 @@ def test_https_requests_use_timeout_and_read_one_byte_beyond_response_bound(
     assert reads == [MAX_RESPONSE_BYTES + 1]
 
 
-def test_oversized_response_is_rejected_before_json_is_accepted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_oversized_response_is_rejected_before_json_is_accepted() -> None:
     calls: list[tuple[str, float]] = []
     reads: list[int] = []
     body = b"{" + b"x" * MAX_RESPONSE_BYTES + b"}"
-    monkeypatch.setattr(
-        urllib.request,
-        "build_opener",
-        _urlopen_returning(body, calls, reads),
-    )
-
     with pytest.raises(RuntimeError, match="response exceeds size limit"):
-        GitHubOidcHttpsTransport().get_jwks("https://issuer.example/keys")
+        GitHubOidcHttpsTransport(opener=_ReturningOpener(body, calls, reads)).get_jwks(
+            "https://issuer.example/keys"
+        )
 
 
-def test_https_request_rejects_non_https_redirect_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_https_request_rejects_non_https_redirect_target() -> None:
     calls: list[tuple[str, float]] = []
     reads: list[int] = []
-    monkeypatch.setattr(
-        urllib.request,
-        "build_opener",
-        _urlopen_returning(b'{"keys":[]}', calls, reads, final_url="http://issuer.example/keys"),
-    )
+    opener = _ReturningOpener(b'{"keys":[]}', calls, reads, final_url="http://issuer.example/keys")
 
     with pytest.raises(RuntimeError, match="request failed"):
-        GitHubOidcHttpsTransport().get_jwks("https://issuer.example/keys")
+        GitHubOidcHttpsTransport(opener=opener).get_jwks("https://issuer.example/keys")
 
     assert reads == []
 
 
-def test_each_redirect_hop_is_validated_before_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_each_redirect_hop_is_validated_before_request() -> None:
     requested: list[str] = []
 
     class _RedirectingOpener:
@@ -193,13 +170,10 @@ def test_each_redirect_hop_is_validated_before_request(
             )
             raise AssertionError("insecure redirect must be rejected")
 
-    def build_opener(handler: urllib.request.HTTPRedirectHandler) -> _RedirectingOpener:
-        return _RedirectingOpener(handler)
-
-    monkeypatch.setattr(urllib.request, "build_opener", build_opener)
-
     with pytest.raises(RuntimeError, match="request failed"):
-        GitHubOidcHttpsTransport().get_jwks("https://issuer.example/first")
+        GitHubOidcHttpsTransport(opener=_RedirectingOpener(_HttpsRedirectHandler())).get_jwks(
+            "https://issuer.example/first"
+        )
 
     assert requested == [
         "https://issuer.example/first",
@@ -207,48 +181,36 @@ def test_each_redirect_hop_is_validated_before_request(
     ]
 
 
-def test_jwks_url_with_empty_fragment_is_rejected_without_network(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(urllib.request, "build_opener", _build_opener_failing_if_opened)
-
+def test_jwks_url_with_empty_fragment_is_rejected_without_network() -> None:
     with pytest.raises(ValueError, match="HTTPS"):
-        GitHubOidcHttpsTransport().get_jwks("https://issuer.example/keys#")
+        GitHubOidcHttpsTransport(opener=_FailIfOpened()).get_jwks("https://issuer.example/keys#")
 
 
-def test_malformed_or_non_object_json_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_malformed_or_non_object_json_is_rejected() -> None:
     calls: list[tuple[str, float]] = []
     reads: list[int] = []
-    monkeypatch.setattr(
-        urllib.request,
-        "build_opener",
-        _urlopen_returning(b"not-json", calls, reads),
-    )
+    with pytest.raises(RuntimeError, match="malformed JSON"):
+        GitHubOidcHttpsTransport(opener=_ReturningOpener(b"not-json", calls, reads)).get_jwks(
+            "https://issuer.example/keys"
+        )
 
     with pytest.raises(RuntimeError, match="malformed JSON"):
-        GitHubOidcHttpsTransport().get_jwks("https://issuer.example/keys")
-
-    monkeypatch.setattr(
-        urllib.request,
-        "build_opener",
-        _urlopen_returning(json.dumps(["not", "an", "object"]).encode(), calls, reads),
-    )
-    with pytest.raises(RuntimeError, match="malformed JSON"):
-        GitHubOidcHttpsTransport().get_jwks("https://issuer.example/keys")
+        GitHubOidcHttpsTransport(
+            opener=_ReturningOpener(json.dumps(["not", "an", "object"]).encode(), calls, reads)
+        ).get_jwks("https://issuer.example/keys")
 
 
-def test_network_failures_are_sanitized(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_network_failures_are_sanitized() -> None:
     def fail(*args: object, **kwargs: object) -> None:
         raise urllib.error.URLError("token=do-not-leak at https://private.example")
 
     class _FailingOpener:
-        def open(self, *args: object, **kwargs: object) -> None:
-            fail(*args, **kwargs)
-
-    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: _FailingOpener())
+        def open(self, request: urllib.request.Request, *, timeout: float) -> BoundedHttpResponse:
+            fail(request, timeout=timeout)
+            raise AssertionError("unreachable")
 
     with pytest.raises(RuntimeError, match="request failed") as error:
-        GitHubOidcHttpsTransport().get_jwks("https://issuer.example/keys")
+        GitHubOidcHttpsTransport(opener=_FailingOpener()).get_jwks("https://issuer.example/keys")
 
     message = str(error.value)
     assert "do-not-leak" not in message
@@ -261,10 +223,17 @@ def test_network_failures_are_sanitized(monkeypatch: pytest.MonkeyPatch) -> None
 def test_constructor_rejects_unbounded_timeout_configuration() -> None:
     for timeout in (0, float("nan"), float("inf"), float("-inf"), True):
         with pytest.raises(ValueError, match="timeout"):
-            GitHubOidcHttpsTransport(timeout=timeout)
+            GitHubOidcHttpsTransport(opener=_FailIfOpened(), timeout=timeout)
 
     for max_response_bytes in (0, 1.5, True):
         with pytest.raises(ValueError, match="response size"):
-            GitHubOidcHttpsTransport(max_response_bytes=max_response_bytes)  # type: ignore[arg-type]
+            GitHubOidcHttpsTransport(
+                opener=_FailIfOpened(),
+                max_response_bytes=max_response_bytes,  # type: ignore[arg-type]
+            )
 
     assert DEFAULT_TIMEOUT_SECONDS > 0
+
+
+def test_composition_factory_builds_a_usable_urllib_transport() -> None:
+    assert isinstance(create_github_oidc_https_transport(), GitHubOidcHttpsTransport)
