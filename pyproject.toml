@@ -49,7 +49,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace", "src/odoo_forge_docker", "src/odoo_forge_registry", "src/odoo_forge_postgres_docker", "src/odoo_forge_catalog", "src/odoo_forge_pipeline_github", "src/odoo_forge_instances_postgres", "src/odoo_forge_server"]
+packages = ["src/odoo_forge", "src/odoo_forge_cli", "src/odoo_forge_git", "src/odoo_forge_workspace", "src/odoo_forge_docker", "src/odoo_forge_registry", "src/odoo_forge_postgres_docker", "src/odoo_forge_catalog", "src/odoo_forge_pipeline_github", "src/odoo_forge_instances_postgres", "src/odoo_forge_server", "src/odoo_forge_identity_github"]
 
 [dependency-groups]
 dev = [
