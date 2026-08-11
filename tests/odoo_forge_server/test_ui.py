@@ -214,6 +214,28 @@ def test_dashboard_renders_safe_manifest_panel_without_mutation_controls() -> No
     )
 
 
+def test_dashboard_omits_manifest_panel_outside_configured_scope() -> None:
+    reconciler = _FakeReconciler((_result(ReconciliationOutcome.EMPTY),))
+    manifest_loads: list[Path] = []
+    client = TestClient(
+        create_app(
+            reconciler=reconciler,
+            ui_runtime=UiRuntime("127.0.0.1"),
+            manifest_scope=ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1"),
+            manifest_location=Path("/secret/project.yaml"),
+            manifest_loader=lambda path: manifest_loads.append(path),
+        ),
+        base_url="http://127.0.0.1",
+    )
+
+    response = client.get("/ui/tenants/tenant-1/projects/project-2/instances")
+
+    assert response.status_code == 200
+    assert "Manifest status:" not in response.text
+    assert reconciler.list_calls == 1
+    assert manifest_loads == []
+
+
 @pytest.mark.parametrize(
     ("loader", "status"),
     [
