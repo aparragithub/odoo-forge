@@ -80,9 +80,8 @@ def create_ui_router(
             manifest_scope is not None
             and manifest_location is not None
             and manifest_loader is not None
+            and scope == manifest_scope
         ):
-            if scope != manifest_scope:
-                raise HTTPException(status_code=404, detail="manifest not found")
             manifest = _manifest_context(manifest_location, manifest_loader)
         result = reconciler.list(scope)
         return _render(
