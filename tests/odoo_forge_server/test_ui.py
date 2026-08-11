@@ -215,7 +215,17 @@ def test_dashboard_renders_safe_manifest_panel_without_mutation_controls() -> No
 
 
 def test_dashboard_omits_manifest_panel_outside_configured_scope() -> None:
-    reconciler = _FakeReconciler((_result(ReconciliationOutcome.EMPTY),))
+    result = ReconciliationResult(
+        outcome=ReconciliationOutcome.FRESH,
+        rows=(
+            ReconciliationRow(
+                record=_record("outside-manifest-scope"),
+                live=_status(),
+                outcome=ReconciliationOutcome.FRESH,
+            ),
+        ),
+    )
+    reconciler = _FakeReconciler((result,))
     manifest_loads: list[Path] = []
     client = TestClient(
         create_app(
@@ -232,7 +242,7 @@ def test_dashboard_omits_manifest_panel_outside_configured_scope() -> None:
 
     assert response.status_code == 200
     assert "Manifest status:" not in response.text
-    assert reconciler.list_calls == 1
+    assert "outside-manifest-scope" in response.text
     assert manifest_loads == []
 
 
