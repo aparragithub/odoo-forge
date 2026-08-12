@@ -113,6 +113,55 @@ def test_exposure_request_preserves_scope_identity_ownership_and_opaque_credenti
         )
 
 
+def test_exposure_request_rejects_instance_outside_scope() -> None:
+    values = _request().model_dump()
+    values["instance"] = INSTANCE.model_copy(update={"project": "project-2"})
+
+    with pytest.raises(ValidationError, match="instance scope"):
+        ExposureRequest(**values)
+
+
+def test_exposure_request_rejects_deployment_outside_scope() -> None:
+    other_scope = ProjectScope(tenant=TenantId(value="tenant-2"), project_id="project-2")
+    deployment = _deployment().model_copy(
+        update={"pointer": InstancePointer(scope=other_scope, instance_id=InstanceId(value="odoo"))}
+    )
+
+    values = _request().model_dump()
+    values["deployment"] = deployment
+
+    with pytest.raises(ValidationError, match="deployment scope"):
+        ExposureRequest(**values)
+
+
+def test_exposure_request_rejects_ownership_from_another_operation() -> None:
+    other_operation = DurableOperationIdentity(operation_id="exposure-2", request_digest="digest-2")
+    assert OWNERSHIP.receipt is not None
+    ownership = OWNERSHIP.model_copy(
+        update={"receipt": OWNERSHIP.receipt.model_copy(update={"operation": other_operation})},
+    )
+    values = _request().model_dump()
+    values["ownership"] = (ownership,)
+
+    with pytest.raises(ValidationError, match="ownership operation"):
+        ExposureRequest(**values)
+
+
+def test_exposure_result_rejects_ownership_from_another_operation() -> None:
+    other_operation = DurableOperationIdentity(operation_id="exposure-2", request_digest="digest-2")
+    assert OWNERSHIP.receipt is not None
+    ownership = OWNERSHIP.model_copy(
+        update={"receipt": OWNERSHIP.receipt.model_copy(update={"operation": other_operation})},
+    )
+
+    with pytest.raises(ValidationError, match="ownership operation"):
+        ExposureResult(
+            operation=OPERATION,
+            outcome=ExposureOutcome.FAILED,
+            ownership=(ownership,),
+        )
+
+
 def test_exposure_result_reports_http_readiness_without_claiming_tls_readiness() -> None:
     result = _ConformingExposureReconciler().reconcile(_request())
 

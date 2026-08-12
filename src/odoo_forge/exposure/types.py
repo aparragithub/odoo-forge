@@ -54,6 +54,19 @@ class ExposureRequest(_ExposureValue):
     ownership: tuple[OwnershipRecord, ...] = ()
     credential_handles: tuple[CredentialHandle, ...] = ()
 
+    @model_validator(mode="after")
+    def validate_scope_and_ownership(self) -> "ExposureRequest":
+        if self.instance.project != self.scope.project_id:
+            raise ValueError("instance scope does not match request scope")
+        if self.deployment.pointer.scope != self.scope:
+            raise ValueError("deployment scope does not match request scope")
+        if any(
+            record.receipt is not None and record.receipt.operation != self.operation
+            for record in self.ownership
+        ):
+            raise ValueError("ownership operation does not match request operation")
+        return self
+
 
 class ExposureResult(_ExposureValue):
     """Redacted exposure outcome with implemented HTTP readiness separated from TLS."""
@@ -70,6 +83,11 @@ class ExposureResult(_ExposureValue):
 
     @model_validator(mode="after")
     def validate_readiness_scope(self) -> "ExposureResult":
+        if any(
+            record.receipt is not None and record.receipt.operation != self.operation
+            for record in self.ownership
+        ):
+            raise ValueError("ownership operation does not match result operation")
         if self.tls_ready:
             raise ValueError("TLS is deferred and cannot make exposure ready")
         if self.ready and (
