@@ -238,6 +238,10 @@ def _validated_tokens(tokens: Sequence[str]) -> tuple[str, ...]:
 
 
 def _secret_assignment(token: str) -> bool:
+    if token.startswith("--env="):
+        token = token[6:]
+    elif token.startswith("-e"):
+        token = token[2:]
     key, separator, value = token.partition("=")
     if (
         not separator
