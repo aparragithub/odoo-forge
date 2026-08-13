@@ -11,7 +11,8 @@ from odoo_forge.ports.durable_operation_store import DurableOperationRecord, Dur
 from odoo_forge.resource_ownership.types import OwnershipRecord
 
 
-class RemoteDeploymentIncompleteError(RuntimeError): ...
+class RemoteDeploymentIncompleteError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
