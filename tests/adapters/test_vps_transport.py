@@ -4,10 +4,10 @@ import os
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Literal
 
 import pytest
 
-import odoo_forge_docker.vps.transport as transport_module
 from odoo_forge_docker.vps.transport import (
     CommandResult,
     InvalidRemoteInputError,
@@ -326,28 +326,64 @@ def test_remote_non_255_failure_is_a_command_result_even_with_transport_marker(
     assert result.stderr == "connection refused: application command rejected"
 
 
-def test_write_private_does_not_close_owned_fd_after_stream_failure(
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [("write", "write failed"), ("close", "close failed")],
+)
+def test_secret_upload_stream_owns_fd_after_write_or_close_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    failure: str,
+    message: str,
 ) -> None:
-    close_calls: list[int] = []
+    raw_close_calls: list[int] = []
+    stream_close_calls: list[int] = []
+    secret_fd = 41
+    real_open = os.open
+    real_fdopen = os.fdopen
+    real_close = os.close
 
     class FailingStream:
         def __enter__(self) -> "FailingStream":
             return self
 
-        def __exit__(self, *args: object) -> None:
-            return None
+        def __exit__(self, *args: object) -> Literal[False]:
+            self.close()
+            return False
 
         def write(self, value: str) -> None:
-            raise OSError("write failed")
+            if failure == "write":
+                raise OSError("write failed")
+
+        def close(self) -> None:
+            stream_close_calls.append(secret_fd)
+            if failure == "close":
+                raise OSError("close failed")
 
     stream = FailingStream()
-    monkeypatch.setattr(os, "open", lambda *args, **kwargs: 41)
-    monkeypatch.setattr(os, "fdopen", lambda *args, **kwargs: stream)
-    monkeypatch.setattr(os, "close", close_calls.append)
+    monkeypatch.setattr(
+        "odoo_forge_docker.vps.transport.os.open",
+        lambda path, *args, **kwargs: (
+            secret_fd if Path(path).name == "secret" else real_open(path, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        "odoo_forge_docker.vps.transport.os.fdopen",
+        lambda fd, *args, **kwargs: stream if fd == secret_fd else real_fdopen(fd, *args, **kwargs),
+    )
 
-    with pytest.raises(OSError, match="write failed"):
-        transport_module._write_private(tmp_path / "private", "secret")
+    def observe_close(fd: int) -> None:
+        if fd == secret_fd:
+            raw_close_calls.append(fd)
+        else:
+            real_close(fd)
 
-    assert close_calls == []
+    monkeypatch.setattr("odoo_forge_docker.vps.transport.os.close", observe_close)
+
+    with pytest.raises(OSError, match=message):
+        OpenSshTransport(_target(), staging_root=tmp_path).upload_secret(
+            "secret", "/run/secrets/odoo"
+        )
+
+    assert stream_close_calls == [secret_fd]
+    assert raw_close_calls == []
