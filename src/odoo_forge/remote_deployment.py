@@ -1,10 +1,7 @@
-"""Runtime-owned aggregate handoff for the canonical VPS deployment."""
-
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 from odoo_forge.backend.plan import BackendPlan
 from odoo_forge.backend.status import InstanceRef
@@ -14,19 +11,24 @@ from odoo_forge.exposure.types import ExposureOutcome, ExposureRequest, Exposure
 from odoo_forge.ports.durable_operation_store import DurableOperationRecord, DurableOperationStore
 from odoo_forge.resource_ownership.types import OwnershipRecord
 
-if TYPE_CHECKING:
-    from odoo_forge_docker.vps.provider import VpsTargetIdentity
-
 
 class RemoteDeploymentIncompleteError(RuntimeError):
     pass
 
 
 @dataclass(frozen=True)
+class RemoteTargetFingerprint:
+    host: str
+    user: str
+    port: int
+    host_key: str
+
+
+@dataclass(frozen=True)
 class RemoteDeploymentRequest:
     deployment: DeploymentSpec
     plan: BackendPlan
-    target: VpsTargetIdentity
+    target: RemoteTargetFingerprint
     runtime_operation: DurableOperationIdentity
     exposure_operation: DurableOperationIdentity | None = None
     runtime_ownership: tuple[OwnershipRecord, ...] = ()
@@ -37,7 +39,7 @@ class RemoteDeploymentRequest:
 class RemoteDeploymentReceipt:
     deployment: DeploymentSpec
     provider: str
-    target: VpsTargetIdentity
+    target: RemoteTargetFingerprint
     runtime_ref: InstanceRef | None
     runtime_operation: DurableOperationIdentity
     runtime_ownership: tuple[OwnershipRecord, ...]
@@ -65,8 +67,6 @@ def _valid_terminal(record: DurableOperationRecord, operation: DurableOperationI
 
 
 class RemoteDeploymentCoordinator:
-    """Compose existing VPS operations without owning adapter lifecycle."""
-
     def __init__(
         self,
         *,
@@ -88,25 +88,24 @@ class RemoteDeploymentCoordinator:
             raise RemoteDeploymentIncompleteError("runtime ownership is inconsistent")
         if request.deployment.exposure is None and request.exposure_operation is not None:
             raise RemoteDeploymentIncompleteError("exposure operation has no exposure intent")
+        if request.deployment.exposure and request.exposure_operation == request.runtime_operation:
+            raise RemoteDeploymentIncompleteError("runtime and exposure operations must differ")
         try:
             runtime_ref = self._runtime_provider.run(request.plan)  # type: ignore[attr-defined]
         except Exception:
             self._record_validated_failure(request)
             raise
-
         if (
             runtime_ref.project != request.deployment.pointer.scope.project_id
             or runtime_ref.instance != request.deployment.pointer.instance_id.value
             or runtime_ref.network != request.deployment.resource.identifier
         ):
             raise RemoteDeploymentIncompleteError("runtime identity is inconsistent")
-
         runtime_record = self._operation_store.create_or_load(request.runtime_operation)
         if not _valid_terminal(runtime_record, request.runtime_operation):
             raise RemoteDeploymentIncompleteError("runtime evidence is incomplete")
         if runtime_record.lifecycle is not LifecycleState.SUCCEEDED:
             raise RemoteDeploymentIncompleteError("runtime operation did not succeed")
-
         exposure_result: ExposureResult | None = None
         exposure_record: DurableOperationRecord | None = None
         exposure_ownership: tuple[OwnershipRecord, ...] = ()
@@ -132,7 +131,6 @@ class RemoteDeploymentCoordinator:
             ):
                 raise RemoteDeploymentIncompleteError("exposure evidence is incomplete")
             exposure_ownership = exposure_result.ownership
-
         receipt = RemoteDeploymentReceipt(
             deployment=request.deployment,
             provider="vps",

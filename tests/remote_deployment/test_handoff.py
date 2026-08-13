@@ -23,6 +23,7 @@ from odoo_forge.remote_deployment import (
     RemoteDeploymentCoordinator,
     RemoteDeploymentIncompleteError,
     RemoteDeploymentRequest,
+    RemoteTargetFingerprint,
 )
 from odoo_forge.resource_ownership.types import (
     OwnershipReceipt,
@@ -31,21 +32,20 @@ from odoo_forge.resource_ownership.types import (
     ResourceRef,
 )
 from odoo_forge.tenancy.types import ProjectScope, TenantId
-from odoo_forge_docker.vps.provider import VpsTargetIdentity
 
 SCOPE = ProjectScope(tenant=TenantId(value="tenant-1"), project_id="project-1")
 POINTER = InstancePointer(scope=SCOPE, instance_id=InstanceId(value="one"))
-TARGET = VpsTargetIdentity(host="vps.example", user="deploy", port=22, host_key="ssh-ed25519")
+TARGET = RemoteTargetFingerprint(host="vps.example", user="deploy", port=22, host_key="ssh-ed25519")
 RUN = DurableOperationIdentity(operation_id="run-1", request_digest="run-digest")
 EXPOSURE = DurableOperationIdentity(operation_id="exposure-1", request_digest="exposure-digest")
 
 
 def owner(operation: DurableOperationIdentity, identifier: str) -> OwnershipRecord:
+    ref = ResourceRef(
+        identifier=identifier, resource_kind="container", ownership=ResourceOwnership.CREATED
+    )
     return OwnershipRecord(
-        ref=ResourceRef(
-            identifier=identifier, resource_kind="container", ownership=ResourceOwnership.CREATED
-        ),
-        receipt=OwnershipReceipt(operation=operation, owned_resource_ids=(identifier,)),
+        ref=ref, receipt=OwnershipReceipt(operation=operation, owned_resource_ids=(identifier,))
     )
 
 
@@ -85,13 +85,13 @@ def plan() -> BackendPlan:
     return BackendPlan(network=network, volumes=[], postgres=db, odoo=odoo)
 
 
-def request(exposed: bool = False) -> RemoteDeploymentRequest:
+def request(exposed=False, exposure_operation=EXPOSURE):
     return RemoteDeploymentRequest(
         deployment=deployment(exposed),
         plan=plan(),
         target=TARGET,
         runtime_operation=RUN,
-        exposure_operation=EXPOSURE if exposed else None,
+        exposure_operation=exposure_operation if exposed else None,
         runtime_ownership=(owner(RUN, "odoo-one"),),
     )
 
@@ -110,17 +110,14 @@ def record(operation: DurableOperationIdentity, outcome: LifecycleState) -> Dura
     )
 
 
-class Store:
-    def __init__(self, records):
-        self.records = records
-
+class Store(dict):
     def create_or_load(self, operation):
-        return self.records[operation.operation_id]
+        return self[operation.operation_id]
 
 
 class Runtime:
     def __init__(self, error=None):
-        self.error, self.ownership, self.calls = error, (owner(RUN, "odoo-one"),), []
+        self.error, self.calls = error, []
 
     def run(self, value):
         self.calls.append(value)
@@ -162,7 +159,9 @@ def test_success_receipt_preserves_target_label_and_runtime_ownership():
     )
     receipt = coordinator(runtime, store, recorded).deploy(request())
     assert (receipt.provider, receipt.target, receipt.runtime_operation) == ("vps", TARGET, RUN)
-    assert receipt.runtime_ownership == runtime.ownership and receipt.exposure_ownership == ()
+    assert (
+        receipt.runtime_ownership == (owner(RUN, "odoo-one"),) and receipt.exposure_ownership == ()
+    )
     assert receipt.outcome is LifecycleState.SUCCEEDED and recorded == [receipt]
 
 
@@ -198,6 +197,12 @@ def test_in_progress_exposure_fails_closed_without_receipt():
     with pytest.raises(RemoteDeploymentIncompleteError):
         coordinator(Runtime(), store, recorded, Exposure(result)).deploy(request(True))
     assert recorded == []
+
+
+def test_same_runtime_and_exposure_operation_is_rejected_before_provider_call():
+    with pytest.raises(RemoteDeploymentIncompleteError):
+        coordinator((runtime := Runtime()), Store({})).deploy(request(True, exposure_operation=RUN))
+    assert runtime.calls == []
 
 
 def test_adapter_failure_records_failed_evidence_and_reraises_same_exception():
