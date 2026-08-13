@@ -12,22 +12,45 @@ from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 
 from odoo_forge.anonymization.apply import MaskTransform
+from odoo_forge.backend.plan import BackendPlan
 from odoo_forge.credentials.errors import CredentialUnavailableError
-from odoo_forge.credentials.types import CredentialHandle, CredentialInjectionDescriptor
+from odoo_forge.credentials.types import (
+    CredentialHandle,
+    CredentialInjectionDescriptor,
+    CredentialResolver,
+)
 from odoo_forge.data_artifacts.coordinator import DataArtifactCopyCoordinator
 from odoo_forge.data_artifacts.staging import StagedArtifactStore
+from odoo_forge.deployment_spec.types import DeploymentSpec
+from odoo_forge.durable_operations.types import DurableOperationIdentity
 from odoo_forge.manifest.schema import Manifest
 from odoo_forge.ports.backend_provider import BackendProvider
 from odoo_forge.ports.database_provider import DatabaseProvider
+from odoo_forge.ports.durable_operation_store import DurableOperationStore
 from odoo_forge.ports.pipeline_provider import PipelineProvider
 from odoo_forge.ports.published_artifact_resolver import PublishedArtifactResolver
 from odoo_forge.ports.source_provider import SourceProvider
 from odoo_forge.ports.workspace_provider import WorkspaceProvider
 from odoo_forge.project_catalog.interfaces import CatalogIndex
+from odoo_forge.remote_deployment import (
+    Recorder,
+    RemoteDeploymentCoordinator,
+    RemoteDeploymentRequest,
+    RemoteTargetFingerprint,
+)
+from odoo_forge.resource_ownership.types import OwnershipRecord
+from odoo_forge.tenancy.types import ProjectScope
 from odoo_forge_catalog import YamlCatalogIndex
 from odoo_forge_docker.credential_injection import SopsCommandResolver, SopsEnvFileInjector
 from odoo_forge_docker.ownership import BackendOwnershipCustody
 from odoo_forge_docker.provider import DockerBackendProvider
+from odoo_forge_docker.vps.provider import (
+    VpsBackendProvider,
+    VpsMechanics,
+    VpsOperationBinding,
+    VpsTargetIdentity,
+    bind_vps_operation,
+)
 from odoo_forge_git.git_provider import GitSourceProvider
 from odoo_forge_pipeline_github.provider import GitHubActionsPipelineProvider
 from odoo_forge_pipeline_github.transport import GitHubActionsRestTransport
@@ -136,6 +159,84 @@ def _make_backend_provider(
         credential_injector=SopsEnvFileInjector(SopsCommandResolver(credentials_file)),
         database_provider=_make_database_provider(credentials_file=credentials_file),
         custody=BackendOwnershipCustody.default(),
+    )
+
+
+def _make_remote_deployment_request(
+    *,
+    deployment: DeploymentSpec,
+    plan: BackendPlan,
+    target: VpsTargetIdentity,
+    runtime_operation: DurableOperationIdentity,
+    exposure_operation: DurableOperationIdentity | None = None,
+    runtime_ownership: tuple[OwnershipRecord, ...] = (),
+    exposure_credential_handles: tuple[CredentialHandle, ...] = (),
+) -> RemoteDeploymentRequest:
+    """Compose the provider target into the core's provider-neutral request value."""
+    return RemoteDeploymentRequest(
+        deployment=deployment,
+        plan=plan,
+        target=RemoteTargetFingerprint(
+            host=target.host,
+            user=target.user,
+            port=target.port,
+            host_key=target.host_key,
+        ),
+        runtime_operation=runtime_operation,
+        exposure_operation=exposure_operation,
+        runtime_ownership=runtime_ownership,
+        exposure_credential_handles=exposure_credential_handles,
+    )
+
+
+def _make_remote_deployment_coordinator(
+    *,
+    scope: ProjectScope,
+    target: VpsTargetIdentity,
+    runtime_operation: DurableOperationIdentity,
+    runtime_credential_handles: tuple[CredentialHandle, ...],
+    operation_store: DurableOperationStore,
+    mechanics: VpsMechanics,
+    credentials: CredentialResolver,
+    recorder: Recorder,
+    runtime_ownership: tuple[OwnershipRecord, ...] = (),
+    exposure_operation: DurableOperationIdentity | None = None,
+    exposure_credential_handles: tuple[CredentialHandle, ...] = (),
+) -> RemoteDeploymentCoordinator:
+    """Compose the fixed VPS runtime and optional exposure adapter operations."""
+    runtime_provider: VpsBackendProvider = bind_vps_operation(
+        VpsOperationBinding(
+            scope=scope,
+            operation=runtime_operation,
+            verb="run",
+            ownership=runtime_ownership,
+            target=target,
+            credential_handles=runtime_credential_handles,
+        ),
+        store=operation_store,
+        mechanics=mechanics,
+        credentials=credentials,
+    )
+    exposure_provider: VpsBackendProvider | None = None
+    if exposure_operation is not None:
+        exposure_provider = bind_vps_operation(
+            VpsOperationBinding(
+                scope=scope,
+                operation=exposure_operation,
+                verb="reconcile",
+                ownership=(),
+                target=target,
+                credential_handles=exposure_credential_handles,
+            ),
+            store=operation_store,
+            mechanics=mechanics,
+            credentials=credentials,
+        )
+    return RemoteDeploymentCoordinator(
+        runtime_provider=runtime_provider,
+        operation_store=operation_store,
+        recorder=recorder,
+        exposure_provider=exposure_provider,
     )
 
 
