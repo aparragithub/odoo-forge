@@ -41,7 +41,9 @@ def test_coordinator_binds_run_and_reconcile_with_separate_operations(
     monkeypatch: Any,
 ) -> None:
     bindings: list[VpsOperationBinding] = []
-    providers: list[object] = []
+    dependencies: list[
+        tuple[DurableOperationStore, VpsMechanics | None, CredentialResolver | None]
+    ] = []
     store = cast(DurableOperationStore, object())
     mechanics = cast(VpsMechanics, object())
     resolver = cast(CredentialResolver, lambda _handle: "private-key")
@@ -55,10 +57,8 @@ def test_coordinator_binds_run_and_reconcile_with_separate_operations(
         credentials: CredentialResolver | None = None,
     ) -> object:
         bindings.append(binding)
-        assert store is not None and mechanics is not None and credentials is not None
-        provider = object()
-        providers.append(provider)
-        return provider
+        dependencies.append((store, mechanics, credentials))
+        return object()
 
     monkeypatch.setattr(_composition, "bind_vps_operation", bind)
 
@@ -89,32 +89,53 @@ def test_coordinator_binds_run_and_reconcile_with_separate_operations(
     assert exposure_binding.ownership == ()
     assert exposure_binding.target is TARGET
     assert exposure_binding.credential_handles == (CredentialHandle("exposure"),)
-    assert coordinator._runtime_provider is providers[0]
-    assert coordinator._exposure_provider is providers[1]
+    runtime_dependencies, exposure_dependencies = dependencies
+    assert runtime_dependencies[0] is store
+    assert runtime_dependencies[1] is mechanics
+    assert runtime_dependencies[2] is resolver
+    assert exposure_dependencies[0] is store
+    assert exposure_dependencies[1] is mechanics
+    assert exposure_dependencies[2] is resolver
 
 
 def test_coordinator_omits_reconcile_binding_when_exposure_is_absent(
     monkeypatch: Any,
 ) -> None:
     bindings: list[VpsOperationBinding] = []
+    dependencies: list[
+        tuple[DurableOperationStore, VpsMechanics | None, CredentialResolver | None]
+    ] = []
+    store = cast(DurableOperationStore, object())
+    mechanics = cast(VpsMechanics, object())
+    resolver = cast(CredentialResolver, lambda _handle: "private-key")
 
-    def bind(binding: VpsOperationBinding, **_kwargs: Any) -> object:
+    def bind(
+        binding: VpsOperationBinding,
+        *,
+        store: DurableOperationStore,
+        mechanics: VpsMechanics | None = None,
+        credentials: CredentialResolver | None = None,
+    ) -> object:
         bindings.append(binding)
+        dependencies.append((store, mechanics, credentials))
         return object()
 
     monkeypatch.setattr(_composition, "bind_vps_operation", bind)
 
-    coordinator = _composition._make_remote_deployment_coordinator(
+    _composition._make_remote_deployment_coordinator(
         scope=SCOPE,
         target=TARGET,
         runtime_operation=RUNTIME,
         runtime_credential_handles=(),
-        operation_store=cast(DurableOperationStore, object()),
-        mechanics=cast(VpsMechanics, object()),
-        credentials=cast(CredentialResolver, lambda _handle: "private-key"),
+        operation_store=store,
+        mechanics=mechanics,
+        credentials=resolver,
         recorder=lambda _receipt: None,
     )
 
     assert len(bindings) == 1
     assert bindings[0].verb == "run"
-    assert coordinator._exposure_provider is None
+    assert len(dependencies) == 1
+    assert dependencies[0][0] is store
+    assert dependencies[0][1] is mechanics
+    assert dependencies[0][2] is resolver
