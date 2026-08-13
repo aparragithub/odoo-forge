@@ -1,10 +1,9 @@
-from __future__ import annotations
-
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from odoo_forge.backend.plan import BackendPlan
 from odoo_forge.backend.status import InstanceRef
+from odoo_forge.credentials.types import CredentialHandle
 from odoo_forge.deployment_spec.types import DeploymentSpec
 from odoo_forge.durable_operations.types import DurableOperationIdentity, LifecycleState
 from odoo_forge.exposure.types import ExposureOutcome, ExposureRequest, ExposureResult
@@ -12,8 +11,7 @@ from odoo_forge.ports.durable_operation_store import DurableOperationRecord, Dur
 from odoo_forge.resource_ownership.types import OwnershipRecord
 
 
-class RemoteDeploymentIncompleteError(RuntimeError):
-    pass
+class RemoteDeploymentIncompleteError(RuntimeError): ...
 
 
 @dataclass(frozen=True)
@@ -32,7 +30,7 @@ class RemoteDeploymentRequest:
     runtime_operation: DurableOperationIdentity
     exposure_operation: DurableOperationIdentity | None = None
     runtime_ownership: tuple[OwnershipRecord, ...] = ()
-    exposure_credential_handles: tuple[object, ...] = ()
+    exposure_credential_handles: tuple[CredentialHandle, ...] = ()
 
 
 @dataclass(frozen=True)

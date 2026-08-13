@@ -1,14 +1,11 @@
+from typing import cast
+
 import pytest
 
+import odoo_forge.deployment_spec.types as deployment_types
+import odoo_forge.exposure.types as exposure_types
 from odoo_forge.backend.plan import BackendPlan, ContainerSpec, NetworkSpec
 from odoo_forge.backend.status import InstanceRef
-from odoo_forge.deployment_spec.types import (
-    DeploymentSpec,
-    ExposureIntent,
-    OdooRuntimeIntent,
-    RequirementPolicy,
-    RouteProtocol,
-)
 from odoo_forge.durable_operations.service import build_terminal_commit, save_checkpoint
 from odoo_forge.durable_operations.types import (
     DurableOperationIdentity,
@@ -16,12 +13,12 @@ from odoo_forge.durable_operations.types import (
     OperationRevision,
     RedactedEvidence,
 )
-from odoo_forge.exposure.types import ExposureCheckStatus, ExposureOutcome, ExposureResult
 from odoo_forge.instance_registry.types import InstanceId, InstancePointer
-from odoo_forge.ports.durable_operation_store import DurableOperationRecord
+from odoo_forge.ports.durable_operation_store import DurableOperationRecord, DurableOperationStore
 from odoo_forge.remote_deployment import (
     RemoteDeploymentCoordinator,
     RemoteDeploymentIncompleteError,
+    RemoteDeploymentReceipt,
     RemoteDeploymentRequest,
     RemoteTargetFingerprint,
 )
@@ -38,31 +35,32 @@ POINTER = InstancePointer(scope=SCOPE, instance_id=InstanceId(value="one"))
 TARGET = RemoteTargetFingerprint(host="vps.example", user="deploy", port=22, host_key="ssh-ed25519")
 RUN = DurableOperationIdentity(operation_id="run-1", request_digest="run-digest")
 EXPOSURE = DurableOperationIdentity(operation_id="exposure-1", request_digest="exposure-digest")
+REVISION = OperationRevision(value=1)
 
 
 def owner(operation: DurableOperationIdentity, identifier: str) -> OwnershipRecord:
-    ref = ResourceRef(
-        identifier=identifier, resource_kind="container", ownership=ResourceOwnership.CREATED
-    )
     return OwnershipRecord(
-        ref=ref, receipt=OwnershipReceipt(operation=operation, owned_resource_ids=(identifier,))
+        ref=ResourceRef(
+            identifier=identifier, resource_kind="container", ownership=ResourceOwnership.CREATED
+        ),
+        receipt=OwnershipReceipt(operation=operation, owned_resource_ids=(identifier,)),
     )
 
 
-def deployment(exposed: bool = False) -> DeploymentSpec:
-    return DeploymentSpec(
+def deployment(exposed: bool = False) -> deployment_types.DeploymentSpec:
+    return deployment_types.DeploymentSpec(
         pointer=POINTER,
         resource=ResourceRef(
             identifier="odoo-forge-project-1-one",
             resource_kind="network",
             ownership=ResourceOwnership.CREATED,
         ),
-        runtime=OdooRuntimeIntent(odoo_version="18.0"),
-        exposure=ExposureIntent(
+        runtime=deployment_types.OdooRuntimeIntent(odoo_version="18.0"),
+        exposure=deployment_types.ExposureIntent(
             hostname="one.example",
-            protocol=RouteProtocol.HTTP,
-            dns=RequirementPolicy.REQUIRED,
-            tls=RequirementPolicy.DISABLED,
+            protocol=deployment_types.RouteProtocol.HTTP,
+            dns=deployment_types.RequirementPolicy.REQUIRED,
+            tls=deployment_types.RequirementPolicy.DISABLED,
         )
         if exposed
         else None,
@@ -71,21 +69,22 @@ def deployment(exposed: bool = False) -> DeploymentSpec:
 
 def plan() -> BackendPlan:
     network = NetworkSpec(name="odoo-forge-project-1-one", labels={"managed": "true"})
-    db = ContainerSpec(
-        name="db-one", image="postgres:16", role="postgres", network=network.name, env={}, labels={}
-    )
-    odoo = ContainerSpec(
-        name="odoo-one",
-        image="odoo-forge-odoo:18.0",
-        role="odoo",
-        network=network.name,
-        env={},
-        labels={},
+    common = {"network": network.name, "env": {}, "labels": {}}
+    db, odoo = (
+        ContainerSpec.model_validate(
+            {"name": "db-one", "image": "postgres:16", "role": "postgres", **common}
+        ),
+        ContainerSpec.model_validate(
+            {"name": "odoo-one", "image": "odoo-forge-odoo:18.0", "role": "odoo", **common}
+        ),
     )
     return BackendPlan(network=network, volumes=[], postgres=db, odoo=odoo)
 
 
-def request(exposed=False, exposure_operation=EXPOSURE):
+def request(
+    exposed: bool = False,
+    exposure_operation: DurableOperationIdentity = EXPOSURE,
+) -> RemoteDeploymentRequest:
     return RemoteDeploymentRequest(
         deployment=deployment(exposed),
         plan=plan(),
@@ -98,28 +97,27 @@ def request(exposed=False, exposure_operation=EXPOSURE):
 
 def record(operation: DurableOperationIdentity, outcome: LifecycleState) -> DurableOperationRecord:
     evidence = RedactedEvidence(event="terminal", summary="operation reached terminal state")
-    checkpoint = save_checkpoint(OperationRevision(value=0), "ready", evidence)
-    terminal = build_terminal_commit(OperationRevision(value=1), outcome, (evidence,), ())
     return DurableOperationRecord(
-        identity=operation,
-        revision=OperationRevision(value=2),
-        lifecycle=outcome,
-        checkpoint=checkpoint,
-        terminal_commit=terminal,
-        recovery_evidence=(evidence,),
+        operation,
+        OperationRevision(value=2),
+        outcome,
+        save_checkpoint(OperationRevision(value=0), "ready", evidence),
+        build_terminal_commit(OperationRevision(value=1), outcome, (evidence,), ()),
+        (evidence,),
     )
 
 
-class Store(dict):
-    def create_or_load(self, operation):
+class Store(dict[str, DurableOperationRecord]):
+    def create_or_load(self, operation: DurableOperationIdentity) -> DurableOperationRecord:
         return self[operation.operation_id]
 
 
 class Runtime:
-    def __init__(self, error=None):
-        self.error, self.calls = error, []
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.calls: list[BackendPlan] = []
 
-    def run(self, value):
+    def run(self, value: BackendPlan) -> InstanceRef:
         self.calls.append(value)
         if self.error:
             raise self.error
@@ -133,45 +131,48 @@ class Runtime:
 
 
 class Exposure:
-    def __init__(self, result):
-        self.result, self.requests = result, []
+    def __init__(self, result: exposure_types.ExposureResult) -> None:
+        self.result = result
+        self.requests: list[exposure_types.ExposureRequest] = []
 
-    def reconcile(self, request):
+    def reconcile(self, request: exposure_types.ExposureRequest) -> exposure_types.ExposureResult:
         self.requests.append(request)
         return self.result
 
 
-def coordinator(runtime, store, recorded=None, exposure=None):
-    sink = recorded if recorded is not None else []
+def coordinator(
+    runtime: Runtime,
+    store: Store,
+    recorded: list[RemoteDeploymentReceipt] | None = None,
+    exposure: Exposure | None = None,
+) -> RemoteDeploymentCoordinator:
     return RemoteDeploymentCoordinator(
         runtime_provider=runtime,
-        operation_store=store,
-        recorder=sink.append,
+        operation_store=cast(DurableOperationStore, store),
+        recorder=(recorded if recorded is not None else []).append,
         exposure_provider=exposure,
     )
 
 
-def test_success_receipt_preserves_target_label_and_runtime_ownership():
-    runtime, store, recorded = (
-        Runtime(),
-        Store({"run-1": record(RUN, LifecycleState.SUCCEEDED)}),
-        [],
-    )
+def test_success_receipt_preserves_target_label_and_runtime_ownership() -> None:
+    recorded: list[RemoteDeploymentReceipt] = []
+    runtime, store = Runtime(), Store({"run-1": record(RUN, LifecycleState.SUCCEEDED)})
     receipt = coordinator(runtime, store, recorded).deploy(request())
     assert (receipt.provider, receipt.target, receipt.runtime_operation) == ("vps", TARGET, RUN)
-    assert (
-        receipt.runtime_ownership == (owner(RUN, "odoo-one"),) and receipt.exposure_ownership == ()
+    assert (receipt.runtime_ownership, receipt.exposure_ownership) == (
+        (owner(RUN, "odoo-one"),),
+        (),
     )
     assert receipt.outcome is LifecycleState.SUCCEEDED and recorded == [receipt]
 
 
-def test_exposure_uses_empty_input_and_operation_matched_ownership():
+def test_exposure_uses_empty_input_and_operation_matched_ownership() -> None:
     route = owner(EXPOSURE, "route-one")
-    result = ExposureResult(
+    result = exposure_types.ExposureResult(
         operation=EXPOSURE,
-        outcome=ExposureOutcome.READY,
-        routing_status=ExposureCheckStatus.VERIFIED,
-        dns_status=ExposureCheckStatus.VERIFIED,
+        outcome=exposure_types.ExposureOutcome.READY,
+        routing_status=exposure_types.ExposureCheckStatus.VERIFIED,
+        dns_status=exposure_types.ExposureCheckStatus.VERIFIED,
         ready=True,
         ownership=(route,),
     )
@@ -187,27 +188,27 @@ def test_exposure_uses_empty_input_and_operation_matched_ownership():
     assert receipt.runtime_ownership != receipt.exposure_ownership == (route,)
 
 
-def test_in_progress_exposure_fails_closed_without_receipt():
-    result = ExposureResult(operation=EXPOSURE, outcome=ExposureOutcome.IN_PROGRESS)
-    pending = DurableOperationRecord(
-        identity=EXPOSURE, revision=OperationRevision(value=1), lifecycle=LifecycleState.IN_PROGRESS
+def test_in_progress_exposure_fails_closed_without_receipt() -> None:
+    result = exposure_types.ExposureResult(
+        operation=EXPOSURE, outcome=exposure_types.ExposureOutcome.IN_PROGRESS
     )
+    pending = DurableOperationRecord(EXPOSURE, REVISION, LifecycleState.IN_PROGRESS)
     store = Store({"run-1": record(RUN, LifecycleState.SUCCEEDED), "exposure-1": pending})
-    recorded = []
+    recorded: list[RemoteDeploymentReceipt] = []
     with pytest.raises(RemoteDeploymentIncompleteError):
         coordinator(Runtime(), store, recorded, Exposure(result)).deploy(request(True))
     assert recorded == []
 
 
-def test_same_runtime_and_exposure_operation_is_rejected_before_provider_call():
+def test_same_runtime_and_exposure_operation_is_rejected_before_provider_call() -> None:
     with pytest.raises(RemoteDeploymentIncompleteError):
         coordinator((runtime := Runtime()), Store({})).deploy(request(True, exposure_operation=RUN))
     assert runtime.calls == []
 
 
-def test_adapter_failure_records_failed_evidence_and_reraises_same_exception():
+def test_adapter_failure_records_failed_evidence_and_reraises_same_exception() -> None:
     error, failed = RuntimeError("adapter failure"), record(RUN, LifecycleState.FAILED)
-    recorded = []
+    recorded: list[RemoteDeploymentReceipt] = []
     with pytest.raises(RuntimeError) as raised:
         coordinator(Runtime(error), Store({"run-1": failed}), recorded).deploy(request())
     assert (
@@ -217,9 +218,7 @@ def test_adapter_failure_records_failed_evidence_and_reraises_same_exception():
     )
 
 
-def test_missing_terminal_commit_fails_closed():
-    incomplete = DurableOperationRecord(
-        identity=RUN, revision=OperationRevision(value=1), lifecycle=LifecycleState.SUCCEEDED
-    )
+def test_missing_terminal_commit_fails_closed() -> None:
+    incomplete = DurableOperationRecord(RUN, REVISION, LifecycleState.SUCCEEDED)
     with pytest.raises(RemoteDeploymentIncompleteError):
         coordinator(Runtime(), Store({"run-1": incomplete})).deploy(request())
