@@ -119,7 +119,15 @@ class RemoteDeploymentCoordinator:
                 ownership=(),
                 credential_handles=request.exposure_credential_handles,
             )
-            exposure_result = self._exposure_provider.reconcile(exposure_request)  # type: ignore[attr-defined]
+            try:
+                exposure_result = self._exposure_provider.reconcile(exposure_request)  # type: ignore[attr-defined]
+            except Exception:
+                self._record_validated_failure(
+                    request,
+                    exposure_operation=request.exposure_operation,
+                    runtime_ref=runtime_ref,
+                )
+                raise
             exposure_record = self._operation_store.create_or_load(request.exposure_operation)
             if (
                 not _valid_terminal(exposure_record, request.exposure_operation)
@@ -147,10 +155,31 @@ class RemoteDeploymentCoordinator:
         self._recorder(receipt)
         return receipt
 
-    def _record_validated_failure(self, request: RemoteDeploymentRequest) -> None:
+    def _record_validated_failure(
+        self,
+        request: RemoteDeploymentRequest,
+        *,
+        exposure_operation: DurableOperationIdentity | None = None,
+        runtime_ref: InstanceRef | None = None,
+    ) -> None:
         try:
-            record = self._operation_store.create_or_load(request.runtime_operation)
-            if not _valid_terminal(record, request.runtime_operation):
+            runtime_record = self._operation_store.create_or_load(request.runtime_operation)
+            if not _valid_terminal(runtime_record, request.runtime_operation):
+                return
+            if exposure_operation is None and runtime_record.lifecycle is not LifecycleState.FAILED:
+                return
+            if (
+                exposure_operation is not None
+                and runtime_record.lifecycle is not LifecycleState.SUCCEEDED
+            ):
+                return
+            operation = exposure_operation or request.runtime_operation
+            record = (
+                runtime_record
+                if exposure_operation is None
+                else self._operation_store.create_or_load(operation)
+            )
+            if not _valid_terminal(record, operation):
                 return
             if record.lifecycle is not LifecycleState.FAILED:
                 return
@@ -159,14 +188,14 @@ class RemoteDeploymentCoordinator:
                     deployment=request.deployment,
                     provider="vps",
                     target=request.target,
-                    runtime_ref=None,
+                    runtime_ref=runtime_ref,
                     runtime_operation=request.runtime_operation,
                     runtime_ownership=request.runtime_ownership,
-                    runtime_terminal_record=record,
-                    exposure_operation=None,
+                    runtime_terminal_record=runtime_record,
+                    exposure_operation=exposure_operation,
                     exposure_result=None,
                     exposure_ownership=(),
-                    exposure_terminal_record=None,
+                    exposure_terminal_record=record if exposure_operation is not None else None,
                     outcome=LifecycleState.FAILED,
                 )
             )

@@ -187,7 +187,6 @@ EXPECTED_UNRELATED_DECISION_DIGESTS = {
     "DR": "4458b3eabd04077453943e1fb25f6bc412970578cde9c6cd1f8e6c6a76b5f674",
     "DG": "b753ec94fb680561761c7c1da4a0e1855b37fdfb81c71f88c36fb0858e641ea6",
     "DPROV-DB": "cfa0657b9aec400f48f5afa8eb7aacdb8f65c7cbe55108008cf7d3e6b29fb305",
-    "DPROV-REMOTE": "60d6dc85d001eb8af22925fc264bf5fd6141b7b21d1313d91127f5f0097fe7eb",
     "DPROV-IDP": "cbcec2a9b59fb4aa41a79eb6122be20b12757aa3cf85701fe7a9b86a9d5d1ea4",
     "DPROV-CI": "2e1772210a60f0fdd203622455e72d2a55034e815db8210fe90f31cb3a4c1bb4",
     "DPROV-SECRETS": "51c04a52b07a0d765f90dc61d36ab0fac3f512b9d36715f2575c647d1040924c",
@@ -207,6 +206,65 @@ EXPECTED_UNRELATED_DECOMPOSITION_DIGESTS = {
         "2718487ba90aa4a2dd8f201a97abeb035c9d115b72f5530446eb5d56d4c8b038"
     ),
 }
+
+REMOTE_PREREQUISITE_EVIDENCE = (
+    "S104",
+    "S105",
+    "S106",
+    "S107",
+    "S108",
+    "S109",
+    "S110",
+    "S111",
+    "S112",
+)
+REMOTE_IMPLEMENTATION_EVIDENCE = ("S113", "S114", "S115", "S116")
+REMOTE_AGGREGATE_EVIDENCE = ("S117",)
+REMOTE_IMPLEMENTATION_CATALOG = {
+    "S113": "commit:ebce3290b217adce12d767e560793992821ae89f",
+    "S114": "tests/remote_deployment/test_handoff.py",
+    "S115": "commit:07e3e55a59f3c606a7210fff6b0d02f1c6d64b40",
+    "S116": "tests/cli/test_remote_deployment_composition.py",
+    "S117": (
+        "Runtime aggregate acceptance receipt: merged WU1 ebce329 and WU2 07e3e55; "
+        "combined fake-VPS handoff harness passed (9 tests); no live deployment claimed"
+    ),
+}
+
+
+def _remote_deployment_gate_is_closed(plan: dict[str, Any]) -> bool:
+    item = next(item for item in plan["items"] if item["id"] == "SP-REMOTE-DEPLOYMENT")
+    acceptance = next(
+        entry for entry in item["acceptance"] if entry["id"] == "AC-SP-REMOTE-DEPLOYMENT-READY"
+    )
+    decision = next(decision for decision in plan["decisions"] if decision["id"] == "DPROV-REMOTE")
+    evidence = set(acceptance["evidence"])
+    required = set(
+        REMOTE_PREREQUISITE_EVIDENCE + REMOTE_IMPLEMENTATION_EVIDENCE + REMOTE_AGGREGATE_EVIDENCE
+    )
+    return (
+        item["status"] == "achieved"
+        and item["evidence_date"] == "2026-08-13"
+        and item.get("gaps", []) == []
+        and acceptance["status"] == "achieved"
+        and acceptance["gaps"] == []
+        and acceptance["evidence"]
+        == list(
+            REMOTE_PREREQUISITE_EVIDENCE
+            + REMOTE_IMPLEMENTATION_EVIDENCE
+            + REMOTE_AGGREGATE_EVIDENCE
+        )
+        and required <= evidence
+        and required <= set(plan["meta"]["evidence_catalog"])
+        and all(
+            plan["meta"]["evidence_catalog"].get(evidence_id) == location
+            for evidence_id, location in REMOTE_IMPLEMENTATION_CATALOG.items()
+        )
+        and decision["status"] == "decided"
+        and decision["chosen"] == "VPS"
+        and "S117" in decision["evidence"]
+    )
+
 
 EXPECTED_SP4_CONTRACTS = {
     "CHG-SP4B-REGISTRY-POSTGRES": {
@@ -539,6 +597,42 @@ def test_live_plan_is_clean_at_every_severity_red_catches_bad_kind(
 
 def test_live_plan_is_clean_at_every_severity(live_plan: dict[str, Any]) -> None:
     assert [str(v) for v in validate.validate_plan(live_plan)] == []
+
+
+def test_remote_deployment_gate_closes_only_with_prerequisite_implementation_and_aggregate_evidence(
+    live_plan: dict[str, Any],
+) -> None:
+    assert _remote_deployment_gate_is_closed(live_plan)
+
+
+def test_remote_deployment_gate_stays_open_with_item_level_gap(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    item = next(item for item in mutated["items"] if item["id"] == "SP-REMOTE-DEPLOYMENT")
+    item["gaps"] = ["G0"]
+
+    assert not _remote_deployment_gate_is_closed(mutated)
+
+
+@pytest.mark.parametrize(
+    "evidence_id, mutation",
+    [("S104", "missing"), ("S104", "invalid"), ("S113", "invalid"), ("S117", "invalid")],
+)
+def test_remote_deployment_gate_stays_open_when_required_evidence_is_missing_or_invalid(
+    live_plan: dict[str, Any], evidence_id: str, mutation: str
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    item = next(item for item in mutated["items"] if item["id"] == "SP-REMOTE-DEPLOYMENT")
+    acceptance = item["acceptance"][0]
+    if mutation == "missing":
+        acceptance["evidence"].remove(evidence_id)
+    elif evidence_id == "S104":
+        acceptance["evidence"][acceptance["evidence"].index(evidence_id)] = "S-NOT-CATALOGUED"
+    else:
+        mutated["meta"]["evidence_catalog"][evidence_id] = "invalid aggregate evidence"
+
+    assert not _remote_deployment_gate_is_closed(mutated)
 
 
 def test_partial_delivery_records_have_exact_evidence_and_gaps(
