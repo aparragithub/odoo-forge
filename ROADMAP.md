@@ -50,13 +50,15 @@ The nearest planned subprojects, in dependency order:
 
 ## 🎯 Target state
 
-Direction, in intended order — each depends on the previous layers:
+Direction in broad dependency order. The portfolio graph, not this numbered
+summary, defines the exact prerequisites for each outcome:
 
-1. **Control plane authority + environment requests** — a service that owns instances, not just a CLI
+1. **Control plane authority** — a service that owns instances, not just a CLI
 2. **Platform access (RBAC)** — roles and identity for teams, not a single operator
-3. **Delivery automation** — complete the CI-driven build/publish/deploy flow
-4. **Production governance, resource lifecycle, data recovery** — the operational disciplines around real customer data
-5. **Operations UI** — a web surface once the flows beneath it are stable,
+3. **Production governance and resource lifecycle** — operational authority over real customer resources
+4. **Delivery automation** — complete the CI-driven build/publish/deploy flow after production governance
+5. **Environment requests + data recovery** — governed workflows for managed customer data
+6. **Operations UI** — a web surface once the flows beneath it are stable,
    including the guided manifest wizard's web form
 
 ## Out of scope (for now)
