@@ -236,6 +236,14 @@ def test_exposure_failure_records_exact_failed_lineage_and_reraises_same_excepti
 
     receipt = recorded[0]
     assert raised.value is error
+    assert receipt.runtime_ref == InstanceRef(
+        project="project-1",
+        instance="one",
+        network="odoo-forge-project-1-one",
+        postgres_container="db-one",
+        odoo_container="odoo-one",
+    )
+    assert receipt.runtime_terminal_record == record(RUN, LifecycleState.SUCCEEDED)
     assert (
         receipt.deployment,
         receipt.provider,

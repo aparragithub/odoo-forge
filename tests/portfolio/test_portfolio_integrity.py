@@ -245,6 +245,7 @@ def _remote_deployment_gate_is_closed(plan: dict[str, Any]) -> bool:
     return (
         item["status"] == "achieved"
         and item["evidence_date"] == "2026-08-13"
+        and item.get("gaps", []) == []
         and acceptance["status"] == "achieved"
         and acceptance["gaps"] == []
         and acceptance["evidence"]
@@ -602,6 +603,16 @@ def test_remote_deployment_gate_closes_only_with_prerequisite_implementation_and
     live_plan: dict[str, Any],
 ) -> None:
     assert _remote_deployment_gate_is_closed(live_plan)
+
+
+def test_remote_deployment_gate_stays_open_with_item_level_gap(
+    live_plan: dict[str, Any],
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    item = next(item for item in mutated["items"] if item["id"] == "SP-REMOTE-DEPLOYMENT")
+    item["gaps"] = ["G0"]
+
+    assert not _remote_deployment_gate_is_closed(mutated)
 
 
 @pytest.mark.parametrize(
