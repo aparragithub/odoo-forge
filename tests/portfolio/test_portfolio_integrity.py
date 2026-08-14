@@ -565,7 +565,7 @@ def _assert_dec_ui_authority(plan: dict[str, Any]) -> None:
     assert not registry.get("gaps")
     assert registry["acceptance"] == [
         {
-            "evidence": ["S86"],
+            "evidence": ["S125", "S126", "S127", "S128"],
             "gaps": [],
             "id": "AC-SP4B-REGISTRY-POSTGRES-READY",
             "status": "achieved",
@@ -1342,9 +1342,12 @@ def test_sp4b_scaffold_items_exist_with_exact_kind_owner_role_and_status(
         item = items[expected.item_id]
         assert item["kind"] == "sdd_change"
         assert item["owner_role"] == expected.owner_role
-        if expected.item_id == "CHG-SP4B-REGISTRY-POSTGRES":
+        if expected.item_id in CONTROL_PLANE_TARGET_MATRIX:
             assert item["status"] == "achieved"
-            assert item["evidence_date"] == "2026-08-01"
+            assert (
+                item["evidence_date"]
+                == CONTROL_PLANE_TARGET_MATRIX[expected.item_id]["evidence_date"]
+            )
         else:
             assert item["status"] == "proposed"
             assert item["evidence_date"] is None
@@ -2155,3 +2158,359 @@ def test_live_plan_is_byte_stable_under_canonical_reserialization() -> None:
     d = json.loads(raw.decode("utf-8"))
 
     assert json.dumps(d, ensure_ascii=True, separators=(",", ":")).encode("utf-8") == raw
+
+
+CONTROL_PLANE_TARGET_MATRIX: dict[str, dict[str, Any]] = {
+    "CHG-SP4B-VALIDATOR-GROUNDWORK": {
+        "evidence_date": "2026-07-31",
+        "source": ("S118",),
+        "focused_test": ("S119",),
+        "receipts": ("S122",),
+        "portfolio_evidence": ("S118", "S119", "S122"),
+    },
+    "CHG-SP4B-ITEM-SCAFFOLD": {
+        "evidence_date": "2026-07-31",
+        "source": ("S120",),
+        "focused_test": ("S121",),
+        "receipts": ("S123",),
+        "portfolio_evidence": ("S120", "S121", "S123"),
+    },
+    "CHG-SP4B-DECOMPOSITION-ADOPTION": {
+        "evidence_date": "2026-08-01",
+        "source": ("S120",),
+        "focused_test": ("S121",),
+        "receipts": ("S124",),
+        "portfolio_evidence": ("S120", "S121", "S124"),
+    },
+    "CHG-SP4B-REGISTRY-POSTGRES": {
+        "evidence_date": "2026-08-01",
+        "source": ("S125",),
+        "focused_test": ("S126",),
+        "receipts": ("S127", "S128"),
+        "portfolio_evidence": ("S125", "S126", "S127", "S128"),
+    },
+    "CHG-SP4B-ERRORS-PACKAGE": {
+        "evidence_date": "2026-08-02",
+        "source": ("S129",),
+        "focused_test": ("S130",),
+        "receipts": ("S131",),
+        "portfolio_evidence": ("S129", "S130", "S131"),
+    },
+    "CHG-SP4B-ADAPTER": {
+        "evidence_date": "2026-08-02",
+        "source": ("S132",),
+        "focused_test": ("S133",),
+        "receipts": ("S134",),
+        "portfolio_evidence": ("S132", "S133", "S134"),
+    },
+    "CHG-SP4B-CONFORMANCE-FAKES": {
+        "evidence_date": "2026-08-02",
+        "source": ("S135",),
+        "focused_test": ("S136",),
+        "receipts": ("S137",),
+        "portfolio_evidence": ("S135", "S136", "S137"),
+    },
+    "CHG-SP4B-POSTGRES-HARNESS": {
+        "evidence_date": "2026-08-02",
+        "source": ("S138",),
+        "focused_test": ("S139",),
+        "receipts": ("S140",),
+        "portfolio_evidence": ("S138", "S139", "S140"),
+    },
+    "CHG-SP4B-REAL-ACCEPTANCE": {
+        "evidence_date": "2026-08-02",
+        "source": ("S141",),
+        "focused_test": ("S142",),
+        "receipts": ("S143",),
+        "portfolio_evidence": ("S141", "S142", "S143"),
+    },
+    "SP-CONTROL-PLANE-AUTHORITY": {
+        "evidence_date": "2026-08-04",
+        "source": ("S132", "S144", "S145", "S146", "S147"),
+        "focused_test": ("S133", "S148", "S149", "S150"),
+        "receipts": ("S151", "S152"),
+        "portfolio_evidence": (
+            "S132",
+            "S133",
+            "S144",
+            "S145",
+            "S146",
+            "S147",
+            "S148",
+            "S149",
+            "S150",
+            "S151",
+            "S152",
+        ),
+    },
+}
+
+EXPECTED_CONTROL_PLANE_CATALOG: dict[str, str] = {
+    "S118": "docs/tools/platform_portfolio/validate.py",
+    "S119": "docs/tools/platform_portfolio/test_validate.py",
+    "S120": "docs/specs/platform/portfolio.json",
+    "S121": "tests/portfolio/test_portfolio_integrity.py",
+    "S122": "Engram #3842",
+    "S123": "Engram #3857",
+    "S124": "Engram #3914",
+    "S125": "src/odoo_forge_instances_postgres/migrate.py",
+    "S126": "tests/odoo_forge_instances_postgres/test_migrate.py",
+    "S127": "Engram #3934",
+    "S128": "Engram #4005",
+    "S129": "src/odoo_forge_instances_postgres/errors.py",
+    "S130": "tests/odoo_forge_instances_postgres/test_errors.py",
+    "S131": "Engram #4095",
+    "S132": "src/odoo_forge_instances_postgres/adapter.py",
+    "S133": "tests/odoo_forge_instances_postgres/test_adapter.py",
+    "S134": "Engram #4172",
+    "S135": "src/odoo_forge_instances_postgres/fakes.py",
+    "S136": "tests/odoo_forge_instances_postgres/test_conformance.py",
+    "S137": "Engram #4188",
+    "S138": "src/odoo_forge_instances_postgres/real_postgres.py",
+    "S139": "tests/odoo_forge_instances_postgres/test_real_postgres_harness.py",
+    "S140": "Engram #4203",
+    "S141": "tests/odoo_forge_instances_postgres/postgres_test_database.py",
+    "S142": "tests/odoo_forge_instances_postgres/test_real_postgres_acceptance.py",
+    "S143": "Engram #4234",
+    "S144": "src/odoo_forge/control_plane/authority.py",
+    "S145": "src/odoo_forge/ports/resource_custody.py",
+    "S146": "src/odoo_forge/control_plane/reconcile.py",
+    "S147": "src/odoo_forge_server/routes/instances.py",
+    "S148": "tests/control_plane/test_authority.py",
+    "S149": "tests/control_plane/test_slice4_verification.py",
+    "S150": "tests/odoo_forge_server/test_api.py",
+    "S151": "Engram #4463",
+    "S152": "Engram #4469",
+}
+
+
+def _control_plane_reconciliation_errors(plan: dict[str, Any]) -> list[str]:
+    items = {entry["id"]: entry for entry in plan["items"]}
+    errors: list[str] = []
+    if set(CONTROL_PLANE_TARGET_MATRIX) - set(items):
+        errors.append("missing target")
+    for target_id, expected in CONTROL_PLANE_TARGET_MATRIX.items():
+        item = items.get(target_id)
+        if item is None:
+            continue
+        acceptance = item.get("acceptance", [])
+        if item.get("status") != "achieved":
+            errors.append(f"classification/status:{target_id}")
+        if item.get("evidence_date") != expected["evidence_date"]:
+            errors.append(f"evidence-date:{target_id}")
+        if item.get("gaps", []) or len(acceptance) != 1:
+            errors.append(f"open-gap-or-acceptance:{target_id}")
+            continue
+        accepted = acceptance[0]
+        if accepted.get("status") != "achieved" or accepted.get("gaps") != []:
+            errors.append(f"acceptance-status:{target_id}")
+        if accepted.get("evidence") != list(expected["portfolio_evidence"]):
+            errors.append(f"portfolio-evidence:{target_id}")
+
+    catalog = plan["meta"].get("evidence_catalog", {})
+    for evidence_id, location in EXPECTED_CONTROL_PLANE_CATALOG.items():
+        if catalog.get(evidence_id) != location:
+            errors.append(f"catalog:{evidence_id}")
+
+    data_environments = items.get("SP-DATA-ENVIRONMENTS", {})
+    if (
+        data_environments.get("status") != "proposed"
+        or data_environments.get("evidence_date") is not None
+        or data_environments.get("acceptance")
+        != [
+            {
+                "id": "AC-SP-DATA-ENVIRONMENTS-READY",
+                "status": "proposed",
+                "evidence": [],
+                "gaps": ["G0"],
+            }
+        ]
+    ):
+        errors.append("SP-DATA-ENVIRONMENTS readiness")
+    return errors
+
+
+CANONICAL_AUTHORITY_CHAIN: dict[str, Any] = {
+    "authority": {"name": "ControlPlaneAuthority", "count": 1},
+    "custody": {"provider": "provider-neutral", "outcome": "accepted", "count": 1},
+    "registration": {
+        "pointer": "tenant/project/instance/resource",
+        "operation": {"operation_id": "op-001", "request_digest": "digest-001"},
+    },
+    "receipt": {
+        "operation": {"operation_id": "op-001", "request_digest": "digest-001"},
+        "count": 1,
+    },
+    "row": {
+        "pointer": "tenant/project/instance/resource",
+        "operation": {"operation_id": "op-001", "request_digest": "digest-001"},
+        "receipt_operation": {"operation_id": "op-001", "request_digest": "digest-001"},
+        "durable_identity": {"operation_id": "op-001", "request_digest": "digest-001"},
+        "count": 1,
+    },
+    "admission": {
+        "retry": "same-row",
+        "custody_reconfirmations": 0,
+        "conflict": "reject",
+        "registry_mutations_on_conflict": 0,
+    },
+    "read": {
+        "registry": "canonical-row",
+        "reconciler": "canonical-row",
+        "consumer": "canonical-row",
+        "method": "GET",
+        "pointer": "tenant/project/instance/resource",
+        "operation": {"operation_id": "op-001", "request_digest": "digest-001"},
+    },
+    "boundaries": {
+        "authority": "control-plane",
+        "custody": "runtime-provider",
+        "environment": "data-platform",
+        "grants": "data-platform",
+        "recovery": "data-platform",
+    },
+    "ledgers": {"authorities": 1, "registries": 1, "operation_ledgers": 0},
+    "references": list(EXPECTED_CONTROL_PLANE_CATALOG),
+}
+
+
+def _authority_chain_errors(chain: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    identity = chain.get("registration", {}).get("operation")
+    if not identity or set(identity) != {"operation_id", "request_digest"}:
+        errors.append("missing-or-malformed-identity")
+    for hop in ("receipt", "row", "read"):
+        if chain.get(hop, {}).get("operation") != identity:
+            errors.append(f"identity-substitution:{hop}")
+    if chain.get("row", {}).get("receipt_operation") != identity:
+        errors.append("receipt-row-substitution")
+    if chain.get("row", {}).get("durable_identity") != identity:
+        errors.append("durable-identity-substitution")
+    if chain.get("registration", {}).get("pointer") != chain.get("row", {}).get("pointer"):
+        errors.append("canonical-row-substitution")
+    if chain.get("authority") != {"name": "ControlPlaneAuthority", "count": 1}:
+        errors.append("authority-contradiction")
+    if chain.get("custody") != {"provider": "provider-neutral", "outcome": "accepted", "count": 1}:
+        errors.append("custody-contradiction")
+    if chain.get("receipt", {}).get("count") != 1 or chain.get("row", {}).get("count") != 1:
+        errors.append("receipt-or-row-contradiction")
+    if chain.get("admission") != {
+        "retry": "same-row",
+        "custody_reconfirmations": 0,
+        "conflict": "reject",
+        "registry_mutations_on_conflict": 0,
+    }:
+        errors.append("retry-or-conflict-fencing")
+    if chain.get("read") != {
+        "registry": "canonical-row",
+        "reconciler": "canonical-row",
+        "consumer": "canonical-row",
+        "method": "GET",
+        "pointer": "tenant/project/instance/resource",
+        "operation": {"operation_id": "op-001", "request_digest": "digest-001"},
+    }:
+        errors.append("read-visibility-contradiction")
+    if chain.get("boundaries") != CANONICAL_AUTHORITY_CHAIN["boundaries"]:
+        errors.append("boundary-ownership-crossing")
+    if chain.get("ledgers") != {"authorities": 1, "registries": 1, "operation_ledgers": 0}:
+        errors.append("duplicate-authority-registry-or-ledger")
+    if set(chain.get("references", [])) != set(EXPECTED_CONTROL_PLANE_CATALOG):
+        errors.append("stale-or-invalid-reference")
+    return errors
+
+
+def test_control_plane_target_matrix_and_catalog_are_reconciled(
+    live_plan: dict[str, Any],
+) -> None:
+    assert _control_plane_reconciliation_errors(live_plan) == []
+
+
+@pytest.mark.parametrize("mutation", ("missing", "changed-status", "changed-evidence"))
+def test_control_plane_target_matrix_red_catches_target_mutations(
+    live_plan: dict[str, Any], mutation: str
+) -> None:
+    mutated = copy.deepcopy(live_plan)
+    if mutation == "missing":
+        mutated["items"] = [item for item in mutated["items"] if item["id"] != "CHG-SP4B-ADAPTER"]
+    elif mutation == "changed-status":
+        next(item for item in mutated["items"] if item["id"] == "SP-CONTROL-PLANE-AUTHORITY")[
+            "status"
+        ] = "proposed"
+    else:
+        mutated["meta"]["evidence_catalog"]["S151"] = "Engram #stale"
+
+    assert _control_plane_reconciliation_errors(mutated)
+
+
+def test_control_plane_chain_accepts_one_canonical_identity_and_row() -> None:
+    assert _authority_chain_errors(copy.deepcopy(CANONICAL_AUTHORITY_CHAIN)) == []
+
+
+@pytest.mark.parametrize("mutation", ("missing", "malformed"))
+def test_control_plane_chain_red_catches_missing_or_malformed_identity(mutation: str) -> None:
+    mutated = copy.deepcopy(CANONICAL_AUTHORITY_CHAIN)
+    if mutation == "missing":
+        mutated["registration"]["operation"].pop("request_digest")
+    else:
+        mutated["registration"]["operation"]["request_digest"] = None
+    assert _authority_chain_errors(mutated)
+
+
+@pytest.mark.parametrize("section", ("receipt", "row"))
+def test_control_plane_chain_red_catches_missing_receipt_or_row(section: str) -> None:
+    mutated = copy.deepcopy(CANONICAL_AUTHORITY_CHAIN)
+    del mutated[section]
+    assert _authority_chain_errors(mutated)
+
+
+@pytest.mark.parametrize("hop", ("receipt", "row"))
+def test_control_plane_chain_red_catches_identity_substitution(hop: str) -> None:
+    mutated = copy.deepcopy(CANONICAL_AUTHORITY_CHAIN)
+    mutated[hop]["operation"]["request_digest"] = "substituted-digest"
+    assert _authority_chain_errors(mutated)
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    (
+        ("authority", "name", "SecondAuthority"),
+        ("custody", "outcome", "unknown"),
+        ("row", "pointer", "other-row"),
+        ("admission", "conflict", "overwrite"),
+        ("read", "method", "POST"),
+    ),
+)
+def test_control_plane_chain_red_fails_closed_on_contradiction(
+    section: str, field: str, value: str
+) -> None:
+    mutated = copy.deepcopy(CANONICAL_AUTHORITY_CHAIN)
+    mutated[section][field] = value
+    assert _authority_chain_errors(mutated)
+
+
+@pytest.mark.parametrize(
+    ("section", "value"),
+    (
+        ("boundaries", {"authority": "data-platform"}),
+        ("ledgers", {"authorities": 2, "registries": 1, "operation_ledgers": 0}),
+        ("references", ["S3966"]),
+    ),
+)
+def test_control_plane_chain_red_rejects_boundary_or_stale_evidence(
+    section: str, value: Any
+) -> None:
+    mutated = copy.deepcopy(CANONICAL_AUTHORITY_CHAIN)
+    mutated[section] = value
+    assert _authority_chain_errors(mutated)
+
+
+def test_sp_data_environments_remains_proposed_g0_and_blocked(live_plan: dict[str, Any]) -> None:
+    assert _control_plane_reconciliation_errors(live_plan) == []
+
+
+def test_sp_data_environments_red_catches_premature_readiness(live_plan: dict[str, Any]) -> None:
+    mutated = copy.deepcopy(live_plan)
+    item = next(item for item in mutated["items"] if item["id"] == "SP-DATA-ENVIRONMENTS")
+    item["status"] = "achieved"
+    item["acceptance"][0]["gaps"] = []
+    assert _control_plane_reconciliation_errors(mutated)
