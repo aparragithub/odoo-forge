@@ -140,11 +140,19 @@ class Exposure:
         return self.result
 
 
+class FailingExposure:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def reconcile(self, request: exposure_types.ExposureRequest) -> exposure_types.ExposureResult:
+        raise self.error
+
+
 def coordinator(
     runtime: Runtime,
     store: Store,
     recorded: list[RemoteDeploymentReceipt] | None = None,
-    exposure: Exposure | None = None,
+    exposure: Exposure | FailingExposure | None = None,
 ) -> RemoteDeploymentCoordinator:
     return RemoteDeploymentCoordinator(
         runtime_provider=runtime,
@@ -216,6 +224,65 @@ def test_adapter_failure_records_failed_evidence_and_reraises_same_exception() -
         and len(recorded) == 1
         and recorded[0].outcome is LifecycleState.FAILED
     )
+
+
+def test_exposure_failure_records_exact_failed_lineage_and_reraises_same_exception() -> None:
+    error = RuntimeError("exposure failure")
+    failed_exposure = record(EXPOSURE, LifecycleState.FAILED)
+    store = Store({"run-1": record(RUN, LifecycleState.SUCCEEDED), "exposure-1": failed_exposure})
+    recorded: list[RemoteDeploymentReceipt] = []
+    with pytest.raises(RuntimeError) as raised:
+        coordinator(Runtime(), store, recorded, FailingExposure(error)).deploy(request(True))
+
+    receipt = recorded[0]
+    assert raised.value is error
+    assert (
+        receipt.deployment,
+        receipt.provider,
+        receipt.target,
+        receipt.runtime_operation,
+        receipt.runtime_ownership,
+        receipt.exposure_operation,
+        receipt.exposure_result,
+        receipt.exposure_ownership,
+        receipt.exposure_terminal_record,
+        receipt.outcome,
+    ) == (
+        deployment(True),
+        "vps",
+        TARGET,
+        RUN,
+        (owner(RUN, "odoo-one"),),
+        EXPOSURE,
+        None,
+        (),
+        failed_exposure,
+        LifecycleState.FAILED,
+    )
+
+
+@pytest.mark.parametrize(
+    "exposure_record",
+    [
+        None,
+        DurableOperationRecord(EXPOSURE, REVISION, LifecycleState.IN_PROGRESS),
+        record(RUN, LifecycleState.FAILED),
+    ],
+)
+def test_invalid_exposure_failure_evidence_records_no_receipt(
+    exposure_record: DurableOperationRecord | None,
+) -> None:
+    error = RuntimeError("exposure failure")
+    records = {"run-1": record(RUN, LifecycleState.SUCCEEDED)}
+    if exposure_record is not None:
+        records["exposure-1"] = exposure_record
+    recorded: list[RemoteDeploymentReceipt] = []
+    with pytest.raises(RuntimeError) as raised:
+        coordinator(Runtime(), Store(records), recorded, FailingExposure(error)).deploy(
+            request(True)
+        )
+
+    assert raised.value is error and recorded == []
 
 
 def test_missing_terminal_commit_fails_closed() -> None:
